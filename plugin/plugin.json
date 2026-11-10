@@ -1,0 +1,13 @@
+{
+  "name": "freshgate",
+  "version": "1.0.0",
+  "description": "Automatic factual freshness checking gateway plugin for Bifrost",
+  "author": "FreshGate Team",
+  "entry": "freshgate.so",
+  "config": {
+    "freshgate_url": "http://127.0.0.1:8000/verify",
+    "timeout_sec": 4,
+    "fail_open": true,
+    "async_mode": false
+  }
+}
