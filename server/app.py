@@ -6,7 +6,7 @@ import logging
 from typing import Optional, Dict, Any, Tuple
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request, Response, BackgroundTasks, Depends, status
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import httpx
@@ -84,6 +84,56 @@ async def forward_to_upstream(
         return resp.status_code, json_body, resp_headers
 
 
+async def stream_from_upstream(
+    method: str,
+    path: str,
+    headers: Dict[str, str],
+    body: bytes,
+    timeout: float = 60.0,
+):
+    """Open streaming connection to upstream Bifrost gateway."""
+    target_url = f"{BIFROST_UPSTREAM_URL}{path}"
+    forward_headers = {
+        k: v
+        for k, v in headers.items()
+        if k.lower() not in ("host", "content-length", "connection")
+    }
+    client = httpx.AsyncClient(timeout=timeout)
+    req = client.build_request(
+        method=method,
+        url=target_url,
+        headers=forward_headers,
+        content=body,
+    )
+    return await client.send(req, stream=True)
+
+
+stream_verifications: Dict[str, Any] = {}
+
+
+async def run_streaming_verification(completion_id: str, text: str):
+    """Run verification asynchronously for a completed SSE stream."""
+    try:
+        t0 = time.perf_counter()
+        result = await pipeline.verify(text)
+        duration_ms = (time.perf_counter() - t0) * 1000
+        stream_verifications[completion_id] = {
+            "status": "completed",
+            "result": result.model_dump(),
+            "duration_ms": duration_ms,
+            "timestamp": time.time(),
+        }
+        logger.info("Streaming verification for %s finished in %.1fms", completion_id, duration_ms)
+    except Exception as e:
+        safe_err = sanitize_error_detail(e)
+        stream_verifications[completion_id] = {
+            "status": "failed",
+            "error": safe_err,
+            "timestamp": time.time(),
+        }
+        logger.error("Streaming verification for %s failed: %s", completion_id, safe_err)
+
+
 async def run_async_verification(text: str):
     """Run verification asynchronously in background and log findings."""
     try:
@@ -126,6 +176,69 @@ async def proxy_chat_completions(request: Request, background_tasks: BackgroundT
     """
     body_bytes = await request.body()
     headers = dict(request.headers)
+
+    # Check if stream is requested
+    is_stream = False
+    try:
+        req_json = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+        is_stream = bool(req_json.get("stream", False))
+    except Exception:
+        req_json = {}
+
+    if is_stream:
+        try:
+            stream_resp = await stream_from_upstream(
+                method=request.method,
+                path="/v1/chat/completions",
+                headers=headers,
+                body=body_bytes,
+            )
+        except Exception as e:
+            safe_err = sanitize_error_detail(e)
+            logger.error("Failed to connect streaming upstream: %s", safe_err)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Bad Gateway: Unable to reach Bifrost at {BIFROST_UPSTREAM_URL}",
+            )
+
+        async def event_generator():
+            accumulated_chunks = []
+            accumulated_chars = 0
+            completion_id = None
+            try:
+                async for chunk in stream_resp.aiter_bytes():
+                    yield chunk
+                    try:
+                        text_chunk = chunk.decode("utf-8", errors="ignore")
+                        for line in text_chunk.splitlines():
+                            line = line.strip()
+                            if line.startswith("data: ") and not line.endswith("[DONE]"):
+                                data_str = line[6:]
+                                parsed = json.loads(data_str)
+                                if not completion_id and parsed.get("id"):
+                                    completion_id = parsed.get("id")
+                                choices = parsed.get("choices", [])
+                                if choices and isinstance(choices, list):
+                                    delta = choices[0].get("delta", {})
+                                    content_piece = delta.get("content")
+                                    if content_piece and accumulated_chars < 50000:
+                                        accumulated_chunks.append(content_piece)
+                                        accumulated_chars += len(content_piece)
+                    except Exception:
+                        pass
+            finally:
+                if hasattr(stream_resp, "aclose"):
+                    await stream_resp.aclose()
+
+                full_content = "".join(accumulated_chunks).strip()
+                if full_content and completion_id:
+                    background_tasks.add_task(run_streaming_verification, completion_id, full_content)
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        )
 
     # 1. Forward request to Bifrost upstream
     try:
@@ -201,6 +314,15 @@ async def proxy_chat_completions(request: Request, background_tasks: BackgroundT
             "X-FreshGate-Reason": "timeout" if isinstance(e, asyncio.TimeoutError) else "internal_error",
         }
         return JSONResponse(status_code=200, content=upstream_data, headers=headers_to_add)
+
+
+@app.get("/api/stream/verification/{completion_id}")
+async def get_stream_verification(completion_id: str):
+    """Retrieve async fact-checking verification result for a completed SSE stream."""
+    entry = stream_verifications.get(completion_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Verification not found or still in progress")
+    return entry
 
 
 @app.get("/api/benchmark")
