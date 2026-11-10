@@ -144,11 +144,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         headers = response.headers
 
-        # Content Security Policy (allow inline styles and scripts for single-file dashboard)
+        # Strict Content Security Policy (zero inline scripts)
         headers["Content-Security-Policy"] = (
             "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline'; "
-            "style-src 'self' 'unsafe-inline'; "
+            "script-src 'self'; "
+            "style-src 'self'; "
             "connect-src 'self'; "
             "img-src 'self' data: https:; "
             "frame-ancestors 'none'; "

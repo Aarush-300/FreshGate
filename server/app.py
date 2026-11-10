@@ -25,6 +25,7 @@ from core.security import (
 from core.metrics import metrics
 from core.logging_config import CorrelationIdMiddleware, get_correlation_id
 from core.audit import audit_store
+from core.circuit_breaker import circuit_breaker
 
 load_dotenv()
 
@@ -35,6 +36,9 @@ BIFROST_UPSTREAM_URL = os.getenv("BIFROST_UPSTREAM_URL", "http://127.0.0.1:8080"
 FRESHGATE_TIMEOUT = float(os.getenv("FRESHGATE_TIMEOUT", "4.0"))
 FRESHGATE_FAIL_OPEN = os.getenv("FRESHGATE_FAIL_OPEN", "true").lower() == "true"
 FRESHGATE_ASYNC_MODE = os.getenv("FRESHGATE_ASYNC_MODE", "false").lower() == "true"
+FRESHGATE_MODE = os.getenv("FRESHGATE_MODE", "enforce").lower()  # shadow, warn, enforce
+FRESHGATE_MIN_SCORE = int(os.getenv("FRESHGATE_MIN_SCORE", "0"))
+FRESHGATE_BLOCK_STALE = os.getenv("FRESHGATE_BLOCK_STALE", "false").lower() == "true"
 MAX_BODY_SIZE = int(os.getenv("FRESHGATE_MAX_BODY_SIZE_BYTES", "1048576"))
 
 app = FastAPI(
@@ -321,17 +325,27 @@ async def proxy_chat_completions(request: Request, background_tasks: BackgroundT
     if not assistant_content:
         return JSONResponse(status_code=status_code, content=upstream_data)
 
-    # 3. Check for async mode
-    is_async = (
-        FRESHGATE_ASYNC_MODE
-        or request.query_params.get("freshgate_async") == "true"
-        or request.headers.get("X-FreshGate-Async") == "true"
-    )
+    # 3. Check for async or shadow mode
+    active_mode = (
+        request.headers.get("X-FreshGate-Mode")
+        or request.query_params.get("freshgate_mode")
+        or ("async" if (FRESHGATE_ASYNC_MODE or request.query_params.get("freshgate_async") == "true" or request.headers.get("X-FreshGate-Async") == "true") else FRESHGATE_MODE)
+    ).lower()
 
-    if is_async:
+    if active_mode in ("async", "shadow"):
         background_tasks.add_task(run_async_verification, assistant_content)
-        resp_headers = {"X-FreshGate-Mode": "async"}
+        resp_headers = {"X-FreshGate-Mode": active_mode}
         return JSONResponse(status_code=200, content=upstream_data, headers=resp_headers)
+
+    # 3b. Circuit breaker check
+    if not circuit_breaker.can_execute():
+        logger.warning("Circuit breaker is OPEN. Immediate fail-open pass-through.")
+        headers_to_add = {
+            "X-FreshGate-Status": "fail-open",
+            "X-FreshGate-Circuit-Breaker": "open",
+            "X-FreshGate-Reason": "circuit_breaker_tripped",
+        }
+        return JSONResponse(status_code=200, content=upstream_data, headers=headers_to_add)
 
     # 4. Run FreshGate verification with fail-open timeout
     t0 = time.perf_counter()
@@ -340,10 +354,8 @@ async def proxy_chat_completions(request: Request, background_tasks: BackgroundT
             pipeline.verify(assistant_content),
             timeout=FRESHGATE_TIMEOUT,
         )
+        circuit_breaker.record_success()
         latency_ms = int((time.perf_counter() - t0) * 1000)
-
-        # Attach FreshGate metadata block
-        upstream_data["freshgate"] = verification.model_dump()
 
         headers_to_add = {
             "X-FreshGate-Score": str(verification.summary.avg_score),
@@ -370,9 +382,34 @@ async def proxy_chat_completions(request: Request, background_tasks: BackgroundT
             status="verified",
         )
 
+        # Policy enforcement check
+        if active_mode == "enforce" and FRESHGATE_BLOCK_STALE and (verification.summary.stale > 0 or verification.summary.avg_score < FRESHGATE_MIN_SCORE):
+            logger.warning("FreshGate policy violation: stale count=%d, avg_score=%d", verification.summary.stale, verification.summary.avg_score)
+            return JSONResponse(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                content={
+                    "error": "FreshGate Policy Violation: Response contains outdated factual claims.",
+                    "freshgate": verification.model_dump(),
+                },
+                headers={
+                    "X-FreshGate-Policy": "violated",
+                    "X-FreshGate-Score": str(verification.summary.avg_score),
+                    "X-FreshGate-Stale-Count": str(verification.summary.stale),
+                },
+            )
+
+        if active_mode == "warn":
+            # Return metadata in HTTP headers only, do not modify body JSON
+            headers_to_add["X-FreshGate-Mode"] = "warn"
+            return JSONResponse(status_code=200, content=upstream_data, headers=headers_to_add)
+
+        # Mode: enforce - enrich JSON body
+        upstream_data["freshgate"] = verification.model_dump()
+        headers_to_add["X-FreshGate-Mode"] = "enforce"
         return JSONResponse(status_code=200, content=upstream_data, headers=headers_to_add)
 
     except (asyncio.TimeoutError, Exception) as e:
+        circuit_breaker.record_failure()
         safe_msg = sanitize_error_detail(e)
         logger.warning("FreshGate verification failed/timed out, failing open: %s", safe_msg)
         duration_sec = time.perf_counter() - t0
@@ -392,6 +429,24 @@ async def get_stream_verification(completion_id: str):
     if not entry:
         raise HTTPException(status_code=404, detail="Verification not found or still in progress")
     return entry
+
+
+@app.get("/api/deployment/status")
+async def get_deployment_status():
+    """Retrieve operational deployment mode and circuit breaker state."""
+    return {
+        "mode": FRESHGATE_MODE,
+        "min_score": FRESHGATE_MIN_SCORE,
+        "block_stale": FRESHGATE_BLOCK_STALE,
+        "circuit_breaker": circuit_breaker.get_state(),
+    }
+
+
+@app.post("/api/circuit-breaker/reset", dependencies=[Depends(verify_admin_key)])
+async def reset_circuit_breaker():
+    """Reset circuit breaker to CLOSED. Protected by Admin Key."""
+    circuit_breaker.reset()
+    return {"status": "reset", "circuit_breaker": circuit_breaker.get_state()}
 
 
 @app.get("/api/benchmark")
