@@ -62,7 +62,7 @@ services:
     environment:
       - POSTGRES_DB=freshgate
       - POSTGRES_USER=freshgate
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-freshgate_secret_pass}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:

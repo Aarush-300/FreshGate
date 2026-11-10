@@ -16,6 +16,12 @@ GOVERNMENT_DOMAINS = {
     "congress.gov", "sec.gov", "ftc.gov", "fda.gov", "cdc.gov", "nih.gov"
 }
 
+# Authoritative cybersecurity vulnerability databases
+CYBERSECURITY_DOMAINS = {
+    "cve.org", "nvd.nist.gov", "cisa.gov", "mitre.org", "kb.cert.org",
+    "security.snyk.io", "advisories.github.com", "osv.dev"
+}
+
 # Authoritative wire services and financial news
 TIER1_NEWS_DOMAINS = {
     "reuters.com", "apnews.com", "bloomberg.com", "ft.com", "wsj.com",
@@ -73,6 +79,11 @@ class SourceValidator:
                 is_primary = True
             else:
                 authority_score = 0.85
+
+        # 1b. Cybersecurity vulnerability and advisory databases
+        elif category_lower == "cybersecurity" and any(domain.endswith(c) or domain == c for c in CYBERSECURITY_DOMAINS):
+            authority_score = 0.98
+            is_primary = True
 
         # 2. Entity match for official vendor domains
         # e.g., if entity is "Python", and domain is "python.org"

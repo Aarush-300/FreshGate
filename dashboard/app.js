@@ -324,9 +324,10 @@ function renderVerificationResults(data, container) {
 function setupMetricsPolling() {
   const fetchAndUpdate = async () => {
     try {
-      const [depRes, readyRes] = await Promise.all([
+      const [depRes, readyRes, provRes] = await Promise.all([
         fetch('/api/deployment/status'),
-        fetch('/health/ready')
+        fetch('/health/ready'),
+        fetch('/api/provider/status')
       ]);
 
       if (depRes.ok) {
@@ -341,6 +342,75 @@ function setupMetricsPolling() {
         const readyData = await readyRes.json();
         const dbEl = document.getElementById('stat-db');
         if (dbEl) dbEl.textContent = (readyData.database || 'connected').toUpperCase();
+      }
+
+      if (provRes.ok) {
+        const provData = await provRes.json();
+        const llm = provData.llm || {};
+        const metrics = provData.metrics || {};
+        const cbs = provData.circuit_breakers || {};
+
+        // OpenAI Status
+        const llmStatusEl = document.getElementById('stat-llm-status');
+        const llmModelEl = document.getElementById('stat-llm-model');
+        const llmTokensEl = document.getElementById('stat-llm-tokens');
+        const llmTokensDetailEl = document.getElementById('stat-llm-tokens-detail');
+        const llmBudgetEl = document.getElementById('stat-llm-budget');
+        const llmRetriesEl = document.getElementById('stat-llm-retries');
+
+        if (llmStatusEl) {
+          const status = (llm.status || 'healthy').toUpperCase();
+          llmStatusEl.textContent = status;
+          if (status === 'HEALTHY') llmStatusEl.style.color = '#34d399';
+          else if (status === 'RATE_LIMITED' || status === 'DEGRADED') llmStatusEl.style.color = '#fbbf24';
+          else llmStatusEl.style.color = '#f87171';
+        }
+        if (llmModelEl) llmModelEl.textContent = `Model: ${llm.model || 'gpt-4o-mini'}`;
+        if (llmTokensEl) llmTokensEl.textContent = Number(llm.total_tokens || 0).toLocaleString();
+        if (llmTokensDetailEl) llmTokensDetailEl.textContent = `Prompt: ${Number(llm.prompt_tokens || 0).toLocaleString()} | Completion: ${Number(llm.completion_tokens || 0).toLocaleString()}`;
+        if (llmBudgetEl) {
+          if (llm.status === 'quota_exhausted') {
+            llmBudgetEl.textContent = 'EXHAUSTED';
+            llmBudgetEl.style.color = '#f87171';
+          } else if (llm.status === 'rate_limited') {
+            llmBudgetEl.textContent = 'RATE LIMITED';
+            llmBudgetEl.style.color = '#fbbf24';
+          } else {
+            llmBudgetEl.textContent = 'AVAILABLE';
+            llmBudgetEl.style.color = '#34d399';
+          }
+        }
+        if (llmRetriesEl) llmRetriesEl.textContent = `Retries: ${llm.retries_count || 0} | 429s: ${llm.rate_limit_count || 0}`;
+
+        // Tavily Status
+        const tavilyStatusEl = document.getElementById('stat-tavily-status');
+        const tavilyFailuresEl = document.getElementById('stat-tavily-failures');
+        if (tavilyStatusEl) {
+          const tavilyBreaker = cbs.tavily_search || {};
+          const isTavilyOpen = tavilyBreaker.state === 'open';
+          tavilyStatusEl.textContent = isTavilyOpen ? 'DEGRADED' : 'CONNECTED';
+          tavilyStatusEl.style.color = isTavilyOpen ? '#f87171' : '#34d399';
+        }
+        if (tavilyFailuresEl) tavilyFailuresEl.textContent = `Search Failures: ${metrics.search_failures || 0}`;
+
+        // Gateway Verification
+        const claimsRatioEl = document.getElementById('stat-claims-ratio');
+        const claimsStaleEl = document.getElementById('stat-claims-stale');
+        const cacheHitRateEl = document.getElementById('stat-cache-hitrate');
+        const cacheOpsEl = document.getElementById('stat-cache-ops');
+        const avgLatencyEl = document.getElementById('stat-avg-latency');
+
+        if (claimsRatioEl) claimsRatioEl.textContent = `${metrics.claims_extracted || 0} / ${metrics.claims_checked || 0}`;
+        if (claimsStaleEl) claimsStaleEl.textContent = `Stale Detected: ${metrics.claims_stale || 0}`;
+        if (cacheHitRateEl) cacheHitRateEl.textContent = `${metrics.cache_hit_rate_pct || 100}%`;
+        if (cacheOpsEl) cacheOpsEl.textContent = `Hits: ${metrics.cache_hits || 0} | Misses: ${metrics.cache_misses || 0}`;
+        if (avgLatencyEl) avgLatencyEl.textContent = `${metrics.avg_latency_ms || 0} ms`;
+
+        // Concurrency & Queues
+        const concurrencyEl = document.getElementById('stat-concurrency');
+        const queuedEl = document.getElementById('stat-queued');
+        if (concurrencyEl) concurrencyEl.textContent = `${llm.active_requests || 0} ACTIVE`;
+        if (queuedEl) queuedEl.textContent = `Queue Depth: ${llm.queued_requests || 0}`;
       }
     } catch (_) {}
   };

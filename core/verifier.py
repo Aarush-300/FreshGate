@@ -20,6 +20,8 @@ import httpx
 
 from core.models import Claim, Source, Verdict
 from core.llm import LLMClient, OpenAILLMClient
+from core.llm_manager import LLMProviderException, LLMErrorType
+from core.circuit_breaker import circuit_breaker
 from core.categories import category_registry
 from core.sources import SourceValidator
 
@@ -116,8 +118,10 @@ class TavilySearchClient:
                         continue
                     resp.raise_for_status()
                     data = resp.json()
+                    circuit_breaker.record_success(service="tavily_search")
                     return data.get("results", [])
             except (httpx.RequestError, httpx.HTTPStatusError) as e:
+                circuit_breaker.record_failure(service="tavily_search")
                 if attempt < self.max_retries:
                     delay = 0.5 * (2**attempt)
                     logger.warning("Tavily search network error: %s, retrying...", e)
@@ -197,7 +201,7 @@ class ClaimVerifier:
         concurrency_cap: int = 5,
     ):
         self.tavily_client = tavily_client or TavilySearchClient()
-        self.judge_llm = judge_llm or llm_client or OpenAILLMClient()
+        self.judge_llm = judge_llm or llm_client or OpenAILLMClient(request_type="judging")
         self.concurrency_cap = concurrency_cap
         self._semaphore = asyncio.Semaphore(concurrency_cap)
         self.source_validator = SourceValidator()
@@ -333,8 +337,11 @@ class ClaimVerifier:
 
                 claim.supporting_sources = [s for s in independent_sources if s.url in supporting_urls]
                 claim.contradicting_sources = [s for s in independent_sources if s.url in contradicting_urls]
+                circuit_breaker.record_success(service="llm_judging")
 
             except Exception as e:
+                is_quota = isinstance(e, LLMProviderException) and e.detail.error_type == LLMErrorType.INSUFFICIENT_QUOTA
+                circuit_breaker.record_failure(service="llm_judging", is_quota_error=is_quota)
                 logger.warning("LLM judge failed for claim %s: %s. Attempting heuristic evaluation...", claim.id, e)
                 # Attempt heuristic evaluation on evidence
                 fallback_eval = self.fallback_judge.evaluate(claim, independent_sources)

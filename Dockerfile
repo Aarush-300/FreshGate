@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.11.9-slim
 
 # Create non-root system user
 RUN groupadd -r freshgate && useradd -r -g freshgate -d /app freshgate

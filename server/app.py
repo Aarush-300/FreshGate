@@ -33,7 +33,11 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("freshgate")
 
 BIFROST_UPSTREAM_URL = os.getenv("BIFROST_UPSTREAM_URL", "http://127.0.0.1:8080").rstrip("/")
-FRESHGATE_TIMEOUT = float(os.getenv("FRESHGATE_TIMEOUT", "4.0"))
+UPSTREAM_TIMEOUT = float(os.getenv("FRESHGATE_UPSTREAM_TIMEOUT", "60.0"))
+EXTRACTION_TIMEOUT = float(os.getenv("FRESHGATE_EXTRACTION_TIMEOUT", "4.0"))
+SEARCH_TIMEOUT = float(os.getenv("FRESHGATE_SEARCH_TIMEOUT", "5.0"))
+JUDGING_TIMEOUT = float(os.getenv("FRESHGATE_JUDGING_TIMEOUT", "5.0"))
+FRESHGATE_TIMEOUT = float(os.getenv("FRESHGATE_TIMEOUT", "8.0"))
 FRESHGATE_FAIL_OPEN = os.getenv("FRESHGATE_FAIL_OPEN", "true").lower() == "true"
 FRESHGATE_ASYNC_MODE = os.getenv("FRESHGATE_ASYNC_MODE", "false").lower() == "true"
 FRESHGATE_MODE = os.getenv("FRESHGATE_MODE", "enforce").lower()  # shadow, warn, enforce
@@ -436,6 +440,25 @@ async def get_stream_verification(completion_id: str):
     if not entry:
         raise HTTPException(status_code=404, detail="Verification not found or still in progress")
     return entry
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Clean up connection pool on gateway shutdown."""
+    from core.llm_manager import llm_manager
+    await llm_manager.aclose()
+
+
+@app.get("/api/provider/status")
+async def get_provider_status():
+    """Retrieve operational metrics, provider status, rate limit budgets, and circuit breaker health."""
+    from core.llm_manager import llm_manager
+    return {
+        "llm": llm_manager.get_stats_summary(),
+        "circuit_breakers": circuit_breaker.get_all_states(),
+        "cache": pipeline.cache.get_stats(),
+        "metrics": metrics.get_summary(),
+    }
 
 
 @app.get("/api/deployment/status")

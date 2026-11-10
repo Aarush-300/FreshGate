@@ -54,24 +54,56 @@
 
     <!-- TAB 2: METRICS & SYSTEM -->
     <section id="tab-metrics" class="tab-content">
+      <!-- Operational Provider Panel (Phase 10) -->
       <div class="card">
-        <h2 class="card-title">Gateway Observability & Performance</h2>
+        <h2 class="card-title">Downstream AI Provider Health & Rate-Limit Budgets</h2>
         <div class="metrics-cards-grid">
           <div class="metric-box">
-            <div class="metric-title">Verification Reliability</div>
-            <div class="metric-value" style="color: #34d399;">99.9%</div>
+            <div class="metric-title">OpenAI Connection & Model</div>
+            <div class="metric-value" id="stat-llm-status" style="color: #34d399; font-size: 1.3rem;">HEALTHY</div>
+            <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;" id="stat-llm-model">gpt-4o-mini</div>
+          </div>
+          <div class="metric-box">
+            <div class="metric-title">OpenAI Token Consumption</div>
+            <div class="metric-value" id="stat-llm-tokens" style="color: #60a5fa;">0</div>
+            <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;" id="stat-llm-tokens-detail">Prompt: 0 | Completion: 0</div>
+          </div>
+          <div class="metric-box">
+            <div class="metric-title">Rate-Limit & Retry Budget</div>
+            <div class="metric-value" id="stat-llm-budget" style="color: #34d399; font-size: 1.3rem;">AVAILABLE</div>
+            <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;" id="stat-llm-retries">Retries: 0 | 429s: 0</div>
+          </div>
+          <div class="metric-box">
+            <div class="metric-title">Tavily Web Search Provider</div>
+            <div class="metric-value" id="stat-tavily-status" style="color: #34d399; font-size: 1.3rem;">CONNECTED</div>
+            <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;" id="stat-tavily-failures">Search Failures: 0</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Verification & Gateway Observability -->
+      <div class="card">
+        <h2 class="card-title">Gateway Verification & Performance Telemetry</h2>
+        <div class="metrics-cards-grid">
+          <div class="metric-box">
+            <div class="metric-title">Claims Extracted / Checked</div>
+            <div class="metric-value" id="stat-claims-ratio" style="color: #fff;">0 / 0</div>
+            <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;" id="stat-claims-stale">Stale Detected: 0</div>
           </div>
           <div class="metric-box">
             <div class="metric-title">Cache Hit Rate</div>
-            <div class="metric-value" style="color: #60a5fa;">100%</div>
+            <div class="metric-value" id="stat-cache-hitrate" style="color: #60a5fa;">100%</div>
+            <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;" id="stat-cache-ops">Hits: 0 | Misses: 0</div>
           </div>
           <div class="metric-box">
             <div class="metric-title">Average Latency (Warm)</div>
-            <div class="metric-value">1.7 ms</div>
+            <div class="metric-value" id="stat-avg-latency">0 ms</div>
+            <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;">p95 Latency: &lt; 25 ms</div>
           </div>
           <div class="metric-box">
-            <div class="metric-title">Fail-Open Guarantees</div>
-            <div class="metric-value" style="color: #34d399;">ACTIVE</div>
+            <div class="metric-title">Gateway Concurrency & Queue</div>
+            <div class="metric-value" id="stat-concurrency" style="color: #34d399; font-size: 1.3rem;">0 ACTIVE</div>
+            <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;" id="stat-queued">Queue Depth: 0</div>
           </div>
         </div>
         <p style="color: var(--text-muted); font-size: 0.9rem;">

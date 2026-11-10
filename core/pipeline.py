@@ -5,6 +5,7 @@ multi-dimensional scoring, and execution status reporting.
 """
 
 import logging
+import asyncio
 from typing import Optional, List, Dict, Any
 from core.models import (
     Claim,
@@ -17,7 +18,7 @@ from core.extractor import ClaimExtractor
 from core.triage import triage_claims
 from core.verifier import ClaimVerifier
 from core.scorer import calculate_score
-from core.cache import SQLiteClaimCache
+from core.cache import SQLiteClaimCache, single_flight
 from core.metrics import metrics
 
 logger = logging.getLogger(__name__)
@@ -153,18 +154,36 @@ class FreshGatePipeline:
                 misses_indices.append(idx)
                 misses_to_verify.append(claim)
 
-        # Step 4: Verify cache misses concurrently
+        # Step 4: Verify cache misses concurrently using single-flight coalescing
         verification_error: Optional[str] = None
         if misses_to_verify:
+            async def _verify_single_coalesced(c: Claim) -> Claim:
+                # Re-check cache inside coalesced call
+                entity_name = c.entities[0] if c.entities else "general"
+                cached_c = self.cache.get(c.text, c.type, entity=entity_name)
+                if cached_c is not None:
+                    cached_c.id = c.id
+                    cached_c.cached = True
+                    return cached_c
+
+                # Verify against live sources
+                verified = await self.verifier.verify_claim(c)
+                verified.score = calculate_score(verified)
+                verified.cached = False
+                self.cache.set(verified, entity=entity_name)
+                return verified
+
             try:
-                verified_misses = await self.verifier.verify_claims(misses_to_verify)
+                tasks = [
+                    single_flight.do(
+                        f"{c.type}:{c.text.strip().lower()}",
+                        _verify_single_coalesced,
+                        c,
+                    )
+                    for c in misses_to_verify
+                ]
+                verified_misses = await asyncio.gather(*tasks)
                 for miss_idx, verified_claim in zip(misses_indices, verified_misses):
-                    # Calculate freshness score
-                    verified_claim.score = calculate_score(verified_claim)
-                    verified_claim.cached = False
-                    # Store in cache
-                    entity = verified_claim.entities[0] if verified_claim.entities else "general"
-                    self.cache.set(verified_claim, entity=entity)
                     processed_claims[miss_idx] = verified_claim
             except Exception as e:
                 logger.error("Batch claim verification failed: %s", e)

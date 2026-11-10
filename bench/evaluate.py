@@ -332,7 +332,11 @@ async def run_evaluation(suite: str = "all", live_mode: bool = False) -> Dict[st
 
 def generate_benchmark_report(all_summary: Dict[str, Any], suites_summary: Dict[str, Dict[str, Any]], out_path: Path):
     """Generate comprehensive markdown report."""
-    md = f"""# FreshGate Production Benchmark & Reliability Report (Phase 5)
+    bench_mode = all_summary.get("benchmark_mode", "MOCKED / DETERMINISTIC")
+    md = f"""# FreshGate Production Benchmark & Reliability Report (V2)
+
+**Evaluation Mode:** `{bench_mode}`  
+*Note: In Mocked mode, external network calls are deterministically simulated for reproducible regression testing. Live mode benchmarks actual external provider latencies and API costs.*
 
 *Evaluated on **{all_summary['total_items']} independently labelled claims** across 11 volatile factual categories, evergreen controls, and adversarial attacks.*
 

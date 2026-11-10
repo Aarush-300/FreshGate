@@ -135,6 +135,72 @@ rate_limiter = SlidingWindowRateLimiter(
 )
 
 
+class DistributedRateLimiter:
+    """Distributed rate limiter with Redis backend and automatic in-memory fallback."""
+
+    def __init__(self, requests_per_minute: int = 60, redis_url: Optional[str] = None):
+        self._requests_per_minute = requests_per_minute
+        self.window_size_seconds = 60.0
+        self.local_limiter = SlidingWindowRateLimiter(requests_per_minute=requests_per_minute)
+        self.redis_client = None
+        url = redis_url or os.getenv("REDIS_URL")
+        if url:
+            try:
+                import redis
+                client = redis.Redis.from_url(url, decode_responses=True)
+                client.ping()
+                self.redis_client = client
+            except Exception:
+                self.redis_client = None
+
+    @property
+    def requests_per_minute(self) -> int:
+        return self._requests_per_minute
+
+    @requests_per_minute.setter
+    def requests_per_minute(self, value: int):
+        self._requests_per_minute = value
+        self.local_limiter.requests_per_minute = value
+
+    def is_allowed(self, client_id: str) -> Tuple[bool, int]:
+        if not self.redis_client:
+            return self.local_limiter.is_allowed(client_id)
+
+        try:
+            now = time.time()
+            cutoff = now - self.window_size_seconds
+            key = f"ratelimit:{client_id}"
+            pipe = self.redis_client.pipeline()
+            pipe.zremrangebyscore(key, 0, cutoff)
+            pipe.zadd(key, {str(now): now})
+            pipe.zcard(key)
+            pipe.expire(key, int(self.window_size_seconds) + 5)
+            _, _, count, _ = pipe.execute()
+
+            if count > self.requests_per_minute:
+                return False, max(1, int(self.window_size_seconds / self.requests_per_minute))
+            return True, 0
+        except Exception:
+            return self.local_limiter.is_allowed(client_id)
+
+    def reset(self):
+        self.local_limiter.reset()
+        if self.redis_client:
+            try:
+                keys = self.redis_client.keys("ratelimit:*")
+                if keys:
+                    self.redis_client.delete(*keys)
+            except Exception:
+                pass
+
+
+# Production distributed rate limiter
+distributed_rate_limiter = DistributedRateLimiter(
+    requests_per_minute=int(os.getenv("FRESHGATE_RATE_LIMIT_PER_MINUTE", "60"))
+)
+rate_limiter = distributed_rate_limiter
+
+
 # --- Middlewares ---
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):

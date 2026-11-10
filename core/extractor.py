@@ -1,25 +1,25 @@
-"""FreshGate Robust Atomic Claim Extraction Subsystem.
+"""FreshGate Robust Atomic Claim Extraction Subsystem (V2).
 
 Decomposes text into normalized, discrete atomic factual claims with:
-- Explicit ExtractionResult status (success, partial, failed, no_claims_detected)
-- Compound sentence splitting and markdown table decomposition
-- Canonical category validation via CategoryRegistry
-- Bounded retries with exponential backoff on transient LLM errors
-- Heuristic fallback extraction for high-volatility assertions (pricing, version, leadership)
-- Zero silent conversions of timeouts or malformed JSON into empty successes
+- Centralized LLM Provider Manager integration with connection pooling and token tracking.
+- Explicit ExtractionResult status: success, partial, failed, no_claims_detected.
+- Compound sentence splitting and multi-claim decomposition.
+- Expanded regex heuristic extractors for version, pricing, leadership, availability, cybersecurity, and law.
+- Non-blocking async retry and zero silent swallowing of errors.
 """
 
 import json
 import logging
 import re
 import string
-import time
+import asyncio
 from typing import List, Optional, Dict, Any, Tuple
 from core.models import Claim, ExtractionResult, ExtractionStatus
 from core.llm import LLMClient, OpenAILLMClient
+from core.llm_manager import LLMProviderException, LLMErrorType
 from core.categories import category_registry
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("freshgate.extractor")
 
 SYSTEM_PROMPT = """You are an expert factual claim extraction system.
 Analyze the provided text (which may include paragraphs, bullet lists, or tables) and decompose it into discrete atomic factual claims.
@@ -78,17 +78,23 @@ def _clean_json_text(text: str) -> str:
 
 
 def split_compound_sentences(text: str) -> List[str]:
-    """Split text into candidate sentences while preserving version numbers and prices."""
-    # Split on sentence terminals followed by space and capital letter or digit
-    parts = re.split(r"(?<=[.!?])\s+(?=[A-Z0-9])", text.strip())
-    sentences = [p.strip() for p in parts if p.strip()]
+    """Split text into candidate sentences while preserving version numbers, currency, and decimals."""
+    # First split on explicit newlines
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    sentences: List[str] = []
+    for line in lines:
+        parts = re.split(r"(?<=[.!?])\s+(?=[A-Z0-9])", line)
+        for p in parts:
+            p_strip = p.strip()
+            if p_strip:
+                sentences.append(p_strip)
     return sentences if sentences else [text.strip()]
 
 
 class FallbackHeuristicExtractor:
     """Deterministic pattern-based fallback extractor for high-volatility assertions.
 
-    Activates when external LLM extraction fails (e.g., HTTP 429 rate limit, timeout, or invalid JSON).
+    Activates when external LLM extraction fails (e.g., HTTP 429 rate limit, quota exhaustion, or malformed JSON).
     """
 
     # 1. Version patterns: "Python 2.7 is the currently supported release"
@@ -119,6 +125,18 @@ class FallbackHeuristicExtractor:
         r"([A-Z][a-zA-Z0-9_\.\-]+(?:\s+[A-Z][a-zA-Z0-9_\.\-]+)*)\s+(?:was|is)\s+"
         r"(shut down|discontinued|decommissioned|deprecated|launched|available|unreleased)"
         r"(?:\s+in\s+([A-Z][a-zA-Z]+\s+\d{4}|\d{4}))?",
+        re.IGNORECASE,
+    )
+
+    # 5. Cybersecurity patterns: "CVE-2024-1234 affects Apache HTTP Server"
+    CVE_PATTERN = re.compile(
+        r"(CVE-\d{4}-\d{4,7})\s+(?:is|affects|was disclosed in|vulnerability in)\s+([A-Za-z0-9_\.\-]+(?:\s+[A-Za-z0-9_\.\-]+)?)",
+        re.IGNORECASE,
+    )
+
+    # 6. Law / Legislation patterns: "SB 1047 was vetoed by Governor Newsom"
+    LAW_PATTERN = re.compile(
+        r"([A-Z]{1,3}\s*\d{1,5})\s+(?:was|is)\s+(vetoed|signed|enacted|passed|struck down|approved)",
         re.IGNORECASE,
     )
 
@@ -199,6 +217,42 @@ class FallbackHeuristicExtractor:
                 )
                 continue
 
+            # Check cybersecurity
+            c_match = self.CVE_PATTERN.search(sent)
+            if c_match:
+                cve_id, target = c_match.group(1), c_match.group(2)
+                claims.append(
+                    Claim(
+                        id=f"c{len(claims) + 1}",
+                        text=sent.rstrip("."),
+                        normalized_text=normalize_claim_text(sent),
+                        type="cybersecurity",
+                        entities=[cve_id.upper(), target.strip()],
+                        numerical_value=cve_id.upper(),
+                        temporal_anchor=None,
+                        extraction_confidence=0.90,
+                    )
+                )
+                continue
+
+            # Check law
+            law_match = self.LAW_PATTERN.search(sent)
+            if law_match:
+                bill_id, action = law_match.group(1), law_match.group(2)
+                claims.append(
+                    Claim(
+                        id=f"c{len(claims) + 1}",
+                        text=sent.rstrip("."),
+                        normalized_text=normalize_claim_text(sent),
+                        type="law",
+                        entities=[bill_id.strip()],
+                        numerical_value=None,
+                        temporal_anchor=None,
+                        extraction_confidence=0.90,
+                    )
+                )
+                continue
+
         return claims
 
 
@@ -208,9 +262,9 @@ class ClaimExtractor:
     def __init__(
         self,
         llm_client: Optional[LLMClient] = None,
-        max_retries: int = 2,
+        max_retries: int = 1,
     ):
-        self.llm_client = llm_client or OpenAILLMClient()
+        self.llm_client = llm_client or OpenAILLMClient(request_type="extraction")
         self.max_retries = max_retries
         self.fallback_extractor = FallbackHeuristicExtractor()
 
@@ -230,24 +284,6 @@ class ClaimExtractor:
                 return True
         return False
 
-    async def _execute_llm_with_retry(self, prompt: str) -> str:
-        """Execute LLM completion with bounded exponential backoff on transient errors."""
-        last_error = None
-        for attempt in range(self.max_retries + 1):
-            try:
-                return await self.llm_client.complete(prompt, system_prompt=SYSTEM_PROMPT)
-            except Exception as e:
-                last_error = e
-                if attempt < self.max_retries:
-                    backoff = (2 ** attempt) * 0.5
-                    logger.warning("LLM extraction call failed (attempt %d/%d): %s. Retrying in %.1fs...",
-                                   attempt + 1, self.max_retries + 1, e, backoff)
-                    time.sleep(backoff)
-                else:
-                    logger.error("LLM extraction call failed permanently after %d attempts: %s",
-                                 self.max_retries + 1, e)
-        raise last_error
-
     async def extract(self, text: str) -> ExtractionResult:
         """Extract atomic factual claims, returning an explicit ExtractionResult model."""
         if not text or not text.strip():
@@ -261,9 +297,14 @@ class ClaimExtractor:
 
         raw_response = None
         llm_error = None
+        error_type: Optional[LLMErrorType] = None
 
         try:
-            raw_response = await self._execute_llm_with_retry(prompt)
+            raw_response = await self.llm_client.complete(prompt, system_prompt=SYSTEM_PROMPT)
+        except LLMProviderException as lpe:
+            llm_error = lpe.detail.message
+            error_type = lpe.detail.error_type
+            logger.error("LLM Provider Manager error [%s]: %s", lpe.detail.error_type.value, lpe.detail.message)
         except Exception as e:
             llm_error = str(e)
             logger.error("LLM extraction provider failure: %s", e)
@@ -277,7 +318,7 @@ class ClaimExtractor:
                 return ExtractionResult(
                     claims=fallback_claims,
                     status="partial",
-                    error=f"LLM extraction error: {llm_error}. Fallback heuristics recovered volatile claims.",
+                    error=f"LLM extraction error ({error_type.value if error_type else 'provider_error'}): {llm_error}. Fallback heuristics recovered volatile claims.",
                     total_extracted=len(fallback_claims),
                     valid_claims=len(fallback_claims),
                     is_fallback=True,
@@ -286,7 +327,7 @@ class ClaimExtractor:
             return ExtractionResult(
                 claims=[],
                 status="failed",
-                error=f"LLM extraction failed: {llm_error}",
+                error=f"LLM extraction failed ({error_type.value if error_type else 'provider_error'}): {llm_error}",
             )
 
         # Parse LLM response
@@ -296,7 +337,7 @@ class ClaimExtractor:
         try:
             data = json.loads(cleaned)
         except json.JSONDecodeError:
-            logger.warning("Invalid JSON from LLM extractor, attempting single formatting retry...")
+            logger.warning("Invalid JSON from LLM extractor, attempting single formatting retry via LLM manager...")
             try:
                 retry_prompt = (
                     f"The following JSON response was invalid:\n{raw_response}\n\n"

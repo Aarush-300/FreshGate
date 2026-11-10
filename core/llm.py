@@ -1,7 +1,7 @@
 import os
-import httpx
 from abc import ABC, abstractmethod
 from typing import Optional
+from core.llm_manager import llm_manager, LLMProviderManager, LLMProviderException
 
 
 class LLMClient(ABC):
@@ -12,41 +12,41 @@ class LLMClient(ABC):
 
 
 class OpenAILLMClient(LLMClient):
+    """Production OpenAI LLM client delegating to centralized LLMProviderManager."""
+
     def __init__(
         self,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         model: Optional[str] = None,
         timeout: float = 20.0,
+        request_type: str = "general",
     ):
         self.api_key = api_key or os.getenv("OPENAI_API_KEY", "")
         self.base_url = (base_url or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")).rstrip("/")
         self.model = model or os.getenv("LLM_MODEL", "gpt-4o-mini")
         self.timeout = timeout
+        self.request_type = request_type
+
+        # Use shared connection pool manager if standard config, or dedicated instance if overridden
+        if (
+            (api_key and api_key != llm_manager.api_key)
+            or (base_url and base_url != llm_manager.base_url)
+            or (model and model != llm_manager.model)
+        ):
+            self.manager = LLMProviderManager(
+                api_key=self.api_key,
+                base_url=self.base_url,
+                model=self.model,
+                default_request_timeout_seconds=self.timeout,
+            )
+        else:
+            self.manager = llm_manager
 
     async def complete(self, prompt: str, system_prompt: Optional[str] = None) -> str:
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
-
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}",
-        }
-
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": 0.0,
-        }
-
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.post(
-                f"{self.base_url}/chat/completions",
-                headers=headers,
-                json=payload,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            return data["choices"][0]["message"]["content"]
+        return await self.manager.complete(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            request_type=self.request_type,
+            deadline_seconds=self.timeout,
+        )

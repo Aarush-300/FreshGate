@@ -14,6 +14,7 @@ import sqlite3
 import hashlib
 import time
 import threading
+import asyncio
 from abc import ABC, abstractmethod
 from typing import Optional, List, Dict, Any
 from core.models import Claim, Source
@@ -75,6 +76,10 @@ class ClaimCacheBase(ABC):
     @abstractmethod
     def clear(self):
         pass
+
+    def cleanup_expired(self) -> int:
+        """Prune expired entries and return number of deleted records."""
+        return 0
 
 
 class SQLiteClaimCache(ClaimCacheBase):
@@ -266,6 +271,15 @@ class SQLiteClaimCache(ClaimCacheBase):
             conn.execute("DELETE FROM claim_cache")
             conn.commit()
 
+    def cleanup_expired(self) -> int:
+        """Prune expired entries and return number of deleted records."""
+        now = time.time()
+        with self._lock, self._get_connection() as conn:
+            cursor = conn.execute("DELETE FROM claim_cache WHERE expires_at <= ?", (now,))
+            deleted = cursor.rowcount
+            conn.commit()
+            return deleted
+
 
 class RedisClaimCache(ClaimCacheBase):
     """Distributed Redis cache implementation with native key expiration."""
@@ -386,3 +400,38 @@ def get_cache() -> ClaimCacheBase:
         return RedisClaimCache(redis_url)
     db_path = os.getenv("CACHE_DB_PATH", "freshgate_cache.db")
     return SQLiteClaimCache(db_path=db_path)
+
+
+class SingleFlightCoalescer:
+    """Single-Flight request coalescer preventing thundering-herd duplicate external API calls."""
+
+    def __init__(self):
+        self._in_flight: Dict[str, asyncio.Future] = {}
+        self._lock = asyncio.Lock()
+
+    async def do(self, key: str, coroutine_func, *args, **kwargs) -> Any:
+        async with self._lock:
+            if key in self._in_flight:
+                fut = self._in_flight[key]
+                # Await in-flight verification
+                return await fut
+
+            loop = asyncio.get_running_loop()
+            fut = loop.create_future()
+            self._in_flight[key] = fut
+
+        try:
+            result = await coroutine_func(*args, **kwargs)
+            if not fut.done():
+                fut.set_result(result)
+            return result
+        except Exception as e:
+            if not fut.done():
+                fut.set_exception(e)
+            raise e
+        finally:
+            async with self._lock:
+                self._in_flight.pop(key, None)
+
+
+single_flight = SingleFlightCoalescer()
