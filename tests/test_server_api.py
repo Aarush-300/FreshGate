@@ -47,3 +47,24 @@ async def test_health_endpoint():
     assert data["status"] == "ok"
     assert data["service"] == "freshgate"
     assert "upstream" in data
+
+
+@pytest.mark.asyncio
+async def test_dashboard_endpoint():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.get("/")
+    assert response.status_code == 200
+    assert "FreshGate" in response.text
+    assert "Bifrost" in response.text
+
+
+@pytest.mark.asyncio
+async def test_benchmark_api_endpoint():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        response = await ac.get("/api/benchmark")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total_items"] == 25
+    assert data["stale_items"] == 20
+    assert data["control_items"] == 5
+    assert "results_md" in data
