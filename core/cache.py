@@ -69,6 +69,9 @@ class ClaimCacheBase(ABC):
     def get_stats(self) -> Dict[str, Any]:
         pass
 
+    def stats(self) -> Dict[str, Any]:
+        return self.get_stats()
+
     @abstractmethod
     def clear(self):
         pass

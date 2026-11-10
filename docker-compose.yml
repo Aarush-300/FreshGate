@@ -24,6 +24,58 @@ services:
       - LLM_MODEL=${LLM_MODEL:-gpt-4o-mini}
       - FRESHGATE_TIMEOUT=4.0
       - FRESHGATE_FAIL_OPEN=true
+      - FRESHGATE_CACHE_DB=/data/freshgate_cache.db
+      - FRESHGATE_AUDIT_DB=/data/freshgate_audit.db
+      - REDIS_URL=redis://redis:6379/0
+    volumes:
+      - freshgate_data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready').read()"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
     depends_on:
       - bifrost
+      - redis
     restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: freshgate-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: freshgate-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=freshgate
+      - POSTGRES_USER=freshgate
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-freshgate_secret_pass}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U freshgate"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - full
+      - production
+    restart: unless-stopped
+
+volumes:
+  freshgate_data:
+  redis_data:
+  postgres_data:

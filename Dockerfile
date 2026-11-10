@@ -15,8 +15,9 @@ COPY server/ ./server/
 COPY dashboard/ ./dashboard/
 COPY bench/ ./bench/
 
-# Set ownership to non-root user
-RUN chown -R freshgate:freshgate /app
+# Set ownership to non-root user and create persistent data volume
+RUN mkdir -p /data && chown -R freshgate:freshgate /app /data
+VOLUME ["/data"]
 USER freshgate
 
 ENV PORT=8000

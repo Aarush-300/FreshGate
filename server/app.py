@@ -22,6 +22,9 @@ from core.security import (
     verify_admin_key,
     sanitize_error_detail,
 )
+from core.metrics import metrics
+from core.logging_config import CorrelationIdMiddleware, get_correlation_id
+from core.audit import audit_store
 
 load_dotenv()
 
@@ -40,7 +43,8 @@ app = FastAPI(
     version="1.1.0",
 )
 
-# Register Security Middlewares
+# Register Security & Observability Middlewares
+app.add_middleware(CorrelationIdMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestBodySizeLimitMiddleware, max_body_bytes=MAX_BODY_SIZE)
 app.add_middleware(RateLimitMiddleware, limiter=rate_limiter)
@@ -155,6 +159,51 @@ async def health_check():
     return {"status": "ok", "service": "freshgate", "upstream": BIFROST_UPSTREAM_URL}
 
 
+@app.get("/health/live")
+async def health_live():
+    """Liveness probe for container orchestrators."""
+    return {"status": "alive"}
+
+
+@app.get("/health/ready")
+async def health_ready():
+    """Readiness probe checking database connectivity and cache availability."""
+    db_status = "connected"
+    try:
+        _ = pipeline.cache.get_stats()
+    except Exception as e:
+        logger.error("Readiness probe database check failed: %s", e)
+        db_status = "unhealthy"
+
+    is_ready = (db_status == "connected")
+    status_code = status.HTTP_200_OK if is_ready else status.HTTP_503_SERVICE_UNAVAILABLE
+
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "status": "ready" if is_ready else "not_ready",
+            "database": db_status,
+            "cache": "connected" if is_ready else "unavailable",
+            "upstream": BIFROST_UPSTREAM_URL,
+        },
+    )
+
+
+@app.get("/metrics")
+async def get_metrics():
+    """Prometheus-compatible operational metrics endpoint."""
+    return Response(
+        content=metrics.to_prometheus_format(),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
+
+
+@app.get("/api/audits/recent", dependencies=[Depends(verify_admin_key)])
+async def get_recent_audits(limit: int = 50):
+    """Retrieve recent immutable verification audit logs for compliance monitoring."""
+    return {"audits": audit_store.get_recent_audits(limit=limit)}
+
+
 @app.post("/verify", response_model=VerificationResult)
 async def verify_answer(req: VerifyRequest):
     """Direct verification endpoint for any answer text."""
@@ -176,6 +225,7 @@ async def proxy_chat_completions(request: Request, background_tasks: BackgroundT
     """
     body_bytes = await request.body()
     headers = dict(request.headers)
+    metrics.inc_requests()
 
     # Check if stream is requested
     is_stream = False
@@ -303,11 +353,30 @@ async def proxy_chat_completions(request: Request, background_tasks: BackgroundT
             "X-FreshGate-Latency-Ms": str(latency_ms),
             "X-FreshGate-Status": "verified",
         }
+        # Record Prometheus latency and audit history
+        duration_sec = time.perf_counter() - t0
+        metrics.observe_latency(duration_sec)
+        corr_id = getattr(request.state, "correlation_id", "req-unknown")
+        background_tasks.add_task(
+            audit_store.record_audit,
+            audit_id=upstream_data.get("id") or f"audit-{int(time.time() * 1000)}",
+            correlation_id=corr_id,
+            input_text=assistant_content,
+            claims_data=[c.model_dump() for c in verification.claims],
+            total_claims=verification.summary.total,
+            stale_claims=verification.summary.stale,
+            avg_score=verification.summary.avg_score,
+            latency_ms=latency_ms,
+            status="verified",
+        )
+
         return JSONResponse(status_code=200, content=upstream_data, headers=headers_to_add)
 
     except (asyncio.TimeoutError, Exception) as e:
         safe_msg = sanitize_error_detail(e)
         logger.warning("FreshGate verification failed/timed out, failing open: %s", safe_msg)
+        duration_sec = time.perf_counter() - t0
+        metrics.observe_latency(duration_sec)
         # Never leak raw stack traces or internal exception details into HTTP headers
         headers_to_add = {
             "X-FreshGate-Status": "fail-open",

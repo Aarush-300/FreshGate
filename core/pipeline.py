@@ -6,6 +6,7 @@ from core.triage import triage_claims
 from core.verifier import ClaimVerifier
 from core.scorer import calculate_score
 from core.cache import SQLiteClaimCache
+from core.metrics import metrics
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ class FreshGatePipeline:
         # Step 1: Extract discrete factual claims
         all_claims = await self.extractor.extract(answer_text)
         total_extracted = len(all_claims)
+        metrics.inc_claims_extracted(total_extracted)
 
         if not all_claims:
             return VerificationResult(
@@ -43,6 +45,7 @@ class FreshGatePipeline:
 
         # Step 2: Triage - keep only volatile claims
         volatile_claims = triage_claims(all_claims)
+        metrics.inc_claims_checked(len(volatile_claims))
         if not volatile_claims:
             return VerificationResult(
                 claims=[],
@@ -59,11 +62,13 @@ class FreshGatePipeline:
             cached_result = self.cache.get(claim.text, claim.type, entity=entity)
             if cached_result is not None:
                 # Cache hit
+                metrics.inc_cache_hit()
                 cached_result.id = claim.id
                 cached_result.cached = True
                 processed_claims[idx] = cached_result
             else:
                 # Cache miss
+                metrics.inc_cache_miss()
                 misses_indices.append(idx)
                 misses_to_verify.append(claim)
 
@@ -84,6 +89,7 @@ class FreshGatePipeline:
 
         # Step 5: Compute summary metrics
         stale_count = sum(1 for c in final_claims if c.verdict == "contradicted")
+        metrics.inc_claims_stale(stale_count)
         scores = [c.score for c in final_claims if c.score is not None]
         avg_score = int(round(sum(scores) / len(scores))) if scores else 100
 
