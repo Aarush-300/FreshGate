@@ -1,0 +1,202 @@
+[
+  {
+    "id": "b1",
+    "category": "pricing",
+    "is_stale": true,
+    "question": "How much does GPT-4 cost per million tokens?",
+    "stale_answer": "GPT-4 costs $30.00 per million input tokens and $60.00 per million output tokens on the OpenAI API.",
+    "stale_claim_expected": "GPT-4 costs $30.00 per million input tokens"
+  },
+  {
+    "id": "b2",
+    "category": "pricing",
+    "is_stale": true,
+    "question": "What is the cost of Claude 2 on Anthropic's API?",
+    "stale_answer": "Anthropic's flagship model is Claude 2, which costs $8 per million input tokens and $24 per million output tokens.",
+    "stale_claim_expected": "Claude 2 is Anthropic's flagship model costing $8 per million input tokens"
+  },
+  {
+    "id": "b3",
+    "category": "pricing",
+    "is_stale": true,
+    "question": "What does a Twitter Blue verified subscription cost?",
+    "stale_answer": "Twitter Blue costs $4.99 per month for edit button access.",
+    "stale_claim_expected": "Twitter Blue costs $4.99 per month"
+  },
+  {
+    "id": "b4",
+    "category": "pricing",
+    "is_stale": true,
+    "question": "What is the pricing for OpenAI's text-davinci-003?",
+    "stale_answer": "The text-davinci-003 model costs $0.02 per 1,000 tokens for generation.",
+    "stale_claim_expected": "text-davinci-003 costs $0.02 per 1,000 tokens"
+  },
+  {
+    "id": "b5",
+    "category": "pricing",
+    "is_stale": true,
+    "question": "How much does GitHub Copilot for Business cost?",
+    "stale_answer": "GitHub Copilot for Business costs $10 per user per month.",
+    "stale_claim_expected": "GitHub Copilot for Business costs $10 per user per month"
+  },
+  {
+    "id": "b6",
+    "category": "version",
+    "is_stale": true,
+    "question": "What is the latest stable release of Python?",
+    "stale_answer": "The latest stable version of Python is Python 3.10, released in late 2021.",
+    "stale_claim_expected": "The latest stable version of Python is Python 3.10"
+  },
+  {
+    "id": "b7",
+    "category": "version",
+    "is_stale": true,
+    "question": "What is the current Long Term Support (LTS) release of Node.js?",
+    "stale_answer": "The current active LTS version of Node.js is Node 16 Gallium.",
+    "stale_claim_expected": "The current active LTS version of Node.js is Node 16"
+  },
+  {
+    "id": "b8",
+    "category": "version",
+    "is_stale": true,
+    "question": "What is the newest version of Next.js?",
+    "stale_answer": "Next.js 12 is the latest major release, featuring the Rust compiler SWC and Pages routing.",
+    "stale_claim_expected": "Next.js 12 is the latest major release"
+  },
+  {
+    "id": "b9",
+    "category": "version",
+    "is_stale": true,
+    "question": "What is the current version of Pydantic?",
+    "stale_answer": "Pydantic 1.10 is the current production version of the library using BaseModel.parse_obj.",
+    "stale_claim_expected": "Pydantic 1.10 is the current production version"
+  },
+  {
+    "id": "b10",
+    "category": "version",
+    "is_stale": true,
+    "question": "What is the latest release of React?",
+    "stale_answer": "React 17 is the current version, known as the no-new-features release.",
+    "stale_claim_expected": "React 17 is the current version"
+  },
+  {
+    "id": "b11",
+    "category": "leadership",
+    "is_stale": true,
+    "question": "Who is the CEO of Twitter?",
+    "stale_answer": "Parag Agrawal is the Chief Executive Officer of Twitter.",
+    "stale_claim_expected": "Parag Agrawal is the CEO of Twitter"
+  },
+  {
+    "id": "b12",
+    "category": "leadership",
+    "is_stale": true,
+    "question": "Who is the CEO of YouTube?",
+    "stale_answer": "Susan Wojcicki serves as the Chief Executive Officer of YouTube.",
+    "stale_claim_expected": "Susan Wojcicki is CEO of YouTube"
+  },
+  {
+    "id": "b13",
+    "category": "leadership",
+    "is_stale": true,
+    "question": "Who is the Prime Minister of the United Kingdom?",
+    "stale_answer": "Rishi Sunak is the Prime Minister of the United Kingdom and leader of the Conservative Party.",
+    "stale_claim_expected": "Rishi Sunak is Prime Minister of the United Kingdom"
+  },
+  {
+    "id": "b14",
+    "category": "leadership",
+    "is_stale": true,
+    "question": "Who is the Speaker of the United States House of Representatives?",
+    "stale_answer": "Kevin McCarthy is the Speaker of the House of Representatives.",
+    "stale_claim_expected": "Kevin McCarthy is Speaker of the House"
+  },
+  {
+    "id": "b15",
+    "category": "leadership",
+    "is_stale": true,
+    "question": "Who is the CEO of Starbucks?",
+    "stale_answer": "Howard Schultz returned as interim CEO of Starbucks and manages all day-to-day operations.",
+    "stale_claim_expected": "Howard Schultz is CEO of Starbucks"
+  },
+  {
+    "id": "b16",
+    "category": "law",
+    "is_stale": true,
+    "question": "Did California pass the AI safety bill SB 1047?",
+    "stale_answer": "California enacted SB 1047 into law after Governor Gavin Newsom signed the Safe and Secure Innovation for Frontier Artificial Intelligence Models Act.",
+    "stale_claim_expected": "Governor Gavin Newsom signed SB 1047 into law"
+  },
+  {
+    "id": "b17",
+    "category": "law",
+    "is_stale": true,
+    "question": "What is the legal status of the European Union AI Act?",
+    "stale_answer": "The EU AI Act is currently an unapproved legislative draft proposal being discussed by the European Commission.",
+    "stale_claim_expected": "The EU AI Act is an unapproved legislative draft proposal"
+  },
+  {
+    "id": "b18",
+    "category": "law",
+    "is_stale": true,
+    "question": "Is the FTC nationwide ban on non-compete agreements in effect?",
+    "stale_answer": "The Federal Trade Commission's nationwide ban prohibiting all employee non-compete agreements took effect on September 4, 2024.",
+    "stale_claim_expected": "The FTC nationwide non-compete ban took effect on September 4, 2024"
+  },
+  {
+    "id": "b19",
+    "category": "law",
+    "is_stale": true,
+    "question": "What is the status of the UK Online Safety Bill?",
+    "stale_answer": "The UK Online Safety Bill is still a green paper proposal awaiting parliamentary debate.",
+    "stale_claim_expected": "The UK Online Safety Bill is still an unpassed proposal"
+  },
+  {
+    "id": "b20",
+    "category": "law",
+    "is_stale": true,
+    "question": "Does Section 230 still protect internet platforms from third-party liability?",
+    "stale_answer": "Section 230 was completely repealed by the United States Congress in 2023, eliminating intermediary immunity.",
+    "stale_claim_expected": "Section 230 was completely repealed in 2023"
+  },
+  {
+    "id": "b21",
+    "category": "pricing",
+    "is_stale": false,
+    "question": "Does OpenAI offer a free tier with GPT-4o mini?",
+    "stale_answer": "OpenAI provides free access to ChatGPT with the GPT-4o mini model for all registered users.",
+    "stale_claim_expected": "Control: OpenAI provides free access to ChatGPT with GPT-4o mini"
+  },
+  {
+    "id": "b22",
+    "category": "version",
+    "is_stale": false,
+    "question": "When was Python 3.12 released?",
+    "stale_answer": "Python 3.12 was officially released in October 2023.",
+    "stale_claim_expected": "Control: Python 3.12 was officially released in October 2023"
+  },
+  {
+    "id": "b23",
+    "category": "leadership",
+    "is_stale": false,
+    "question": "Who is the CEO of Microsoft?",
+    "stale_answer": "Satya Nadella is the Chairman and Chief Executive Officer of Microsoft.",
+    "stale_claim_expected": "Control: Satya Nadella is CEO of Microsoft"
+  },
+  {
+    "id": "b24",
+    "category": "leadership",
+    "is_stale": false,
+    "question": "Who is the CEO of Apple?",
+    "stale_answer": "Tim Cook is the Chief Executive Officer of Apple Inc.",
+    "stale_claim_expected": "Control: Tim Cook is CEO of Apple Inc"
+  },
+  {
+    "id": "b25",
+    "category": "law",
+    "is_stale": false,
+    "question": "What maximum penalty can be levied under the European GDPR?",
+    "stale_answer": "Under the EU General Data Protection Regulation, severe infringements can result in administrative fines of up to 20 million euros or 4% of global annual turnover.",
+    "stale_claim_expected": "Control: GDPR maximum fine is up to 20 million euros or 4% of annual turnover"
+  }
+]

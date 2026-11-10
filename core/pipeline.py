@@ -81,7 +81,7 @@ class FreshGatePipeline:
         final_claims: List[Claim] = [c for c in processed_claims if c is not None]
 
         # Step 5: Compute summary metrics
-        stale_count = sum(1 for c in final_claims if c.verdict == "contradicted" or (c.score is not None and c.score < 40))
+        stale_count = sum(1 for c in final_claims if c.verdict == "contradicted")
         scores = [c.score for c in final_claims if c.score is not None]
         avg_score = int(round(sum(scores) / len(scores))) if scores else 100
 
