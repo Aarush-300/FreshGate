@@ -55,7 +55,8 @@ class FreshGatePipeline:
         misses_to_verify: List[Claim] = []
 
         for idx, claim in enumerate(volatile_claims):
-            cached_result = self.cache.get(claim.text, claim.type)
+            entity = claim.entities[0] if claim.entities else "general"
+            cached_result = self.cache.get(claim.text, claim.type, entity=entity)
             if cached_result is not None:
                 # Cache hit
                 cached_result.id = claim.id
@@ -74,7 +75,8 @@ class FreshGatePipeline:
                 verified_claim.score = calculate_score(verified_claim)
                 verified_claim.cached = False
                 # Store in SQLite cache
-                self.cache.set(verified_claim)
+                entity = verified_claim.entities[0] if verified_claim.entities else "general"
+                self.cache.set(verified_claim, entity=entity)
                 processed_claims[miss_idx] = verified_claim
 
         # Filter out any None values (guard safety)
