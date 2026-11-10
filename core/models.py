@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Optional, List, Literal
+from typing import Optional, List, Literal, Dict, Any
 from pydantic import BaseModel, Field
 
 Verdict = Literal["confirmed", "contradicted", "partially_supported", "unverifiable"]
@@ -33,12 +33,15 @@ class Claim(BaseModel):
     temporal_anchor: Optional[str] = None
     numerical_value: Optional[str] = None
     extraction_confidence: float = 1.0
+    extraction_method: str = "llm"  # llm, heuristic, hybrid
 
     verdict: Optional[str] = None  # confirmed, contradicted, partially_supported, unverifiable
+    verification_method: Optional[str] = None  # llm_judge, deterministic_evidence_rule, heuristic_fallback, manual_review
     explanation: Optional[str] = None
     confidence: float = 1.0
     score: Optional[int] = None  # 0 to 100
 
+    evidence: List[str] = Field(default_factory=list)
     sources: List[Source] = Field(default_factory=list)
     supporting_sources: List[Source] = Field(default_factory=list)
     contradicting_sources: List[Source] = Field(default_factory=list)
@@ -51,12 +54,14 @@ class Claim(BaseModel):
 class ExtractionResult(BaseModel):
     claims: List[Claim] = Field(default_factory=list)
     status: ExtractionStatus = "success"
+    extraction_method: str = "llm"  # llm, heuristic, hybrid
     error: Optional[str] = None
     raw_response: Optional[str] = None
     total_extracted: int = 0
     valid_claims: int = 0
     dropped_claims: int = 0
     is_fallback: bool = False
+    is_complete: bool = True
 
     def __len__(self) -> int:
         return len(self.claims)
@@ -81,6 +86,9 @@ class Summary(BaseModel):
     status: PipelineStatus = "completed"
     message: Optional[str] = None
     extraction_status: Optional[ExtractionStatus] = None
+    extraction_method: Optional[str] = None
+    verification_method: Optional[str] = None
+    provider_health: Optional[Dict[str, Any]] = None
 
 
 class VerificationResult(BaseModel):
@@ -88,3 +96,4 @@ class VerificationResult(BaseModel):
     summary: Summary
     status: PipelineStatus = "completed"
     error: Optional[str] = None
+    provider_health: Optional[Dict[str, Any]] = None

@@ -5,6 +5,7 @@ import asyncio
 import logging
 from typing import Optional, Dict, Any, Tuple
 from pathlib import Path
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request, Response, BackgroundTasks, Depends, status
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -12,8 +13,13 @@ from pydantic import BaseModel, Field
 import httpx
 from dotenv import load_dotenv
 
+# Ensure environment configuration is loaded before constructing services
+load_dotenv()
+
+from core.config import get_config
 from core.models import VerificationResult
 from core.pipeline import FreshGatePipeline
+from core.llm_manager import get_llm_manager
 from core.security import (
     SecurityHeadersMiddleware,
     RequestBodySizeLimitMiddleware,
@@ -27,28 +33,43 @@ from core.logging_config import CorrelationIdMiddleware, get_correlation_id
 from core.audit import audit_store
 from core.circuit_breaker import circuit_breaker
 
-load_dotenv()
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("freshgate")
 
-BIFROST_UPSTREAM_URL = os.getenv("BIFROST_UPSTREAM_URL", "http://127.0.0.1:8080").rstrip("/")
-UPSTREAM_TIMEOUT = float(os.getenv("FRESHGATE_UPSTREAM_TIMEOUT", "60.0"))
-EXTRACTION_TIMEOUT = float(os.getenv("FRESHGATE_EXTRACTION_TIMEOUT", "4.0"))
-SEARCH_TIMEOUT = float(os.getenv("FRESHGATE_SEARCH_TIMEOUT", "5.0"))
-JUDGING_TIMEOUT = float(os.getenv("FRESHGATE_JUDGING_TIMEOUT", "5.0"))
-FRESHGATE_TIMEOUT = float(os.getenv("FRESHGATE_TIMEOUT", "8.0"))
-FRESHGATE_FAIL_OPEN = os.getenv("FRESHGATE_FAIL_OPEN", "true").lower() == "true"
-FRESHGATE_ASYNC_MODE = os.getenv("FRESHGATE_ASYNC_MODE", "false").lower() == "true"
-FRESHGATE_MODE = os.getenv("FRESHGATE_MODE", "enforce").lower()  # shadow, warn, enforce
-FRESHGATE_MIN_SCORE = int(os.getenv("FRESHGATE_MIN_SCORE", "0"))
-FRESHGATE_BLOCK_STALE = os.getenv("FRESHGATE_BLOCK_STALE", "false").lower() == "true"
-MAX_BODY_SIZE = int(os.getenv("FRESHGATE_MAX_BODY_SIZE_BYTES", "1048576"))
+cfg = get_config()
+BIFROST_UPSTREAM_URL = cfg.bifrost_upstream_url
+UPSTREAM_TIMEOUT = cfg.upstream_timeout
+EXTRACTION_TIMEOUT = cfg.extraction_timeout
+SEARCH_TIMEOUT = cfg.search_timeout
+JUDGING_TIMEOUT = cfg.judging_timeout
+FRESHGATE_TIMEOUT = cfg.freshgate_timeout
+FRESHGATE_FAIL_OPEN = cfg.fail_open
+FRESHGATE_ASYNC_MODE = cfg.async_mode
+FRESHGATE_MODE = cfg.freshgate_mode  # shadow, warn, enforce
+FRESHGATE_MIN_SCORE = cfg.min_score
+FRESHGATE_BLOCK_STALE = cfg.block_stale
+MAX_BODY_SIZE = cfg.max_body_size_bytes
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """FastAPI application lifecycle managing connection pools and startup initialization."""
+    current_cfg = get_config()
+    logger.info("Starting FreshGate Gateway (mode=%s, upstream=%s)", current_cfg.freshgate_mode, current_cfg.bifrost_upstream_url)
+    _ = get_llm_manager()
+    yield
+    logger.info("Shutting down FreshGate Gateway connection pools...")
+    mgr = get_llm_manager()
+    await mgr.aclose()
+    if hasattr(pipeline.verifier, "tavily_client") and hasattr(pipeline.verifier.tavily_client, "aclose"):
+        await pipeline.verifier.tavily_client.aclose()
+
 
 app = FastAPI(
     title="FreshGate AI Gateway Middleware",
     description="Production-grade fact-freshness verification layer for AI Gateways with Tavily & LLM Judge",
     version="1.1.0",
+    lifespan=lifespan,
 )
 
 # Register Security & Observability Middlewares
@@ -442,22 +463,22 @@ async def get_stream_verification(completion_id: str):
     return entry
 
 
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Clean up connection pool on gateway shutdown."""
-    from core.llm_manager import llm_manager
-    await llm_manager.aclose()
-
-
 @app.get("/api/provider/status")
 async def get_provider_status():
     """Retrieve operational metrics, provider status, rate limit budgets, and circuit breaker health."""
-    from core.llm_manager import llm_manager
+    llm_stats = get_llm_manager().get_stats_summary()
+    tavily_stats = getattr(pipeline.verifier.tavily_client, "get_stats_summary", lambda: {
+        "configured": get_config().is_tavily_configured,
+        "status": "configured" if get_config().is_tavily_configured else "missing_credentials",
+    })()
     return {
-        "llm": llm_manager.get_stats_summary(),
+        "llm": llm_stats,
+        "openai": llm_stats,
+        "tavily": tavily_stats,
         "circuit_breakers": circuit_breaker.get_all_states(),
         "cache": pipeline.cache.get_stats(),
         "metrics": metrics.get_summary(),
+        "config": get_config().get_safe_diagnostics(),
     }
 
 
@@ -507,6 +528,14 @@ async def clear_cache():
 dashboard_dir = Path(__file__).resolve().parent.parent / "dashboard"
 if dashboard_dir.exists():
     app.mount("/static", StaticFiles(directory=str(dashboard_dir)), name="static")
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def favicon():
+        ico_file = dashboard_dir / "favicon.ico"
+        if ico_file.exists():
+            from fastapi.responses import FileResponse
+            return FileResponse(str(ico_file), media_type="image/x-icon")
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @app.get("/", response_class=HTMLResponse)
     async def get_dashboard():

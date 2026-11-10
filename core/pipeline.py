@@ -76,6 +76,20 @@ class FreshGatePipeline:
                 error=str(e),
             )
 
+        # Provider health snapshot
+        openai_status = "configured"
+        try:
+            from core.llm_manager import get_llm_manager
+            openai_status = get_llm_manager().stats.status
+        except Exception:
+            openai_status = "unknown"
+
+        tavily_status = getattr(self.verifier.tavily_client, "status", "configured")
+        provider_health = {
+            "openai": openai_status,
+            "tavily": tavily_status,
+        }
+
         # Handle Extraction Failures explicitly: NEVER assign a 100 score to a failed extraction!
         if extraction_res.status == "failed":
             logger.warning("Extraction failed permanently: %s", extraction_res.error)
@@ -89,13 +103,16 @@ class FreshGatePipeline:
                     status="extraction_failed",
                     message=f"Claim extraction failed: {extraction_res.error}",
                     extraction_status="failed",
+                    extraction_method=extraction_res.extraction_method,
+                    provider_health=provider_health,
                 ),
                 status="extraction_failed",
                 error=extraction_res.error,
+                provider_health=provider_health,
             )
 
         # Handle genuinely claim-free text (greetings, pleasantries)
-        if extraction_res.status == "no_claims_detected" or not extraction_res.claims:
+        if extraction_res.status == "no_claims_detected":
             return VerificationResult(
                 claims=[],
                 summary=Summary(
@@ -106,8 +123,29 @@ class FreshGatePipeline:
                     status="no_claims_detected",
                     message="No volatile factual claims found. Response passed through as stable.",
                     extraction_status="no_claims_detected",
+                    extraction_method=extraction_res.extraction_method,
+                    provider_health=provider_health,
                 ),
                 status="no_claims_detected",
+                provider_health=provider_health,
+            )
+
+        if not extraction_res.claims:
+            return VerificationResult(
+                claims=[],
+                summary=Summary(
+                    total=0,
+                    checked=0,
+                    stale=0,
+                    avg_score=None,
+                    status="completed_with_warnings",
+                    message="No claims were extracted from the input text.",
+                    extraction_status=extraction_res.status,
+                    extraction_method=extraction_res.extraction_method,
+                    provider_health=provider_health,
+                ),
+                status="completed_with_warnings",
+                provider_health=provider_health,
             )
 
         all_claims = extraction_res.claims
@@ -130,8 +168,11 @@ class FreshGatePipeline:
                     status="completed",
                     message="All extracted claims are static or non-volatile facts.",
                     extraction_status=extraction_res.status,
+                    extraction_method=extraction_res.extraction_method,
+                    provider_health=provider_health,
                 ),
                 status="completed",
+                provider_health=provider_health,
             )
 
         # Step 3: Check cache for each volatile claim
@@ -203,6 +244,10 @@ class FreshGatePipeline:
         unverifiable_count = sum(1 for c in final_claims if c.verdict == "unverifiable")
         metrics.inc_claims_stale(stale_count)
 
+        # Collect unique verification methods
+        v_methods = list({c.verification_method for c in final_claims if c.verification_method})
+        verif_method = v_methods[0] if len(v_methods) == 1 else ("hybrid" if len(v_methods) > 1 else None)
+
         valid_scores = [c.score for c in final_claims if c.score is not None]
         avg_score: Optional[int] = (
             int(round(sum(valid_scores) / len(valid_scores))) if valid_scores else None
@@ -215,6 +260,10 @@ class FreshGatePipeline:
             pipeline_status = "verification_failed"
             avg_score = None
             message = f"External verification failed: {verification_error}"
+        elif unverifiable_count == len(final_claims) and not valid_scores:
+            pipeline_status = "completed_with_warnings"
+            avg_score = None
+            message = "Web evidence was inconclusive or unavailable for all extracted claims."
         elif unverifiable_count > 0 or extraction_res.status == "partial":
             pipeline_status = "partially_verified" if unverifiable_count < len(final_claims) else "completed_with_warnings"
             message = f"Partially verified: {len(final_claims) - unverifiable_count}/{len(final_claims)} claims verified."
@@ -229,6 +278,9 @@ class FreshGatePipeline:
             status=pipeline_status,
             message=message,
             extraction_status=extraction_res.status,
+            extraction_method=extraction_res.extraction_method,
+            verification_method=verif_method,
+            provider_health=provider_health,
         )
 
         return VerificationResult(
@@ -236,4 +288,5 @@ class FreshGatePipeline:
             summary=summary,
             status=pipeline_status,
             error=verification_error or extraction_res.error,
+            provider_health=provider_health,
         )

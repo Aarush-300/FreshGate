@@ -24,6 +24,7 @@ from core.llm_manager import LLMProviderException, LLMErrorType
 from core.circuit_breaker import circuit_breaker
 from core.categories import category_registry
 from core.sources import SourceValidator
+from core.config import is_valid_credential, get_config
 
 logger = logging.getLogger(__name__)
 
@@ -72,28 +73,63 @@ def _clean_json_text(text: str) -> str:
 
 
 class TavilySearchClient:
-    """Robust client for Tavily Search API with retry, backoff, and error recovery."""
+    """Robust client for Tavily Search API with connection pooling, retry, backoff, and error recovery."""
 
     def __init__(
         self,
         api_key: Optional[str] = None,
-        base_url: str = TAVILY_API_URL,
-        timeout: float = 8.0,
+        base_url: Optional[str] = None,
+        timeout: Optional[float] = None,
         max_retries: int = 2,
     ):
-        self.api_key = api_key or os.getenv("TAVILY_API_KEY", "")
-        self.base_url = base_url
-        self.timeout = timeout
+        cfg = get_config()
+        self.api_key = api_key if api_key is not None else (cfg.tavily_api_key or os.getenv("TAVILY_API_KEY", ""))
+        self.base_url = base_url or cfg.tavily_base_url or TAVILY_API_URL
+        self.timeout = timeout or cfg.search_timeout
         self.max_retries = max_retries
+
+        self.total_searches = 0
+        self.successful_searches = 0
+        self.failed_searches = 0
+
+        if is_valid_credential(self.api_key):
+            self.status = "configured"
+        else:
+            self.status = "missing_credentials"
+
+        limits = httpx.Limits(max_keepalive_connections=10, max_connections=20, keepalive_expiry=30.0)
+        self._client = httpx.AsyncClient(limits=limits, timeout=httpx.Timeout(self.timeout, connect=5.0))
+
+    async def aclose(self):
+        """Close connection pool gracefully on shutdown."""
+        if self._client and not self._client.is_closed:
+            await self._client.aclose()
+
+    def get_stats_summary(self) -> Dict[str, Any]:
+        return {
+            "configured": is_valid_credential(self.api_key),
+            "status": self.status,
+            "base_url": self.base_url,
+            "total_searches": self.total_searches,
+            "successful_searches": self.successful_searches,
+            "failed_searches": self.failed_searches,
+        }
 
     async def search(self, query: str, max_results: int = 5) -> List[Dict[str, Any]]:
         """Perform search on Tavily with retry and backoff."""
-        if not self.api_key:
-            logger.warning("TAVILY_API_KEY is not configured.")
+        effective_key = self.api_key if self.api_key is not None else get_config().tavily_api_key
+        effective_key = (effective_key or "").strip()
+
+        if not is_valid_credential(effective_key):
+            self.status = "missing_credentials"
+            logger.warning("TAVILY_API_KEY is missing, empty, or placeholder. Skipping live search.")
             return []
 
+        self.api_key = effective_key
+        self.total_searches += 1
+
         payload = {
-            "api_key": self.api_key,
+            "api_key": effective_key,
             "query": query,
             "search_depth": "basic",
             "topic": "general",
@@ -104,29 +140,43 @@ class TavilySearchClient:
 
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {effective_key}",
         }
 
         for attempt in range(self.max_retries + 1):
             try:
-                async with httpx.AsyncClient(timeout=self.timeout) as client:
-                    resp = await client.post(self.base_url, json=payload, headers=headers)
-                    if resp.status_code in (429, 500, 502, 503, 504) and attempt < self.max_retries:
+                resp = await self._client.post(self.base_url, json=payload, headers=headers)
+                if resp.status_code == 429:
+                    self.status = "rate_limited"
+                    circuit_breaker.record_failure(service="tavily_search")
+                    if attempt < self.max_retries:
                         delay = 0.5 * (2**attempt)
-                        logger.warning("Tavily returned %s, retrying in %.1fs...", resp.status_code, delay)
+                        logger.warning("Tavily rate limited (429), retrying in %.1fs...", delay)
                         await asyncio.sleep(delay)
                         continue
-                    resp.raise_for_status()
-                    data = resp.json()
-                    circuit_breaker.record_success(service="tavily_search")
-                    return data.get("results", [])
+                    return []
+                elif resp.status_code in (500, 502, 503, 504) and attempt < self.max_retries:
+                    self.status = "unavailable"
+                    delay = 0.5 * (2**attempt)
+                    logger.warning("Tavily server error %s, retrying in %.1fs...", resp.status_code, delay)
+                    await asyncio.sleep(delay)
+                    continue
+
+                resp.raise_for_status()
+                data = resp.json()
+                self.status = "healthy"
+                self.successful_searches += 1
+                circuit_breaker.record_success(service="tavily_search")
+                return data.get("results", [])
             except (httpx.RequestError, httpx.HTTPStatusError) as e:
+                self.failed_searches += 1
                 circuit_breaker.record_failure(service="tavily_search")
                 if attempt < self.max_retries:
                     delay = 0.5 * (2**attempt)
                     logger.warning("Tavily search network error: %s, retrying...", e)
                     await asyncio.sleep(delay)
                 else:
+                    self.status = "unavailable"
                     raise e
         return []
 
@@ -327,6 +377,7 @@ class ClaimVerifier:
                     verdict = "unverifiable"
 
                 claim.verdict = verdict
+                claim.verification_method = "llm_judge"
                 claim.explanation = data.get("explanation")
                 claim.confidence = float(data.get("confidence", 0.8))
                 claim.correction = data.get("correction") if verdict in ("contradicted", "partially_supported") else None
@@ -337,6 +388,7 @@ class ClaimVerifier:
 
                 claim.supporting_sources = [s for s in independent_sources if s.url in supporting_urls]
                 claim.contradicting_sources = [s for s in independent_sources if s.url in contradicting_urls]
+                claim.evidence = [s.snippet for s in (claim.supporting_sources + claim.contradicting_sources)] or [s.snippet for s in independent_sources[:3]]
                 circuit_breaker.record_success(service="llm_judging")
 
             except Exception as e:
@@ -347,6 +399,7 @@ class ClaimVerifier:
                 fallback_eval = self.fallback_judge.evaluate(claim, independent_sources)
                 if fallback_eval:
                     claim.verdict = fallback_eval["verdict"]
+                    claim.verification_method = "heuristic_fallback"
                     claim.explanation = fallback_eval["explanation"]
                     claim.confidence = fallback_eval["confidence"]
                     claim.correction = fallback_eval["correction"]
@@ -355,11 +408,15 @@ class ClaimVerifier:
                     contradicting_urls = set(fallback_eval.get("contradicting_urls") or [])
                     claim.supporting_sources = [s for s in independent_sources if s.url in supporting_urls]
                     claim.contradicting_sources = [s for s in independent_sources if s.url in contradicting_urls]
+                    claim.evidence = [s.snippet for s in (claim.supporting_sources + claim.contradicting_sources)] or [s.snippet for s in independent_sources[:3]]
                 else:
                     claim.verdict = "unverifiable"
+                    claim.verification_method = "heuristic_fallback"
                     claim.explanation = f"Judge evaluation unavailable ({e}) and web evidence was inconclusive."
                     claim.confidence = 0.4
                     claim.correction = None
+                    claim.verification_timestamp = datetime.now(timezone.utc).isoformat()
+                    claim.evidence = [s.snippet for s in independent_sources[:3]]
 
             return claim
 

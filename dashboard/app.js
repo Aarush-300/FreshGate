@@ -216,11 +216,40 @@ function renderVerificationResults(data, container) {
     typeSpan.textContent = `[${(c.category || c.type || 'unknown').toUpperCase()}]`;
     header.appendChild(typeSpan);
 
+    const badgesWrapper = document.createElement('div');
+    badgesWrapper.style.display = 'flex';
+    badgesWrapper.style.gap = '6px';
+    badgesWrapper.style.alignItems = 'center';
+
+    if (c.extraction_method) {
+      const extBadge = document.createElement('span');
+      extBadge.style.fontSize = '0.75rem';
+      extBadge.style.padding = '2px 6px';
+      extBadge.style.borderRadius = '4px';
+      extBadge.style.background = c.extraction_method === 'heuristic' ? 'rgba(245, 158, 11, 0.15)' : 'rgba(99, 102, 241, 0.15)';
+      extBadge.style.color = c.extraction_method === 'heuristic' ? '#fbbf24' : '#a5b4fc';
+      extBadge.textContent = `Extracted: ${c.extraction_method.toUpperCase()}`;
+      badgesWrapper.appendChild(extBadge);
+    }
+
+    if (c.verification_method) {
+      const verBadge = document.createElement('span');
+      verBadge.style.fontSize = '0.75rem';
+      verBadge.style.padding = '2px 6px';
+      verBadge.style.borderRadius = '4px';
+      verBadge.style.background = c.verification_method === 'heuristic_fallback' ? 'rgba(245, 158, 11, 0.15)' : 'rgba(52, 211, 153, 0.15)';
+      verBadge.style.color = c.verification_method === 'heuristic_fallback' ? '#fbbf24' : '#34d399';
+      verBadge.textContent = `Verified: ${c.verification_method.replace(/_/g, ' ').toUpperCase()}`;
+      badgesWrapper.appendChild(verBadge);
+    }
+
     const badge = document.createElement('span');
     const verdict = c.verdict || 'unverifiable';
     badge.className = `badge badge-${verdict}`;
     badge.textContent = verdict.replace(/_/g, ' ');
-    header.appendChild(badge);
+    badgesWrapper.appendChild(badge);
+
+    header.appendChild(badgesWrapper);
 
     card.appendChild(header);
 
@@ -359,11 +388,23 @@ function setupMetricsPolling() {
         const llmRetriesEl = document.getElementById('stat-llm-retries');
 
         if (llmStatusEl) {
-          const status = (llm.status || 'healthy').toUpperCase();
-          llmStatusEl.textContent = status;
-          if (status === 'HEALTHY') llmStatusEl.style.color = '#34d399';
-          else if (status === 'RATE_LIMITED' || status === 'DEGRADED') llmStatusEl.style.color = '#fbbf24';
-          else llmStatusEl.style.color = '#f87171';
+          const status = (llm.status || 'configured').toUpperCase();
+          if (status === 'HEALTHY' || status === 'CONFIGURED') {
+            llmStatusEl.textContent = 'HEALTHY';
+            llmStatusEl.style.color = '#34d399';
+          } else if (status === 'MISSING_CREDENTIALS') {
+            llmStatusEl.textContent = 'MISSING KEY';
+            llmStatusEl.style.color = '#f87171';
+          } else if (status === 'QUOTA_EXHAUSTED') {
+            llmStatusEl.textContent = 'QUOTA EXHAUSTED';
+            llmStatusEl.style.color = '#f87171';
+          } else if (status === 'RATE_LIMITED' || status === 'DEGRADED') {
+            llmStatusEl.textContent = status.replace(/_/g, ' ');
+            llmStatusEl.style.color = '#fbbf24';
+          } else {
+            llmStatusEl.textContent = status.replace(/_/g, ' ');
+            llmStatusEl.style.color = '#f87171';
+          }
         }
         if (llmModelEl) llmModelEl.textContent = `Model: ${llm.model || 'gpt-4o-mini'}`;
         if (llmTokensEl) llmTokensEl.textContent = Number(llm.total_tokens || 0).toLocaleString();
@@ -371,6 +412,9 @@ function setupMetricsPolling() {
         if (llmBudgetEl) {
           if (llm.status === 'quota_exhausted') {
             llmBudgetEl.textContent = 'EXHAUSTED';
+            llmBudgetEl.style.color = '#f87171';
+          } else if (llm.status === 'missing_credentials') {
+            llmBudgetEl.textContent = 'UNCONFIGURED';
             llmBudgetEl.style.color = '#f87171';
           } else if (llm.status === 'rate_limited') {
             llmBudgetEl.textContent = 'RATE LIMITED';
@@ -383,15 +427,28 @@ function setupMetricsPolling() {
         if (llmRetriesEl) llmRetriesEl.textContent = `Retries: ${llm.retries_count || 0} | 429s: ${llm.rate_limit_count || 0}`;
 
         // Tavily Status
+        const tavily = provData.tavily || {};
         const tavilyStatusEl = document.getElementById('stat-tavily-status');
         const tavilyFailuresEl = document.getElementById('stat-tavily-failures');
         if (tavilyStatusEl) {
-          const tavilyBreaker = cbs.tavily_search || {};
-          const isTavilyOpen = tavilyBreaker.state === 'open';
-          tavilyStatusEl.textContent = isTavilyOpen ? 'DEGRADED' : 'CONNECTED';
-          tavilyStatusEl.style.color = isTavilyOpen ? '#f87171' : '#34d399';
+          const tStatus = (tavily.status || 'configured').toUpperCase();
+          if (tStatus === 'HEALTHY' || tStatus === 'CONFIGURED') {
+            tavilyStatusEl.textContent = 'CONNECTED';
+            tavilyStatusEl.style.color = '#34d399';
+          } else if (tStatus === 'MISSING_CREDENTIALS') {
+            tavilyStatusEl.textContent = 'MISSING KEY';
+            tavilyStatusEl.style.color = '#f87171';
+          } else if (tStatus === 'RATE_LIMITED') {
+            tavilyStatusEl.textContent = 'RATE LIMITED';
+            tavilyStatusEl.style.color = '#fbbf24';
+          } else {
+            tavilyStatusEl.textContent = tStatus;
+            tavilyStatusEl.style.color = '#f87171';
+          }
         }
-        if (tavilyFailuresEl) tavilyFailuresEl.textContent = `Search Failures: ${metrics.search_failures || 0}`;
+        if (tavilyFailuresEl) {
+          tavilyFailuresEl.textContent = `Search Failures: ${tavily.failed_searches || metrics.search_failures || 0}`;
+        }
 
         // Gateway Verification
         const claimsRatioEl = document.getElementById('stat-claims-ratio');

@@ -159,6 +159,7 @@ class FallbackHeuristicExtractor:
                         numerical_value=ver.strip(),
                         temporal_anchor="current" if "current" in status.lower() else None,
                         extraction_confidence=0.85,
+                        extraction_method="heuristic",
                     )
                 )
                 continue
@@ -177,6 +178,7 @@ class FallbackHeuristicExtractor:
                         numerical_value=price.strip(),
                         temporal_anchor="current",
                         extraction_confidence=0.85,
+                        extraction_method="heuristic",
                     )
                 )
                 continue
@@ -195,6 +197,7 @@ class FallbackHeuristicExtractor:
                         numerical_value=None,
                         temporal_anchor="current",
                         extraction_confidence=0.85,
+                        extraction_method="heuristic",
                     )
                 )
                 continue
@@ -213,6 +216,7 @@ class FallbackHeuristicExtractor:
                         numerical_value=None,
                         temporal_anchor=date_str if date_str else None,
                         extraction_confidence=0.85,
+                        extraction_method="heuristic",
                     )
                 )
                 continue
@@ -231,6 +235,7 @@ class FallbackHeuristicExtractor:
                         numerical_value=cve_id.upper(),
                         temporal_anchor=None,
                         extraction_confidence=0.90,
+                        extraction_method="heuristic",
                     )
                 )
                 continue
@@ -249,6 +254,7 @@ class FallbackHeuristicExtractor:
                         numerical_value=None,
                         temporal_anchor=None,
                         extraction_confidence=0.90,
+                        extraction_method="heuristic",
                     )
                 )
                 continue
@@ -318,16 +324,20 @@ class ClaimExtractor:
                 return ExtractionResult(
                     claims=fallback_claims,
                     status="partial",
+                    extraction_method="heuristic",
                     error=f"LLM extraction error ({error_type.value if error_type else 'provider_error'}): {llm_error}. Fallback heuristics recovered volatile claims.",
                     total_extracted=len(fallback_claims),
                     valid_claims=len(fallback_claims),
                     is_fallback=True,
+                    is_complete=False,
                 )
             # No claims could be extracted and LLM failed -> explicit failed status!
             return ExtractionResult(
                 claims=[],
                 status="failed",
+                extraction_method="heuristic",
                 error=f"LLM extraction failed ({error_type.value if error_type else 'provider_error'}): {llm_error}",
+                is_complete=False,
             )
 
         # Parse LLM response
@@ -356,16 +366,20 @@ class ClaimExtractor:
                 return ExtractionResult(
                     claims=fallback_claims,
                     status="partial",
+                    extraction_method="heuristic",
                     error="LLM returned malformed non-array JSON; fallback heuristics recovered claims.",
                     total_extracted=len(fallback_claims),
                     valid_claims=len(fallback_claims),
                     is_fallback=True,
+                    is_complete=False,
                 )
             return ExtractionResult(
                 claims=[],
                 status="failed",
+                extraction_method="llm",
                 error=f"LLM extraction returned invalid JSON: {raw_response[:200] if raw_response else 'empty'}",
                 raw_response=raw_response,
+                is_complete=False,
             )
 
         # Validate and sanitize extracted items
@@ -415,6 +429,7 @@ class ClaimExtractor:
                     numerical_value=str(num_val) if num_val else None,
                     temporal_anchor=str(temp_anchor) if temp_anchor else None,
                     extraction_confidence=conf,
+                    extraction_method="llm",
                 )
             )
 
@@ -426,12 +441,14 @@ class ClaimExtractor:
                 return ExtractionResult(
                     claims=fallback_claims,
                     status="partial",
+                    extraction_method="heuristic",
                     error="LLM returned empty claims but heuristic detector identified volatile claims.",
                     total_extracted=len(fallback_claims),
                     valid_claims=len(fallback_claims),
                     is_fallback=True,
+                    is_complete=False,
                 )
-            return ExtractionResult(claims=[], status="no_claims_detected")
+            return ExtractionResult(claims=[], status="no_claims_detected", extraction_method="llm", is_complete=True)
 
         status: ExtractionStatus = "success"
         if dropped_count > 0:
@@ -440,8 +457,11 @@ class ClaimExtractor:
         return ExtractionResult(
             claims=claims,
             status=status,
+            extraction_method="llm",
             raw_response=raw_response,
             total_extracted=total_items,
             valid_claims=len(claims),
             dropped_claims=dropped_count,
+            is_fallback=False,
+            is_complete=(dropped_count == 0),
         )

@@ -22,6 +22,8 @@ from dataclasses import dataclass, field
 from contextlib import asynccontextmanager
 import httpx
 
+from core.config import is_valid_credential, get_config
+
 logger = logging.getLogger("freshgate.llm_manager")
 
 
@@ -239,9 +241,10 @@ class LLMProviderManager:
         max_retry_duration_seconds: float = 12.0,
         default_request_timeout_seconds: float = 15.0,
     ):
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY", "")
-        self.base_url = (base_url or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")).rstrip("/")
-        self.model = model or os.getenv("LLM_MODEL", "gpt-4o-mini")
+        cfg = get_config()
+        self.api_key = api_key if api_key is not None else (cfg.openai_api_key or os.getenv("OPENAI_API_KEY", ""))
+        self.base_url = (base_url or cfg.openai_base_url or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")).rstrip("/")
+        self.model = (model or cfg.llm_model or os.getenv("LLM_MODEL", "gpt-4o-mini")).strip()
 
         self.max_retries = max_retries
         self.max_retry_duration = max_retry_duration_seconds
@@ -260,6 +263,10 @@ class LLMProviderManager:
 
         # Operational metrics & budget tracking
         self.stats = ProviderUsageStats()
+        if is_valid_credential(self.api_key):
+            self.stats.status = "configured"
+        else:
+            self.stats.status = "missing_credentials"
 
         # Reusable HTTP connection pool
         limits = httpx.Limits(
@@ -328,6 +335,23 @@ class LLMProviderManager:
         overall_deadline = deadline_seconds or self.max_retry_duration
         start_time = time.time()
 
+        # Check API key validity BEFORE constructing headers or attempting network call
+        effective_key = self.api_key if self.api_key is not None else get_config().openai_api_key
+        effective_key = (effective_key or "").strip()
+
+        if not is_valid_credential(effective_key):
+            self.stats.status = "missing_credentials"
+            self.stats.last_error_message = "OpenAI API key is missing, empty, or placeholder. Request aborted."
+            raise LLMProviderException(
+                LLMErrorDetail(
+                    error_type=LLMErrorType.INVALID_API_KEY,
+                    message="OpenAI API key is missing or invalid. Set a valid OPENAI_API_KEY in the environment.",
+                    is_transient=False,
+                )
+            )
+
+        self.api_key = effective_key
+
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
@@ -335,7 +359,7 @@ class LLMProviderManager:
 
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {effective_key}",
         }
 
         payload: Dict[str, Any] = {
@@ -552,5 +576,44 @@ class LLMProviderManager:
             self.stats.status = "degraded"
 
 
-# Global singleton instance for application lifecycle
-llm_manager = LLMProviderManager()
+# Shared singleton management
+_shared_llm_manager: Optional[LLMProviderManager] = None
+
+
+def get_llm_manager() -> LLMProviderManager:
+    """Return the shared LLMProviderManager, lazily initialized with current config."""
+    global _shared_llm_manager
+    if _shared_llm_manager is None:
+        cfg = get_config()
+        _shared_llm_manager = LLMProviderManager(
+            api_key=cfg.openai_api_key,
+            base_url=cfg.openai_base_url,
+            model=cfg.llm_model,
+            max_global_concurrency=cfg.max_global_concurrency,
+            max_extraction_concurrency=cfg.max_extraction_concurrency,
+            max_judging_concurrency=cfg.max_judging_concurrency,
+            max_pending_queue=cfg.max_pending_queue,
+            queue_timeout_seconds=cfg.queue_timeout_seconds,
+            max_retries=cfg.max_retries,
+            max_retry_duration_seconds=cfg.max_retry_duration_seconds,
+            default_request_timeout_seconds=cfg.extraction_timeout,
+        )
+    return _shared_llm_manager
+
+
+def set_shared_llm_manager(manager: LLMProviderManager):
+    """Set the shared LLMProviderManager instance (e.g. from FastAPI lifespan)."""
+    global _shared_llm_manager
+    _shared_llm_manager = manager
+
+
+def reset_shared_llm_manager():
+    """Reset the shared LLMProviderManager instance (useful for clean test isolation)."""
+    global _shared_llm_manager
+    _shared_llm_manager = None
+
+
+def __getattr__(name: str):
+    if name == "llm_manager":
+        return get_llm_manager()
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")

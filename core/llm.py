@@ -1,7 +1,7 @@
 import os
 from abc import ABC, abstractmethod
 from typing import Optional
-from core.llm_manager import llm_manager, LLMProviderManager, LLMProviderException
+from core.llm_manager import get_llm_manager, LLMProviderManager, LLMProviderException
 
 
 class LLMClient(ABC):
@@ -21,27 +21,34 @@ class OpenAILLMClient(LLMClient):
         model: Optional[str] = None,
         timeout: float = 20.0,
         request_type: str = "general",
+        manager: Optional[LLMProviderManager] = None,
     ):
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY", "")
-        self.base_url = (base_url or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")).rstrip("/")
-        self.model = model or os.getenv("LLM_MODEL", "gpt-4o-mini")
         self.timeout = timeout
         self.request_type = request_type
 
-        # Use shared connection pool manager if standard config, or dedicated instance if overridden
-        if (
-            (api_key and api_key != llm_manager.api_key)
-            or (base_url and base_url != llm_manager.base_url)
-            or (model and model != llm_manager.model)
-        ):
+        if manager is not None:
+            self.manager = manager
+        elif api_key or base_url or model:
             self.manager = LLMProviderManager(
-                api_key=self.api_key,
-                base_url=self.base_url,
-                model=self.model,
+                api_key=api_key,
+                base_url=base_url,
+                model=model,
                 default_request_timeout_seconds=self.timeout,
             )
         else:
-            self.manager = llm_manager
+            self.manager = get_llm_manager()
+
+        self.api_key = self.manager.api_key
+        self.base_url = self.manager.base_url
+        self.model = self.manager.model
+
+    async def complete(self, prompt: str, system_prompt: Optional[str] = None) -> str:
+        return await self.manager.complete(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            request_type=self.request_type,
+            deadline_seconds=self.timeout,
+        )
 
     async def complete(self, prompt: str, system_prompt: Optional[str] = None) -> str:
         return await self.manager.complete(
