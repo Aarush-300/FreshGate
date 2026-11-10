@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data: https:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'">
   <title>FreshGate | Bifrost Fact-Freshness Gateway</title>
   <style>
     :root {
@@ -189,6 +190,7 @@
       font-size: 0.92rem;
       line-height: 1.7;
       min-height: 180px;
+      white-space: pre-wrap;
     }
     .claim-highlight {
       padding: 2px 6px;
@@ -281,7 +283,7 @@
       display: flex;
       flex-direction: column;
       gap: 8px;
-      max-height: 160px;
+      max-height: 180px;
       overflow-y: auto;
     }
     .source-item {
@@ -358,7 +360,7 @@
       </div>
     </div>
     <div class="header-actions">
-      <button class="secondary" onclick="clearCache()">Clear Cache</button>
+      <button class="secondary" onclick="clearCacheSecurely()">Clear Cache</button>
       <button class="secondary" onclick="loadBenchmark()">Refresh Bench</button>
     </div>
   </header>
@@ -408,7 +410,7 @@
       </div>
 
       <div class="inspector-card" id="inspector-card">
-        <div style="color: var(--text-muted); font-size: 0.85rem; text-align: center; padding: 20px;">
+        <div style="color: var(--text-muted); font-size: 0.85rem; text-align: center; padding: 20px;" id="inspector-empty-msg">
           Select any highlighted claim in the heatmap above to view verified Tavily sources, freshness score breakdown, and correction.
         </div>
       </div>
@@ -441,12 +443,19 @@
       document.getElementById('answer-input').value = PRESETS[idx];
     }
 
+    // --- Safe URL validation ---
+    function isSafeUrl(url) {
+      if (!url || typeof url !== 'string') return false;
+      const trimmed = url.trim().toLowerCase();
+      return trimmed.startsWith('http://') || trimmed.startsWith('https://');
+    }
+
     async function verifyCurrentAnswer() {
       const text = document.getElementById('answer-input').value.trim();
       if (!text) return alert("Please enter text to verify.");
 
       const btn = document.getElementById('verify-btn');
-      btn.innerHTML = '<span class="spinner"></span>Verifying...';
+      btn.textContent = 'Verifying...';
       btn.disabled = true;
 
       const t0 = performance.now();
@@ -457,13 +466,16 @@
           body: JSON.stringify({answer: text})
         });
         const duration = Math.round(performance.now() - t0);
+        if (!resp.ok) {
+          const errData = await resp.json().catch(() => ({}));
+          throw new Error(errData.detail || ('HTTP ' + resp.status));
+        }
         const data = await resp.json();
-
-        renderResults(text, data, duration);
+        renderResultsSafely(text, data, duration);
       } catch (err) {
-        alert("Verification error: " + err);
+        alert("Verification error: " + err.message);
       } finally {
-        btn.innerHTML = 'Verify with FreshGate';
+        btn.textContent = 'Verify with FreshGate';
         btn.disabled = false;
       }
     }
@@ -473,7 +485,7 @@
       if (!text) return alert("Please enter text or a prompt.");
 
       const btn = document.getElementById('proxy-btn');
-      btn.innerHTML = '<span class="spinner"></span>Proxying...';
+      btn.textContent = 'Proxying...';
       btn.disabled = true;
 
       const t0 = performance.now();
@@ -490,41 +502,61 @@
         const data = await resp.json();
 
         if (data.freshgate) {
-          renderResults(text, data.freshgate, duration);
+          renderResultsSafely(text, data.freshgate, duration);
         } else if (data.choices && data.choices[0]) {
-          const assistantContent = data.choices[0].message.content;
-          document.getElementById('raw-answer-box').innerText = assistantContent;
+          const assistantContent = data.choices[0].message.content || "";
+          document.getElementById('raw-answer-box').textContent = assistantContent;
           alert("Proxy returned completion without FreshGate decoration (fail-open status: " + resp.headers.get("X-FreshGate-Status") + ")");
         } else {
-          document.getElementById('raw-answer-box').innerText = JSON.stringify(data, null, 2);
+          document.getElementById('raw-answer-box').textContent = JSON.stringify(data, null, 2);
         }
       } catch (err) {
-        alert("Proxy error: " + err);
+        alert("Proxy error: " + err.message);
       } finally {
-        btn.innerHTML = 'Send Through Proxy';
+        btn.textContent = 'Send Through Proxy';
         btn.disabled = false;
       }
     }
 
-    function renderResults(rawText, result, latencyMs) {
-      document.getElementById('raw-answer-box').innerText = rawText;
-      document.getElementById('stat-total').innerText = result.summary.total;
-      document.getElementById('stat-checked').innerText = result.summary.checked;
-      document.getElementById('stat-stale').innerText = result.summary.stale;
-      document.getElementById('stat-score').innerText = result.summary.avg_score + '%';
-      document.getElementById('stat-latency').innerText = latencyMs + ' ms';
+    // --- Safe DOM Construction for Results & Heatmap (Zero Unsafe innerHTML) ---
+    function renderResultsSafely(rawText, result, latencyMs) {
+      document.getElementById('raw-answer-box').textContent = rawText;
+      document.getElementById('stat-total').textContent = result.summary.total;
+      document.getElementById('stat-checked').textContent = result.summary.checked;
+      document.getElementById('stat-stale').textContent = result.summary.stale;
+      document.getElementById('stat-score').textContent = result.summary.avg_score + '%';
+      document.getElementById('stat-latency').textContent = latencyMs + ' ms';
 
       currentClaims = result.claims || [];
-
-      // Render heatmap
       const container = document.getElementById('annotated-box');
+      container.replaceChildren();
+
       if (currentClaims.length === 0) {
-        container.innerHTML = `<span style="color: #94a3b8;">${rawText}</span><br><br><em>(No volatile claims detected. Passed through as stable.)</em>`;
-        document.getElementById('inspector-card').innerHTML = '<div style="color:#94a3b8; text-align:center;">All factual claims are static / non-volatile.</div>';
+        const span = document.createElement('span');
+        span.style.color = '#94a3b8';
+        span.textContent = rawText;
+        container.appendChild(span);
+
+        const em = document.createElement('div');
+        em.style.marginTop = '12px';
+        em.style.color = '#64748b';
+        em.style.fontStyle = 'italic';
+        em.textContent = '(No volatile claims detected. Passed through as stable.)';
+        container.appendChild(em);
+
+        const card = document.getElementById('inspector-card');
+        card.replaceChildren();
+        const msg = document.createElement('div');
+        msg.style.color = '#94a3b8';
+        msg.style.textAlign = 'center';
+        msg.style.padding = '20px';
+        msg.textContent = 'All factual claims are static / non-volatile.';
+        card.appendChild(msg);
         return;
       }
 
-      let annotatedHtml = rawText;
+      // Build safe text + highlighted span stream
+      let remainingText = rawText;
       currentClaims.forEach((claim, idx) => {
         let colorClass = 'highlight-green';
         if (claim.score < 40 || claim.verdict === 'contradicted') {
@@ -533,99 +565,206 @@
           colorClass = 'highlight-yellow';
         }
 
-        // Wrap or replace claim in text
-        if (annotatedHtml.includes(claim.text)) {
-          annotatedHtml = annotatedHtml.replace(
-            claim.text,
-            `<span class="claim-highlight ${colorClass}" onclick="inspectClaim(${idx})">${claim.text}</span>`
-          );
+        const matchIdx = remainingText.indexOf(claim.text);
+        if (matchIdx !== -1) {
+          // Preceding text node
+          if (matchIdx > 0) {
+            container.appendChild(document.createTextNode(remainingText.substring(0, matchIdx)));
+          }
+          // Highlighted claim span
+          const span = document.createElement('span');
+          span.className = `claim-highlight ${colorClass}`;
+          span.textContent = claim.text;
+          span.addEventListener('click', () => inspectClaim(idx));
+          container.appendChild(span);
+
+          remainingText = remainingText.substring(matchIdx + claim.text.length);
         } else {
-          annotatedHtml += `<br><span class="claim-highlight ${colorClass}" onclick="inspectClaim(${idx})">[Claim ${claim.id}: ${claim.text}]</span>`;
+          // Claim text rephrased
+          const tag = document.createElement('span');
+          tag.className = `claim-highlight ${colorClass}`;
+          tag.textContent = ` [Claim ${claim.id}: ${claim.text}] `;
+          tag.addEventListener('click', () => inspectClaim(idx));
+          container.appendChild(tag);
         }
       });
 
-      container.innerHTML = annotatedHtml;
-      // Automatically inspect the first claim
+      if (remainingText.length > 0) {
+        container.appendChild(document.createTextNode(remainingText));
+      }
+
       inspectClaim(0);
     }
 
+    // --- Safe Claim Inspector Rendering ---
     function inspectClaim(idx) {
       const claim = currentClaims[idx];
       if (!claim) return;
 
       const card = document.getElementById('inspector-card');
-      const cachedBadge = claim.cached 
-        ? '<span class="badge badge-cached">⚡ Cached (0 Tavily Calls)</span>'
-        : '<span class="badge badge-live">🌐 Live Tavily Verified</span>';
-      
-      const verdictBadge = `<span class="badge badge-verdict-${claim.verdict}">${claim.verdict}</span>`;
-      const typeBadge = `<span class="badge badge-type">${claim.type}</span>`;
+      card.replaceChildren();
 
-      // Score weight breakdown
+      // Header row
+      const header = document.createElement('div');
+      header.className = 'inspector-header';
+
+      const badges = document.createElement('div');
+      badges.className = 'badges';
+
+      const verdictBadge = document.createElement('span');
+      verdictBadge.className = `badge badge-verdict-${encodeURIComponent(claim.verdict)}`;
+      verdictBadge.textContent = claim.verdict;
+      badges.appendChild(verdictBadge);
+
+      const typeBadge = document.createElement('span');
+      typeBadge.className = 'badge badge-type';
+      typeBadge.textContent = claim.type;
+      badges.appendChild(typeBadge);
+
+      const cachedBadge = document.createElement('span');
+      if (claim.cached) {
+        cachedBadge.className = 'badge badge-cached';
+        cachedBadge.textContent = '⚡ Cached (0 Tavily Calls)';
+      } else {
+        cachedBadge.className = 'badge badge-live';
+        cachedBadge.textContent = '🌐 Live Tavily Verified';
+      }
+      badges.appendChild(cachedBadge);
+      header.appendChild(badges);
+
+      const scoreDisplay = document.createElement('div');
+      scoreDisplay.style.fontSize = '1.1rem';
+      scoreDisplay.style.fontWeight = '800';
+      scoreDisplay.style.color = claim.score < 40 ? 'var(--red)' : claim.score < 70 ? 'var(--yellow)' : 'var(--green)';
+      scoreDisplay.textContent = `Freshness: ${claim.score}/100`;
+      header.appendChild(scoreDisplay);
+
+      card.appendChild(header);
+
+      // Claim statement text
+      const claimStmt = document.createElement('div');
+      claimStmt.style.fontSize = '0.9rem';
+      claimStmt.style.fontWeight = '600';
+      claimStmt.style.color = '#fff';
+      claimStmt.textContent = `"${claim.text}"`;
+      card.appendChild(claimStmt);
+
+      // Score breakdown grid
+      const breakdown = document.createElement('div');
+      breakdown.className = 'score-breakdown';
+
       let vWeight = claim.verdict === 'confirmed' ? '1.0' : claim.verdict === 'contradicted' ? '0.1' : '0.5';
       let rFactor = claim.sources && claim.sources.length > 0 ? (claim.sources[0].published ? '1.0' : '0.5') : '0.5';
-      let aFactor = claim.sources && claim.sources.length >= 3 ? '1.0' : claim.sources && claim.sources.length > 0 ? '0.4' : '0.4';
+      let aFactor = claim.sources && claim.sources.length >= 3 ? '1.0' : '0.4';
 
-      let correctionHtml = '';
+      const cells = [
+        ['Verdict Wt', vWeight],
+        ['Recency Wt', rFactor],
+        ['Agreement Wt', aFactor],
+        ['Final Score', claim.score]
+      ];
+
+      cells.forEach(([k, v]) => {
+        const cell = document.createElement('div');
+        cell.className = 'score-cell';
+        const keyEl = document.createElement('div');
+        keyEl.className = 'key';
+        keyEl.textContent = k;
+        const valEl = document.createElement('div');
+        valEl.className = 'val';
+        valEl.textContent = v;
+        cell.appendChild(keyEl);
+        cell.appendChild(valEl);
+        breakdown.appendChild(cell);
+      });
+      card.appendChild(breakdown);
+
+      // Suggested correction box (if present)
       if (claim.correction) {
-        correctionHtml = `
-          <div class="correction-box">
-            <strong>Suggested Live Correction:</strong><br>${claim.correction}
-          </div>
-        `;
+        const corrBox = document.createElement('div');
+        corrBox.className = 'correction-box';
+        const label = document.createElement('strong');
+        label.textContent = 'Suggested Live Correction:';
+        corrBox.appendChild(label);
+        corrBox.appendChild(document.createElement('br'));
+        corrBox.appendChild(document.createTextNode(claim.correction));
+        card.appendChild(corrBox);
       }
 
-      let sourcesHtml = '<div style="color: #94a3b8; font-size: 0.75rem;">No external sources returned.</div>';
+      // Sources section
+      const sourcesSection = document.createElement('div');
+      const sourcesLabel = document.createElement('span');
+      sourcesLabel.style.fontSize = '0.78rem';
+      sourcesLabel.style.fontWeight = '600';
+      sourcesLabel.style.color = '#94a3b8';
+      sourcesLabel.style.textTransform = 'uppercase';
+      sourcesLabel.textContent = `Supporting Tavily Sources (${claim.sources ? claim.sources.length : 0})`;
+      sourcesSection.appendChild(sourcesLabel);
+
+      const sourcesList = document.createElement('div');
+      sourcesList.className = 'sources-list';
+      sourcesList.style.marginTop = '6px';
+
       if (claim.sources && claim.sources.length > 0) {
-        sourcesHtml = claim.sources.map(s => `
-          <div class="source-item">
-            <a href="${s.url}" target="_blank" rel="noopener noreferrer">${s.url}</a>
-            <span style="color:#64748b; font-size:0.7rem; margin-left:6px;">${s.published || 'Date unknown'}</span>
-            <div class="source-snippet">${s.snippet}</div>
-          </div>
-        `).join('');
+        claim.sources.forEach(s => {
+          const item = document.createElement('div');
+          item.className = 'source-item';
+
+          if (isSafeUrl(s.url)) {
+            const a = document.createElement('a');
+            a.href = s.url;
+            a.target = '_blank';
+            a.rel = 'noopener noreferrer';
+            a.textContent = s.url;
+            item.appendChild(a);
+          } else {
+            const span = document.createElement('span');
+            span.style.color = '#94a3b8';
+            span.textContent = s.url || 'Unknown Source URL';
+            item.appendChild(span);
+          }
+
+          const dateSpan = document.createElement('span');
+          dateSpan.style.color = '#64748b';
+          dateSpan.style.fontSize = '0.7rem';
+          dateSpan.style.marginLeft = '6px';
+          dateSpan.textContent = s.published || 'Date unknown';
+          item.appendChild(dateSpan);
+
+          const snippet = document.createElement('div');
+          snippet.className = 'source-snippet';
+          snippet.textContent = s.snippet;
+          item.appendChild(snippet);
+
+          sourcesList.appendChild(item);
+        });
+      } else {
+        const noSrc = document.createElement('div');
+        noSrc.style.color = '#94a3b8';
+        noSrc.style.fontSize = '0.75rem';
+        noSrc.textContent = 'No external sources returned.';
+        sourcesList.appendChild(noSrc);
       }
 
-      card.innerHTML = `
-        <div class="inspector-header">
-          <div class="badges">
-            ${verdictBadge}
-            ${typeBadge}
-            ${cachedBadge}
-          </div>
-          <div style="font-size: 1.1rem; font-weight: 800; color: ${claim.score < 40 ? 'var(--red)' : claim.score < 70 ? 'var(--yellow)' : 'var(--green)'}">
-            Freshness: ${claim.score}/100
-          </div>
-        </div>
-
-        <div style="font-size: 0.9rem; font-weight: 600; color: #fff;">
-          "${claim.text}"
-        </div>
-
-        <div class="score-breakdown">
-          <div class="score-cell"><div class="key">Verdict Wt</div><div class="val">${vWeight}</div></div>
-          <div class="score-cell"><div class="key">Recency Wt</div><div class="val">${rFactor}</div></div>
-          <div class="score-cell"><div class="key">Agreement Wt</div><div class="val">${aFactor}</div></div>
-          <div class="score-cell"><div class="key">Final Score</div><div class="val">${claim.score}</div></div>
-        </div>
-
-        ${correctionHtml}
-
-        <div>
-          <span style="font-size: 0.78rem; font-weight: 600; color: #94a3b8; text-transform: uppercase;">Supporting Tavily Sources (${claim.sources ? claim.sources.length : 0})</span>
-          <div class="sources-list" style="margin-top: 6px;">
-            ${sourcesHtml}
-          </div>
-        </div>
-      `;
+      sourcesSection.appendChild(sourcesList);
+      card.appendChild(sourcesSection);
     }
 
-    async function clearCache() {
+    async function clearCacheSecurely() {
+      const adminKey = prompt("Enter FRESHGATE_ADMIN_KEY to clear cache:");
+      if (!adminKey) return;
+
       try {
-        await fetch('/api/cache/clear', {method: 'POST'});
+        const resp = await fetch('/api/cache/clear', {
+          method: 'POST',
+          headers: {'X-Admin-Key': adminKey}
+        });
+        if (!resp.ok) {
+          throw new Error('Unauthorized or invalid admin key (HTTP ' + resp.status + ')');
+        }
         alert('SQLite cache cleared successfully!');
       } catch (e) {
-        alert('Error clearing cache: ' + e);
+        alert('Error clearing cache: ' + e.message);
       }
     }
 
@@ -634,30 +773,54 @@
         const resp = await fetch('/api/benchmark');
         const data = await resp.json();
         const view = document.getElementById('benchmark-view');
-        view.innerHTML = `
-          <table class="benchmark-table">
-            <tr>
-              <th>Evaluation Dataset</th>
-              <th>Stale Detection Rate</th>
-              <th>False-Positive Rate</th>
-              <th>Tavily Calls (Uncached)</th>
-              <th>Tavily Calls (Cached)</th>
-            </tr>
-            <tr>
-              <td><strong>${data.total_items} items</strong> (${data.stale_items} stale / ${data.control_items} controls)</td>
-              <td style="color: #10b981; font-weight:700;">100.0% (20/20 detected)</td>
-              <td style="color: #10b981; font-weight:700;">0.0% (0/5 false alarms)</td>
-              <td>25 calls</td>
-              <td style="color: #60a5fa; font-weight:700;">0 calls (100% cache hit)</td>
-            </tr>
-          </table>
-        `;
+        view.replaceChildren();
+
+        const table = document.createElement('table');
+        table.className = 'benchmark-table';
+
+        const trHead = document.createElement('tr');
+        ['Evaluation Dataset', 'Stale Detection Rate', 'False-Positive Rate', 'Tavily Calls (Uncached)', 'Tavily Calls (Cached)'].forEach(title => {
+          const th = document.createElement('th');
+          th.textContent = title;
+          trHead.appendChild(th);
+        });
+        table.appendChild(trHead);
+
+        const trBody = document.createElement('tr');
+        const td1 = document.createElement('td');
+        td1.textContent = `${data.total_items} items (${data.stale_items} stale / ${data.control_items} controls)`;
+        trBody.appendChild(td1);
+
+        const td2 = document.createElement('td');
+        td2.style.color = '#10b981';
+        td2.style.fontWeight = '700';
+        td2.textContent = '100.0% (20/20 detected)';
+        trBody.appendChild(td2);
+
+        const td3 = document.createElement('td');
+        td3.style.color = '#10b981';
+        td3.style.fontWeight = '700';
+        td3.textContent = '0.0% (0/5 false alarms)';
+        trBody.appendChild(td3);
+
+        const td4 = document.createElement('td');
+        td4.textContent = '25 calls';
+        trBody.appendChild(td4);
+
+        const td5 = document.createElement('td');
+        td5.style.color = '#60a5fa';
+        td5.style.fontWeight = '700';
+        td5.textContent = '0 calls (100% cache hit)';
+        trBody.appendChild(td5);
+
+        table.appendChild(trBody);
+        view.appendChild(table);
       } catch (e) {
         console.error(e);
       }
     }
 
-    // Initialize with preset 0
+    // Initialize
     setPreset(0);
     loadBenchmark();
   </script>

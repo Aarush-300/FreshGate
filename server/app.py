@@ -5,15 +5,23 @@ import asyncio
 import logging
 from typing import Optional, Dict, Any, Tuple
 from pathlib import Path
-from fastapi import FastAPI, HTTPException, Request, Response, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Request, Response, BackgroundTasks, Depends, status
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import httpx
 from dotenv import load_dotenv
 
 from core.models import VerificationResult
 from core.pipeline import FreshGatePipeline
+from core.security import (
+    SecurityHeadersMiddleware,
+    RequestBodySizeLimitMiddleware,
+    RateLimitMiddleware,
+    rate_limiter,
+    verify_admin_key,
+    sanitize_error_detail,
+)
 
 load_dotenv()
 
@@ -24,18 +32,24 @@ BIFROST_UPSTREAM_URL = os.getenv("BIFROST_UPSTREAM_URL", "http://127.0.0.1:8080"
 FRESHGATE_TIMEOUT = float(os.getenv("FRESHGATE_TIMEOUT", "4.0"))
 FRESHGATE_FAIL_OPEN = os.getenv("FRESHGATE_FAIL_OPEN", "true").lower() == "true"
 FRESHGATE_ASYNC_MODE = os.getenv("FRESHGATE_ASYNC_MODE", "false").lower() == "true"
+MAX_BODY_SIZE = int(os.getenv("FRESHGATE_MAX_BODY_SIZE_BYTES", "1048576"))
 
 app = FastAPI(
-    title="FreshGate AI Gateway Plugin & Proxy",
-    description="Drop-in fact-freshness verification layer for Bifrost and OpenAI-compatible gateways",
-    version="1.0.0",
+    title="FreshGate AI Gateway Middleware",
+    description="Production-grade fact-freshness verification layer for AI Gateways with Tavily & LLM Judge",
+    version="1.1.0",
 )
+
+# Register Security Middlewares
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(RequestBodySizeLimitMiddleware, max_body_bytes=MAX_BODY_SIZE)
+app.add_middleware(RateLimitMiddleware, limiter=rate_limiter)
 
 pipeline = FreshGatePipeline()
 
 
 class VerifyRequest(BaseModel):
-    answer: str
+    answer: str = Field(..., min_length=1, max_length=50000, description="Assistant answer text to verify")
 
 
 async def forward_to_upstream(
@@ -83,7 +97,7 @@ async def run_async_verification(text: str):
             result.summary.avg_score,
         )
     except Exception as e:
-        logger.error("Async verification background task failed: %s", e)
+        logger.error("Async verification background task failed safely: %s", sanitize_error_detail(e))
 
 
 @app.get("/health")
@@ -97,8 +111,9 @@ async def verify_answer(req: VerifyRequest):
     try:
         return await pipeline.verify(req.answer)
     except Exception as e:
-        logger.error("Direct verification failed: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        safe_msg = sanitize_error_detail(e)
+        logger.error("Direct verification failed: %s", safe_msg)
+        raise HTTPException(status_code=500, detail=safe_msg)
 
 
 @app.post("/proxy/v1/chat/completions")
@@ -121,8 +136,12 @@ async def proxy_chat_completions(request: Request, background_tasks: BackgroundT
             body=body_bytes,
         )
     except Exception as e:
-        logger.error("Failed to forward request to Bifrost upstream at %s: %s", BIFROST_UPSTREAM_URL, e)
-        raise HTTPException(status_code=502, detail=f"Bad Gateway: Unable to reach Bifrost at {BIFROST_UPSTREAM_URL}")
+        safe_err = sanitize_error_detail(e)
+        logger.error("Failed to forward request to Bifrost upstream at %s: %s", BIFROST_UPSTREAM_URL, safe_err)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Bad Gateway: Unable to reach Bifrost at {BIFROST_UPSTREAM_URL}",
+        )
 
     # If upstream returned an error or non-dict, return it immediately untouched
     if status_code != 200 or not isinstance(upstream_data, dict):
@@ -174,10 +193,12 @@ async def proxy_chat_completions(request: Request, background_tasks: BackgroundT
         return JSONResponse(status_code=200, content=upstream_data, headers=headers_to_add)
 
     except (asyncio.TimeoutError, Exception) as e:
-        logger.warning("FreshGate verification failed/timed out, failing open: %s", e)
+        safe_msg = sanitize_error_detail(e)
+        logger.warning("FreshGate verification failed/timed out, failing open: %s", safe_msg)
+        # Never leak raw stack traces or internal exception details into HTTP headers
         headers_to_add = {
             "X-FreshGate-Status": "fail-open",
-            "X-FreshGate-Error": str(e),
+            "X-FreshGate-Reason": "timeout" if isinstance(e, asyncio.TimeoutError) else "internal_error",
         }
         return JSONResponse(status_code=200, content=upstream_data, headers=headers_to_add)
 
@@ -199,9 +220,9 @@ async def get_benchmark_results():
     }
 
 
-@app.post("/api/cache/clear")
+@app.post("/api/cache/clear", dependencies=[Depends(verify_admin_key)])
 async def clear_cache():
-    """Clear SQLite cache."""
+    """Clear SQLite cache. Protected by Admin Key."""
     pipeline.cache.clear()
     return {"status": "cleared"}
 
