@@ -1,6 +1,15 @@
 // FreshGate Production Dashboard Controller (Phase 7)
 // Pure DOM manipulation with ZERO innerHTML to guarantee XSS prevention
 
+// Unregister any stale service workers from browser cache on origin
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.getRegistrations().then(registrations => {
+    for (const registration of registrations) {
+      registration.unregister().catch(() => {});
+    }
+  }).catch(() => {});
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   setupTabs();
   setupVerificationForm();
@@ -86,39 +95,116 @@ function renderVerificationResults(data, container) {
 
   const summary = data.summary || {};
   const claims = data.claims || [];
+  const status = summary.status || data.status || 'completed';
+  const extractionStatus = summary.extraction_status || (data.extraction ? data.extraction.status : 'success');
 
   // Summary Card
   const summaryBox = document.createElement('div');
   summaryBox.className = 'claim-card';
   summaryBox.style.marginBottom = '16px';
-  summaryBox.style.borderLeft = summary.stale > 0 ? '4px solid #ef4444' : '4px solid #10b981';
+
+  // Determine border color based on status
+  let borderColor = '#10b981'; // Green
+  if (status === 'extraction_failed' || status === 'verification_failed' || status === 'external_provider_unavailable') {
+    borderColor = '#ef4444'; // Red
+  } else if (status === 'no_claims_detected') {
+    borderColor = '#64748b'; // Neutral Slate
+  } else if (status === 'partially_verified' || status === 'completed_with_warnings') {
+    borderColor = '#f59e0b'; // Amber
+  } else if (summary.stale > 0) {
+    borderColor = '#ef4444'; // Red for stale claims
+  } else if (summary.avg_score !== null && summary.avg_score !== undefined && summary.avg_score < 70) {
+    borderColor = '#f59e0b'; // Amber for degraded score
+  }
+  summaryBox.style.borderLeft = `4px solid ${borderColor}`;
+
+  // Header row in summary box
+  const headerRow = document.createElement('div');
+  headerRow.style.display = 'flex';
+  headerRow.style.justifyContent = 'space-between';
+  headerRow.style.alignItems = 'center';
+  headerRow.style.flexWrap = 'wrap';
+  headerRow.style.gap = '8px';
+  headerRow.style.marginBottom = '8px';
 
   const title = document.createElement('h3');
   title.style.fontSize = '1.05rem';
-  title.style.marginBottom = '6px';
-  title.textContent = `Verification Complete: Freshness Score ${summary.avg_score || 0}/100`;
-  summaryBox.appendChild(title);
+  title.style.margin = '0';
 
+  if (summary.avg_score !== null && summary.avg_score !== undefined) {
+    title.textContent = `Freshness Score: ${summary.avg_score}/100`;
+  } else {
+    title.textContent = 'Freshness Score: Unavailable (N/A)';
+  }
+  headerRow.appendChild(title);
+
+  // Status Badge
+  const statusBadge = document.createElement('span');
+  statusBadge.className = `badge badge-${status}`;
+  statusBadge.textContent = status.replace(/_/g, ' ');
+  headerRow.appendChild(statusBadge);
+
+  summaryBox.appendChild(headerRow);
+
+  // Stats paragraph
   const statsP = document.createElement('p');
   statsP.style.color = '#9ca3af';
   statsP.style.fontSize = '0.9rem';
-  statsP.textContent = `Total Claims: ${summary.total || 0} | Checked: ${summary.checked || 0} | Stale: ${summary.stale || 0}`;
+  statsP.textContent = `Total Claims: ${summary.total || 0} | Checked: ${summary.checked || 0} | Stale: ${summary.stale || 0} | Extraction: ${extractionStatus.replace(/_/g, ' ')}`;
   summaryBox.appendChild(statsP);
+
+  // Informative / Alert Message Banner
+  if (summary.message || data.error) {
+    const banner = document.createElement('div');
+    const msgText = summary.message || data.error;
+    banner.className = 'alert-banner';
+    if (status === 'extraction_failed' || status === 'verification_failed' || status === 'external_provider_unavailable') {
+      banner.className += ' alert-banner-error';
+    } else if (status === 'completed_with_warnings' || status === 'partially_verified') {
+      banner.className += ' alert-banner-warning';
+    } else {
+      banner.className += ' alert-banner-neutral';
+    }
+    banner.textContent = msgText;
+    summaryBox.appendChild(banner);
+  }
 
   container.appendChild(summaryBox);
 
+  // Handle empty claims cases based on status
   if (claims.length === 0) {
-    const emptyP = document.createElement('p');
-    emptyP.style.color = '#9ca3af';
-    emptyP.textContent = 'No volatile factual claims found. Response passed through as stable.';
-    container.appendChild(emptyP);
+    const emptyBox = document.createElement('div');
+    emptyBox.className = 'claim-card';
+    emptyBox.style.marginTop = '12px';
+
+    const p = document.createElement('p');
+    p.style.color = '#9ca3af';
+    p.style.fontSize = '0.95rem';
+
+    if (status === 'no_claims_detected') {
+      p.textContent = 'No volatile factual claims found. Response passed through as stable (conversational, subjective, or general statements).';
+    } else if (status === 'extraction_failed') {
+      p.textContent = 'Claim extraction failed. Unable to verify response freshness.';
+      p.style.color = '#f87171';
+    } else if (status === 'verification_failed') {
+      p.textContent = 'Fact verification failed due to engine or external service error.';
+      p.style.color = '#f87171';
+    } else {
+      p.textContent = 'No claims were processed.';
+    }
+    emptyBox.appendChild(p);
+    container.appendChild(emptyBox);
     return;
   }
 
-  // Claim Cards
-  claims.forEach((c) => {
+  // Separate claims into Verified vs Unverified / Inconclusive
+  const verifiedClaims = claims.filter(c => c.verdict && c.verdict !== 'unverifiable');
+  const unverifiableClaims = claims.filter(c => !c.verdict || c.verdict === 'unverifiable');
+
+  function renderClaimCard(c, targetContainer) {
     const card = document.createElement('div');
     card.className = 'claim-card';
+    card.style.marginBottom = '12px';
 
     const header = document.createElement('div');
     header.className = 'claim-header';
@@ -127,12 +213,13 @@ function renderVerificationResults(data, container) {
     typeSpan.style.color = '#9ca3af';
     typeSpan.style.fontSize = '0.8rem';
     typeSpan.style.fontWeight = '600';
-    typeSpan.textContent = `[${(c.type || 'unknown').toUpperCase()}]`;
+    typeSpan.textContent = `[${(c.category || c.type || 'unknown').toUpperCase()}]`;
     header.appendChild(typeSpan);
 
     const badge = document.createElement('span');
-    badge.className = `badge badge-${c.verdict || 'unverifiable'}`;
-    badge.textContent = (c.verdict || 'unverifiable').replace('_', ' ');
+    const verdict = c.verdict || 'unverifiable';
+    badge.className = `badge badge-${verdict}`;
+    badge.textContent = verdict.replace(/_/g, ' ');
     header.appendChild(badge);
 
     card.appendChild(header);
@@ -143,6 +230,16 @@ function renderVerificationResults(data, container) {
     claimText.style.marginBottom = '8px';
     claimText.textContent = c.text;
     card.appendChild(claimText);
+
+    if (c.verdict === 'unverifiable') {
+      const unverifiableNote = document.createElement('p');
+      unverifiableNote.style.color = '#94a3b8';
+      unverifiableNote.style.fontSize = '0.85rem';
+      unverifiableNote.style.fontStyle = 'italic';
+      unverifiableNote.style.marginBottom = '8px';
+      unverifiableNote.textContent = 'No conclusive web evidence was found to confirm or contradict this claim.';
+      card.appendChild(unverifiableNote);
+    }
 
     if (c.explanation) {
       const exp = document.createElement('p');
@@ -156,6 +253,7 @@ function renderVerificationResults(data, container) {
     if (c.correction) {
       const corrBox = document.createElement('div');
       corrBox.style.background = 'rgba(239, 68, 68, 0.1)';
+      corrBox.style.border = '1px solid #ef4444';
       corrBox.style.padding = '8px 12px';
       corrBox.style.borderRadius = '6px';
       corrBox.style.marginBottom = '8px';
@@ -186,18 +284,40 @@ function renderVerificationResults(data, container) {
         link.textContent = s.url;
         sItem.appendChild(link);
 
-        const snip = document.createElement('p');
-        snip.style.color = '#94a3b8';
-        snip.style.marginTop = '4px';
-        snip.textContent = s.snippet;
-        sItem.appendChild(snip);
+        if (s.snippet) {
+          const snip = document.createElement('p');
+          snip.style.color = '#94a3b8';
+          snip.style.marginTop = '4px';
+          snip.textContent = s.snippet;
+          sItem.appendChild(snip);
+        }
 
         card.appendChild(sItem);
       });
     }
 
-    container.appendChild(card);
-  });
+    targetContainer.appendChild(card);
+  }
+
+  if (verifiedClaims.length > 0) {
+    const verifiedSectionHeader = document.createElement('div');
+    verifiedSectionHeader.className = 'section-subheading';
+    verifiedSectionHeader.style.color = '#34d399';
+    verifiedSectionHeader.textContent = `Verified Claims (${verifiedClaims.length})`;
+    container.appendChild(verifiedSectionHeader);
+
+    verifiedClaims.forEach(c => renderClaimCard(c, container));
+  }
+
+  if (unverifiableClaims.length > 0) {
+    const unverifiedSectionHeader = document.createElement('div');
+    unverifiedSectionHeader.className = 'section-subheading';
+    unverifiedSectionHeader.style.color = '#94a3b8';
+    unverifiedSectionHeader.textContent = `Unverified / Inconclusive Claims (${unverifiableClaims.length})`;
+    container.appendChild(unverifiedSectionHeader);
+
+    unverifiableClaims.forEach(c => renderClaimCard(c, container));
+  }
 }
 
 // --- Operational Metrics Polling ---
@@ -319,7 +439,7 @@ function setupAuditView() {
         tr.appendChild(tdText);
 
         const tdScore = document.createElement('td');
-        tdScore.textContent = `${a.avg_score}/100`;
+        tdScore.textContent = (a.avg_score !== null && a.avg_score !== undefined) ? `${a.avg_score}/100` : 'N/A';
         tr.appendChild(tdScore);
 
         const tdStale = document.createElement('td');

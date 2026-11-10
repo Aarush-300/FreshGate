@@ -108,8 +108,7 @@ def test_triage_drops_other_and_keeps_volatile():
 
     triaged = triage_claims(claims)
 
-    assert len(triaged) == 4
+    # In Phase 2, unknown categories are conservatively kept as volatile; only explicitly non-volatile "other" is dropped
+    assert len(triaged) == 5
     types = [c.type for c in triaged]
-    assert types == ["pricing", "version", "law", "leadership"]
-    for c in triaged:
-        assert c.type in VOLATILE_TYPES
+    assert types == ["pricing", "version", "law", "leadership", "unknown_type"]

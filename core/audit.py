@@ -27,7 +27,7 @@ class AuditStoreBase(ABC):
         claims_data: List[Dict[str, Any]],
         total_claims: int,
         stale_claims: int,
-        avg_score: int,
+        avg_score: Optional[int],
         latency_ms: int,
         status: str = "verified",
     ):
@@ -78,7 +78,7 @@ class SQLiteAuditStore(AuditStoreBase):
         claims_data: List[Dict[str, Any]],
         total_claims: int,
         stale_claims: int,
-        avg_score: int,
+        avg_score: Optional[int],
         latency_ms: int,
         status: str = "verified",
     ):

@@ -228,6 +228,50 @@ button.secondary:hover { background: #334155; }
 .badge-partially_supported { background: var(--yellow-bg); color: #fbbf24; border: 1px solid var(--yellow); }
 .badge-unverifiable { background: rgba(148, 163, 184, 0.2); color: #94a3b8; border: 1px solid #64748b; }
 
+/* Status Badges */
+.badge-completed { background: var(--green-bg); color: #34d399; border: 1px solid var(--green); }
+.badge-completed_with_warnings { background: var(--yellow-bg); color: #fbbf24; border: 1px solid var(--yellow); }
+.badge-no_claims_detected { background: rgba(100, 116, 139, 0.2); color: #94a3b8; border: 1px solid #64748b; }
+.badge-extraction_failed { background: var(--red-bg); color: #f87171; border: 1px solid var(--red); }
+.badge-verification_failed { background: var(--red-bg); color: #f87171; border: 1px solid var(--red); }
+.badge-partially_verified { background: var(--yellow-bg); color: #fbbf24; border: 1px solid var(--yellow); }
+.badge-external_provider_unavailable { background: var(--red-bg); color: #f97316; border: 1px solid #ea580c; }
+.badge-failed { background: var(--red-bg); color: #f87171; border: 1px solid var(--red); }
+
+/* Alert Banners */
+.alert-banner {
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-size: 0.88rem;
+  margin-top: 10px;
+  line-height: 1.4;
+}
+.alert-banner-neutral {
+  background: rgba(100, 116, 139, 0.15);
+  border: 1px solid #475569;
+  color: #cbd5e1;
+}
+.alert-banner-warning {
+  background: rgba(245, 158, 11, 0.15);
+  border: 1px solid #b45309;
+  color: #fde68a;
+}
+.alert-banner-error {
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid #b91c1c;
+  color: #fca5a5;
+}
+
+.section-subheading {
+  font-size: 0.95rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 16px 0 8px 0;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--card-border);
+}
+
 .source-item {
   background: #1e293b;
   border-radius: 6px;

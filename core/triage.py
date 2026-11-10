@@ -12,5 +12,11 @@ def is_volatile(claim_type: str) -> bool:
 
 
 def triage_claims(claims: List[Claim]) -> List[Claim]:
-    """Filter claims to keep only volatile ones subject to live verification."""
-    return [c for c in claims if is_volatile(c.type)]
+    """Filter claims to keep only volatile ones subject to live verification, normalizing categories."""
+    volatile: List[Claim] = []
+    for c in claims:
+        norm_type, _ = category_registry.normalize_category(c.type)
+        c.type = norm_type
+        if is_volatile(norm_type):
+            volatile.append(c)
+    return volatile

@@ -358,12 +358,12 @@ async def proxy_chat_completions(request: Request, background_tasks: BackgroundT
         latency_ms = int((time.perf_counter() - t0) * 1000)
 
         headers_to_add = {
-            "X-FreshGate-Score": str(verification.summary.avg_score),
+            "X-FreshGate-Score": str(verification.summary.avg_score if verification.summary.avg_score is not None else "unavailable"),
             "X-FreshGate-Stale-Count": str(verification.summary.stale),
             "X-FreshGate-Total-Claims": str(verification.summary.total),
             "X-FreshGate-Checked-Claims": str(verification.summary.checked),
             "X-FreshGate-Latency-Ms": str(latency_ms),
-            "X-FreshGate-Status": "verified",
+            "X-FreshGate-Status": str(verification.summary.status or "verified"),
         }
         # Record Prometheus latency and audit history
         duration_sec = time.perf_counter() - t0
@@ -379,12 +379,19 @@ async def proxy_chat_completions(request: Request, background_tasks: BackgroundT
             stale_claims=verification.summary.stale,
             avg_score=verification.summary.avg_score,
             latency_ms=latency_ms,
-            status="verified",
+            status=str(verification.summary.status or "verified"),
         )
 
         # Policy enforcement check
-        if active_mode == "enforce" and FRESHGATE_BLOCK_STALE and (verification.summary.stale > 0 or verification.summary.avg_score < FRESHGATE_MIN_SCORE):
-            logger.warning("FreshGate policy violation: stale count=%d, avg_score=%d", verification.summary.stale, verification.summary.avg_score)
+        if active_mode == "enforce" and FRESHGATE_BLOCK_STALE and (
+            verification.summary.stale > 0
+            or (verification.summary.avg_score is not None and verification.summary.avg_score < FRESHGATE_MIN_SCORE)
+        ):
+            logger.warning(
+                "FreshGate policy violation: stale count=%d, avg_score=%s",
+                verification.summary.stale,
+                str(verification.summary.avg_score),
+            )
             return JSONResponse(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 content={
@@ -393,7 +400,7 @@ async def proxy_chat_completions(request: Request, background_tasks: BackgroundT
                 },
                 headers={
                     "X-FreshGate-Policy": "violated",
-                    "X-FreshGate-Score": str(verification.summary.avg_score),
+                    "X-FreshGate-Score": str(verification.summary.avg_score if verification.summary.avg_score is not None else "unavailable"),
                     "X-FreshGate-Stale-Count": str(verification.summary.stale),
                 },
             )
@@ -484,3 +491,25 @@ if dashboard_dir.exists():
         if index_file.exists():
             return index_file.read_text(encoding="utf-8")
         return "<h1>FreshGate Gateway</h1><p>Dashboard index.html not found</p>"
+
+
+@app.get("/sw.js")
+@app.get("/service-worker.js")
+async def service_worker_noop():
+    """Handle stale service worker requests from browser cache cleanly by unregistering."""
+    content = (
+        "// Self-unregistering service worker for FreshGate\n"
+        "self.addEventListener('install', () => { self.skipWaiting(); });\n"
+        "self.addEventListener('activate', (event) => {\n"
+        "  event.waitUntil(\n"
+        "    self.registration.unregister().then(() => self.clients.matchAll()).then((clients) => {\n"
+        "      clients.forEach((client) => client.navigate(client.url));\n"
+        "    })\n"
+        "  );\n"
+        "});\n"
+    )
+    return Response(
+        content=content,
+        media_type="application/javascript",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
