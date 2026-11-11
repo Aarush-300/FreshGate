@@ -269,7 +269,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
         # Only rate limit compute-heavy endpoints
-        if path.startswith(("/verify", "/proxy", "/v1/chat/completions")):
+        if path.startswith(("/verify", "/preview", "/proxy", "/v1/chat/completions")):
             client_ip = request.client.host if request.client else "unknown"
             token = extract_token_from_request(request)
             client_id = f"token:{token}" if token else f"ip:{client_ip}"

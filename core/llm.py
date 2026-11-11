@@ -42,13 +42,6 @@ class OpenAILLMClient(LLMClient):
         self.base_url = self.manager.base_url
         self.model = self.manager.model
 
-    async def complete(self, prompt: str, system_prompt: Optional[str] = None) -> str:
-        return await self.manager.complete(
-            prompt=prompt,
-            system_prompt=system_prompt,
-            request_type=self.request_type,
-            deadline_seconds=self.timeout,
-        )
 
     async def complete(self, prompt: str, system_prompt: Optional[str] = None) -> str:
         return await self.manager.complete(

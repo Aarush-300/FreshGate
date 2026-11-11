@@ -81,7 +81,7 @@ flowchart TD
 
 ### 2.9 Observability & Audit Store (`core/metrics.py`, `core/audit.py`)
 - Exposes Prometheus operational metrics on `/metrics`.
-- Persists immutable request audit records to SQLite / PostgreSQL for regulatory compliance and analytics.
+- Persists immutable request audit records to SQLite. PostgreSQL audit persistence is not implemented yet.
 
 ---
 

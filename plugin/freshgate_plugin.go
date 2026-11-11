@@ -64,12 +64,49 @@ type VerificationResult struct {
 
 // Init initializes the FreshGate plugin with configuration from config.json.
 func Init(config any) error {
+	if values, ok := config.(map[string]any); ok {
+		if url, ok := values["freshgate_url"].(string); ok && url != "" {
+			pluginConfig.FreshGateURL = url
+		}
+		switch timeout := values["timeout_sec"].(type) {
+		case float64:
+			if timeout > 0 {
+				pluginConfig.TimeoutSec = int(timeout)
+			}
+		case int:
+			if timeout > 0 {
+				pluginConfig.TimeoutSec = timeout
+			}
+		}
+		if failOpen, ok := values["fail_open"].(bool); ok {
+			pluginConfig.FailOpen = failOpen
+		}
+		if asyncMode, ok := values["async_mode"].(bool); ok {
+			pluginConfig.AsyncMode = asyncMode
+		}
+	}
 	if url := os.Getenv("FRESHGATE_URL"); url != "" {
 		pluginConfig.FreshGateURL = url
 	}
-	if os.Getenv("FRESHGATE_ASYNC_MODE") == "true" {
-		pluginConfig.AsyncMode = true
+	if raw := os.Getenv("FRESHGATE_ASYNC_MODE"); raw != "" {
+		if value, err := strconv.ParseBool(raw); err == nil {
+			pluginConfig.AsyncMode = value
+		}
 	}
+	if raw := os.Getenv("FRESHGATE_FAIL_OPEN"); raw != "" {
+		if value, err := strconv.ParseBool(raw); err == nil {
+			pluginConfig.FailOpen = value
+		}
+	}
+	if raw := os.Getenv("FRESHGATE_TIMEOUT_SEC"); raw != "" {
+		if value, err := strconv.Atoi(raw); err == nil && value > 0 {
+			pluginConfig.TimeoutSec = value
+		}
+	}
+	if pluginConfig.TimeoutSec <= 0 {
+		pluginConfig.TimeoutSec = 4
+	}
+	httpClient.Timeout = time.Duration(pluginConfig.TimeoutSec) * time.Second
 	fmt.Printf("[FreshGate Plugin] Initialized with endpoint: %s\n", pluginConfig.FreshGateURL)
 	return nil
 }
@@ -122,7 +159,10 @@ func PostLLMHook(
 
 	// Extract assistant message content
 	if resp.Choices != nil && len(resp.Choices) > 0 {
-		assistantText := resp.Choices[0].Message.Content
+		assistantText, ok := resp.Choices[0].Message.Content.(string)
+		if !ok || assistantText == "" {
+			return resp, bifrostErr, nil
+		}
 
 		if pluginConfig.AsyncMode {
 			go func(text string) {
@@ -134,7 +174,9 @@ func PostLLMHook(
 		verification, err := verifyWithFreshGate(assistantText)
 		if err != nil {
 			if pluginConfig.FailOpen {
-				ctx.Log(schemas.LogLevelWarn, fmt.Sprintf("[FreshGate] Verification failed open: %v", err))
+				if ctx != nil {
+					ctx.Log(schemas.LogLevelWarn, fmt.Sprintf("[FreshGate] Verification failed open: %v", err))
+				}
 				return resp, bifrostErr, nil
 			}
 			return resp, bifrostErr, err

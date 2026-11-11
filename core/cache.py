@@ -15,13 +15,16 @@ import hashlib
 import time
 import threading
 import asyncio
+import logging
 from abc import ABC, abstractmethod
 from typing import Optional, List, Dict, Any
 from core.models import Claim, Source
 from core.categories import category_registry
+from core.config import get_config
 
 CACHE_KEY_VERSION = "v2"
 UNVERIFIABLE_SHORT_TTL_SECONDS = 300  # 5 minutes for unverified items
+logger = logging.getLogger(__name__)
 
 
 def build_structured_cache_key(
@@ -120,6 +123,7 @@ class SQLiteClaimCache(ClaimCacheBase):
                         explanation TEXT,
                         correction TEXT,
                         sources_json TEXT,
+                        claim_json TEXT,
                         created_at REAL,
                         expires_at REAL
                     )
@@ -145,6 +149,8 @@ class SQLiteClaimCache(ClaimCacheBase):
                     conn.execute("ALTER TABLE claim_cache ADD COLUMN confidence REAL DEFAULT 0.8")
                 if "explanation" not in columns:
                     conn.execute("ALTER TABLE claim_cache ADD COLUMN explanation TEXT")
+                if "claim_json" not in columns:
+                    conn.execute("ALTER TABLE claim_cache ADD COLUMN claim_json TEXT")
 
             conn.execute("CREATE INDEX IF NOT EXISTS idx_cache_expires ON claim_cache(expires_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_cache_category ON claim_cache(category)")
@@ -173,6 +179,15 @@ class SQLiteClaimCache(ClaimCacheBase):
             self._hits += 1
             sources_raw = json.loads(row["sources_json"] or "[]")
             sources = [Source(**s) for s in sources_raw]
+
+            if row["claim_json"]:
+                try:
+                    cached_claim = Claim.model_validate_json(row["claim_json"])
+                    cached_claim.id = key.split(":")[-1]
+                    cached_claim.cached = True
+                    return cached_claim
+                except (ValueError, TypeError):
+                    logger.warning("Ignoring malformed cached claim payload for key %s", key)
 
             return Claim(
                 id=key.split(":")[-1],
@@ -214,8 +229,8 @@ class SQLiteClaimCache(ClaimCacheBase):
                 """
                 INSERT OR REPLACE INTO claim_cache 
                 (cache_key, category, jurisdiction, entity, claim_text, verdict, score, confidence,
-                 explanation, correction, sources_json, created_at, expires_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 explanation, correction, sources_json, claim_json, created_at, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     key,
@@ -229,6 +244,7 @@ class SQLiteClaimCache(ClaimCacheBase):
                     claim.explanation,
                     claim.correction,
                     sources_json,
+                    claim.model_dump_json(),
                     now,
                     expires_at,
                 ),
@@ -309,26 +325,28 @@ class RedisClaimCache(ClaimCacheBase):
             return None
 
         key = build_structured_cache_key(claim_text, category, jurisdiction, entity)
-        raw = self.client.get(key)
+        try:
+            raw = self.client.get(key)
+        except Exception as exc:
+            logger.warning("Redis cache read failed; bypassing cache: %s", exc)
+            self.available = False
+            self._misses += 1
+            return None
         if not raw:
             self._misses += 1
             return None
 
-        self._hits += 1
-        data = json.loads(raw)
-        sources = [Source(**s) for s in data.get("sources", [])]
-        return Claim(
-            id=key.split(":")[-1],
-            text=data["text"],
-            type=data["type"],
-            verdict=data.get("verdict"),
-            score=data.get("score"),
-            confidence=data.get("confidence", 0.8),
-            explanation=data.get("explanation"),
-            sources=sources,
-            cached=True,
-            correction=data.get("correction"),
-        )
+        try:
+            data = json.loads(raw)
+            cached_claim = Claim.model_validate(data.get("claim", data))
+            cached_claim.id = key.split(":")[-1]
+            cached_claim.cached = True
+            self._hits += 1
+            return cached_claim
+        except (ValueError, TypeError, KeyError) as exc:
+            logger.warning("Ignoring malformed Redis cache payload: %s", exc)
+            self._misses += 1
+            return None
 
     def set(
         self,
@@ -350,32 +368,34 @@ class RedisClaimCache(ClaimCacheBase):
                 cat_def = category_registry.get(claim.type)
                 ttl_seconds = cat_def.default_ttl_seconds if cat_def else 86400
 
-        payload = {
-            "text": claim.text,
-            "type": claim.type,
-            "verdict": claim.verdict,
-            "score": claim.score,
-            "confidence": claim.confidence,
-            "explanation": claim.explanation,
-            "correction": claim.correction,
-            "sources": [s.model_dump() for s in claim.sources],
-        }
-        self.client.setex(key, ttl_seconds, json.dumps(payload))
+        payload = {"claim": claim.model_dump()}
+        try:
+            self.client.setex(key, ttl_seconds, json.dumps(payload))
+        except Exception as exc:
+            logger.warning("Redis cache write failed; bypassing cache: %s", exc)
+            self.available = False
 
     def invalidate(self, category: Optional[str] = None, jurisdiction: Optional[str] = None):
         if not self.available or not self.client:
             return
-        pattern = f"{CACHE_KEY_VERSION}:*"
-        if category:
-            pattern = f"{CACHE_KEY_VERSION}:{category.lower()}:*"
-        keys = self.client.keys(pattern)
-        if keys:
-            self.client.delete(*keys)
+        pattern = f"{CACHE_KEY_VERSION}:{category.lower() if category else '*'}:{jurisdiction.lower() if jurisdiction else '*'}:*"
+        try:
+            keys = list(self.client.scan_iter(match=pattern, count=500))
+            if keys:
+                self.client.delete(*keys)
+        except Exception as exc:
+            logger.warning("Redis cache invalidation failed: %s", exc)
+            self.available = False
 
     def get_stats(self) -> Dict[str, Any]:
         total_ops = self._hits + self._misses
         hit_rate = round(self._hits / total_ops, 3) if total_ops > 0 else 0.0
-        keys_count = len(self.client.keys(f"{CACHE_KEY_VERSION}:*")) if (self.available and self.client) else 0
+        try:
+            keys_count = sum(1 for _ in self.client.scan_iter(match=f"{CACHE_KEY_VERSION}:*", count=500)) if (self.available and self.client) else 0
+        except Exception as exc:
+            logger.warning("Redis cache stats failed: %s", exc)
+            self.available = False
+            keys_count = 0
 
         return {
             "backend": "redis",
@@ -388,18 +408,25 @@ class RedisClaimCache(ClaimCacheBase):
 
     def clear(self):
         if self.available and self.client:
-            keys = self.client.keys(f"{CACHE_KEY_VERSION}:*")
-            if keys:
-                self.client.delete(*keys)
+            try:
+                keys = list(self.client.scan_iter(match=f"{CACHE_KEY_VERSION}:*", count=500))
+                if keys:
+                    self.client.delete(*keys)
+            except Exception as exc:
+                logger.warning("Redis cache clear failed: %s", exc)
+                self.available = False
 
 
 def get_cache() -> ClaimCacheBase:
-    """Factory creating appropriate cache instance based on environment."""
-    redis_url = os.getenv("REDIS_URL")
+    """Build the configured cache, falling back to SQLite if Redis is unavailable."""
+    config = get_config()
+    redis_url = config.redis_url
     if redis_url:
-        return RedisClaimCache(redis_url)
-    db_path = os.getenv("CACHE_DB_PATH", "freshgate_cache.db")
-    return SQLiteClaimCache(db_path=db_path)
+        redis_cache = RedisClaimCache(redis_url)
+        if redis_cache.available:
+            return redis_cache
+        logger.warning("Redis cache unavailable; falling back to SQLite at %s", config.cache_db_path)
+    return SQLiteClaimCache(db_path=config.cache_db_path)
 
 
 class SingleFlightCoalescer:

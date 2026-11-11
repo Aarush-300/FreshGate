@@ -142,14 +142,10 @@ class SQLiteAuditStore(AuditStoreBase):
 
 
 def get_audit_store() -> AuditStoreBase:
-    """Return configured audit backend (SQLite default, PostgreSQL if configured)."""
+    """Return the SQLite audit store; PostgreSQL persistence is not implemented yet."""
     pg_dsn = os.getenv("FRESHGATE_POSTGRES_DSN") or os.getenv("DATABASE_URL")
     if pg_dsn:
-        try:
-            # If psycopg2 / asyncpg available in environment
-            logger.info("Configuring PostgreSQL audit store from DSN...")
-        except Exception:
-            pass
+        logger.warning("PostgreSQL audit storage is not implemented; using SQLite. Configure FRESHGATE_AUDIT_DB for the active store.")
     db_file = os.getenv("FRESHGATE_AUDIT_DB", "freshgate_audit.db")
     return SQLiteAuditStore(db_path=db_file)
 

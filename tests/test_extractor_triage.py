@@ -49,6 +49,26 @@ async def test_extract_no_facts_greeting():
 
 
 @pytest.mark.asyncio
+async def test_short_ui_fragment_skips_paid_extractor():
+    llm = MockLLM([])
+    extractor = ClaimExtractor(llm_client=llm)
+
+    result = await extractor.extract("test")
+
+    assert result.status == "no_claims_detected"
+    assert llm.call_count == 0
+
+
+def test_version_fallback_handles_unspaced_product_and_just_released():
+    claims = ClaimExtractor().fallback_extractor.extract("python2.7 has just been released")
+
+    assert len(claims) == 1
+    assert claims[0].type == "version"
+    assert claims[0].entities == ["python"]
+    assert claims[0].numerical_value == "2.7"
+
+
+@pytest.mark.asyncio
 async def test_extract_code_fences():
     mock_response = """```json
     [

@@ -102,6 +102,16 @@ Verifies arbitrary assistant text directly without forwarding to an upstream LLM
 #### Response Body
 Returns `VerificationResult` schema.
 
+### `POST /preview`
+Runs the deterministic local fallback extractor without calling an LLM or web-search provider. Returns `mode: "offline_preview"`, candidate claim objects, and a message stating that the candidates are not live-verified. A no-pattern-match result is inconclusive and does not confirm freshness.
+
+#### Request Body
+```json
+{
+  "answer": "Python 2.7 has just been released."
+}
+```
+
 ---
 
 ## 3. Streaming Verification Retrieval

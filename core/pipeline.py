@@ -18,7 +18,7 @@ from core.extractor import ClaimExtractor
 from core.triage import triage_claims
 from core.verifier import ClaimVerifier
 from core.scorer import calculate_score
-from core.cache import SQLiteClaimCache, single_flight
+from core.cache import ClaimCacheBase, get_cache, single_flight
 from core.metrics import metrics
 
 logger = logging.getLogger(__name__)
@@ -31,11 +31,11 @@ class FreshGatePipeline:
         self,
         extractor: Optional[ClaimExtractor] = None,
         verifier: Optional[ClaimVerifier] = None,
-        cache: Optional[SQLiteClaimCache] = None,
+        cache: Optional[ClaimCacheBase] = None,
     ):
         self.extractor = extractor or ClaimExtractor()
         self.verifier = verifier or ClaimVerifier()
-        self.cache = cache or SQLiteClaimCache()
+        self.cache = cache if cache is not None else get_cache()
 
     async def verify(self, answer_text: str) -> VerificationResult:
         """Execute full FreshGate verification pipeline on an answer string."""

@@ -14,6 +14,7 @@ import json
 import logging
 import asyncio
 import re
+from html import escape
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
 import httpx
@@ -25,6 +26,7 @@ from core.circuit_breaker import circuit_breaker
 from core.categories import category_registry
 from core.sources import SourceValidator
 from core.config import is_valid_credential, get_config
+from core.security import is_safe_url
 
 logger = logging.getLogger(__name__)
 
@@ -272,7 +274,7 @@ class ClaimVerifier:
         high_text = " ".join([s.snippet.lower() for s in high_auth_sources])
         if any(w in high_text for w in ["end-of-life", "end of life", "eol", "sunset", "no longer supported", "unsupported", "deprecated"]):
             claim.verdict = "contradicted"
-            claim.explanation = "Authoritative primary source confirms this claim is outdated (EOL/sunset reached on Jan 1 2020)."
+            claim.explanation = "Authoritative primary evidence indicates that this version reached end-of-life or is no longer supported."
             claim.confidence = 0.95
             claim.score = 0
             claim.sources = sources
@@ -332,7 +334,7 @@ class ClaimVerifier:
                 url = item.get("url") or ""
                 snippet = item.get("content") or item.get("snippet") or ""
                 published = item.get("published_date") or item.get("published")
-                if url and snippet:
+                if url and snippet and is_safe_url(url):
                     scored = self.source_validator.evaluate_source(
                         url=url,
                         snippet=snippet,
@@ -349,18 +351,19 @@ class ClaimVerifier:
             # Step 3: LLM Judge evaluation with prompt-injection defense
             evidence_blocks = []
             for i, src in enumerate(independent_sources[:5], 1):
-                date_str = f" [Date: {src.published}]" if src.published else ""
-                auth_str = f" [Authority: {src.authority_score}]"
+                safe_url = escape(src.url, quote=True)
+                date_str = f" date=\"{escape(str(src.published), quote=True)}\"" if src.published else ""
+                auth_str = f" authority=\"{escape(str(src.authority_score), quote=True)}\""
                 evidence_blocks.append(
-                    f"<source index=\"{i}\" url=\"{src.url}\"{date_str}{auth_str}>\n"
-                    f"{src.snippet}\n"
+                    f"<source index=\"{i}\" url=\"{safe_url}\"{date_str}{auth_str}>\n"
+                    f"{escape(src.snippet)}\n"
                     f"</source>"
                 )
             evidence_xml = "\n".join(evidence_blocks)
 
             judge_prompt = (
-                f"CLAIM TO EVALUATE ({claim.type}):\n"
-                f"\"{claim.text}\"\n\n"
+                f"CLAIM TO EVALUATE:\n"
+                f"<claim type=\"{escape(claim.type, quote=True)}\">{escape(claim.text)}</claim>\n\n"
                 f"<untrusted_web_evidence>\n"
                 f"{evidence_xml}\n"
                 f"</untrusted_web_evidence>\n\n"

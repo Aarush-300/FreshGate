@@ -19,6 +19,7 @@ load_dotenv()
 from core.config import get_config
 from core.models import VerificationResult
 from core.pipeline import FreshGatePipeline
+from core.extractor import FallbackHeuristicExtractor
 from core.llm_manager import get_llm_manager
 from core.security import (
     SecurityHeadersMiddleware,
@@ -242,6 +243,22 @@ async def verify_answer(req: VerifyRequest):
         safe_msg = sanitize_error_detail(e)
         logger.error("Direct verification failed: %s", safe_msg)
         raise HTTPException(status_code=500, detail=safe_msg)
+
+
+@app.post("/preview")
+async def preview_answer(req: VerifyRequest):
+    """Extract recognizable volatile claims without calling any external provider."""
+    claims = FallbackHeuristicExtractor().extract(req.answer)
+    return {
+        "mode": "offline_preview",
+        "status": "patterns_found" if claims else "no_pattern_match",
+        "claims": [claim.model_dump() for claim in claims],
+        "message": (
+            "Pattern-based candidates only. These claims have not been checked against live sources."
+            if claims
+            else "No supported volatile-claim pattern matched. This preview does not establish that the answer is current."
+        ),
+    }
 
 
 @app.post("/proxy/v1/chat/completions")
@@ -504,16 +521,20 @@ async def reset_circuit_breaker():
 async def get_benchmark_results():
     """Return benchmark markdown and dataset overview."""
     results_path = Path(__file__).resolve().parent.parent / "bench" / "results.md"
-    dataset_path = Path(__file__).resolve().parent.parent / "bench" / "dataset.json"
+    dataset_path = Path(__file__).resolve().parent.parent / "bench" / "dataset_production.json"
 
     results_md = results_path.read_text(encoding="utf-8") if results_path.exists() else "No results yet."
     dataset = json.loads(dataset_path.read_text(encoding="utf-8")) if dataset_path.exists() else []
 
+    verdicts = [str(item.get("ground_truth_verdict", "")).lower() for item in dataset]
+    stale_items = sum(verdict == "contradicted" for verdict in verdicts)
+    control_items = sum(verdict == "confirmed" for verdict in verdicts)
     return {
         "results_md": results_md,
         "total_items": len(dataset),
-        "stale_items": len([d for d in dataset if d.get("is_stale")]),
-        "control_items": len([d for d in dataset if not d.get("is_stale")]),
+        "stale_items": stale_items,
+        "control_items": control_items,
+        "partial_or_unverifiable_items": len(dataset) - stale_items - control_items,
     }
 
 

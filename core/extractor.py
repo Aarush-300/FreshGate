@@ -99,8 +99,9 @@ class FallbackHeuristicExtractor:
 
     # 1. Version patterns: "Python 2.7 is the currently supported release"
     VERSION_PATTERN = re.compile(
-        r"([A-Z][a-zA-Z0-9_\.\-]+(?:\s+[a-zA-Z0-9_\.\-]+)?)\s+(\d+(?:\.\d+)+[a-zA-Z0-9_\.\-]*)\s+"
-        r"(?:is|was|has been)\s+(?:the\s+)?(currently\s+supported|current\s+supported|supported|latest\s+stable|production|active\s+LTS|deprecated|released|EOL|end[-\s]of[-\s]life)"
+        r"([A-Z][a-zA-Z0-9_\.\-]*?(?:\s+[a-zA-Z][a-zA-Z0-9_\.\-]*)?)\s*"
+        r"(\d+(?:\.\d+)+[a-zA-Z0-9_\.\-]*)\s+"
+        r"(?:is|was|has\s+(?:just\s+)?been)\s+(?:the\s+)?(currently\s+supported|current\s+supported|supported|latest\s+stable|production|active\s+LTS|deprecated|released|EOL|end[-\s]of[-\s]life)"
         r"(?:\s+(?:release|version|branch|edition))?",
         re.IGNORECASE,
     )
@@ -283,6 +284,14 @@ class ClaimExtractor:
             "how can i help you", "thank you", "thanks", "you're welcome",
         ]
         clean_no_punct = clean.translate(str.maketrans("", "", string.punctuation)).strip()
+        # Avoid spending a paid extraction request on bare UI checks and other
+        # fragments that cannot express an atomic factual claim.
+        words = clean_no_punct.split()
+        if len(words) <= 2 and not any(
+            predicate in words
+            for predicate in ("is", "are", "was", "were", "has", "have", "costs", "became")
+        ):
+            return True
         if clean_no_punct in greetings:
             return True
         for g in greetings:

@@ -24,7 +24,7 @@ services:
       - LLM_MODEL=${LLM_MODEL:-gpt-4o-mini}
       - FRESHGATE_TIMEOUT=4.0
       - FRESHGATE_FAIL_OPEN=true
-      - FRESHGATE_CACHE_DB=/data/freshgate_cache.db
+      - CACHE_DB_PATH=/data/freshgate_cache.db
       - FRESHGATE_AUDIT_DB=/data/freshgate_audit.db
       - REDIS_URL=redis://redis:6379/0
     volumes:
@@ -36,8 +36,10 @@ services:
       retries: 3
       start_period: 5s
     depends_on:
-      - bifrost
-      - redis
+      bifrost:
+        condition: service_started
+      redis:
+        condition: service_healthy
     restart: unless-stopped
 
   redis:
