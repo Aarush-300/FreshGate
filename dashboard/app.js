@@ -28,7 +28,6 @@ function setStatusTone(element, tone) {
 function setupTabs() {
   const tabBtns = document.querySelectorAll('.tab-btn');
   const tabContents = document.querySelectorAll('.tab-content');
-  const nav = document.querySelector('.nav-tabs');
   let switching = false;
 
   tabBtns.forEach(btn => {
@@ -36,20 +35,18 @@ function setupTabs() {
       if (switching || btn.classList.contains('active')) return;
       const targetId = btn.getAttribute('data-tab');
       switching = true;
-      nav?.classList.add('is-switching');
       const current = document.querySelector('.tab-content.active');
       current?.classList.add('is-exiting');
       window.setTimeout(() => {
         tabBtns.forEach(b => b.classList.toggle('active', b === btn));
         tabContents.forEach(c => c.classList.remove('active', 'is-exiting', 'view-enter'));
-      const targetContent = document.getElementById(targetId);
-      if (targetContent) {
-        document.body.dataset.ambient = targetContent.dataset.ambient || 'verify';
-        targetContent.classList.add('view-enter');
-        targetContent.classList.add('active');
-      }
+        const targetContent = document.getElementById(targetId);
+        if (targetContent) {
+          document.body.dataset.ambient = targetContent.dataset.ambient || 'verify';
+          targetContent.classList.add('view-enter');
+          targetContent.classList.add('active');
+        }
         window.setTimeout(() => { targetContent?.classList.remove('view-enter'); switching = false; }, 500);
-        window.setTimeout(() => nav?.classList.remove('is-switching'), 460);
       }, 160);
     });
   });
@@ -630,6 +627,20 @@ function renderBenchmarkMarkdown(markdown, container) {
   const header = container.closest('.tab-content')?.querySelector('.tab-banner');
   const countMatch = markdown.match(/\*\*(\d+) independently labelled claims\*\*/i);
   if (header) header.querySelector('.section-subtitle').textContent = countMatch ? `${countMatch[1]} labelled claims across volatile factual categories` : 'Results parsed from the current benchmark report';
+  const reportTitleIndex = lines.findIndex(line => /^#\s+/.test(line.trim()));
+  const reportLeadIndex = lines.findIndex((line, index) => index > reportTitleIndex && line.trim() && !line.trim().startsWith('#') && !line.trim().startsWith('|'));
+  if (reportTitleIndex >= 0) {
+    const title = document.createElement('h2');
+    title.className = 'benchmark-report-title';
+    title.textContent = clean(lines[reportTitleIndex].replace(/^#\s+/, ''));
+    container.appendChild(title);
+  }
+  if (reportLeadIndex >= 0) {
+    const lead = document.createElement('p');
+    lead.className = 'benchmark-report-lead';
+    lead.textContent = clean(lines[reportLeadIndex]);
+    container.appendChild(lead);
+  }
   const stats = document.createElement('div'); stats.className = 'benchmark-stats';
   const first = parsedTables[0]?.rows || [];
   const metrics = first.slice(1).map(row => ({ label: clean(row[0]), value: clean(row[1]), target: clean(row[2]), assessment: clean(row[3]) }));
@@ -652,7 +663,13 @@ function renderBenchmarkMarkdown(markdown, container) {
   let tableIndex = 0;
   for (const tableData of parsedTables) {
     const section = document.createElement('section'); section.className = 'benchmark-section';
-    const title = document.createElement('h3'); title.textContent = tableIndex++ === 0 ? 'Core quality metrics' : 'Multi-suite performance breakdown'; section.appendChild(title);
+    const firstHeader = (tableData.rows[0]?.[0] || '').toLowerCase();
+    const title = document.createElement('h3');
+    if (firstHeader.includes('evaluation metric')) title.textContent = 'Core quality metrics';
+    else if (firstHeader.includes('evaluation suite')) title.textContent = 'Multi-suite performance breakdown';
+    else if (firstHeader.includes('category')) title.textContent = `Category breakdown${countMatch ? ` (${countMatch[1]} production items)` : ''}`;
+    else title.textContent = `Benchmark table ${++tableIndex}`;
+    section.appendChild(title);
     const wrap = document.createElement('div'); wrap.className = 'benchmark-table-scroll';
     const table = document.createElement('table'); table.className = 'benchmark-table';
     tableData.rows.forEach((row, ri) => { const tr = document.createElement('tr'); row.forEach(cell => { const el = document.createElement(ri === 0 ? 'th' : 'td'); el.textContent = clean(cell); tr.appendChild(el); }); table.appendChild(tr); });
@@ -667,8 +684,9 @@ function renderBenchmarkMarkdown(markdown, container) {
     while ((match = pattern.exec(value))) { parent.appendChild(document.createTextNode(value.slice(last, match.index))); const node = document.createElement(match[0][0] === '`' ? 'code' : 'strong'); node.textContent = clean(match[0]); parent.appendChild(node); last = pattern.lastIndex; }
     parent.appendChild(document.createTextNode(value.slice(last)));
   };
-  for (const raw of lines) {
+  for (const [lineIndex, raw] of lines.entries()) {
     const line = raw.trim();
+    if (lineIndex === reportTitleIndex || lineIndex === reportLeadIndex) continue;
     const normalized = clean(line);
     if (!line || line.startsWith('|') || /^\|?\s*:?-{3,}/.test(line)) continue;
     if (line === '---') { flushList(); flushKv(); defense = null; prose.appendChild(document.createElement('hr')); continue; }
@@ -676,10 +694,14 @@ function renderBenchmarkMarkdown(markdown, container) {
     const numberedHeading = !hash && normalized.match(/^(\d+)\.\s+(.{4,})$/) && !/:\s*\S/.test(normalized) && !/:$/.test(normalized);
     if (hash || numberedHeading) {
       flushList(); flushKv(); defense = null;
+      if (hash?.[1] === '#') continue;
+      const headingText = numberedHeading ? numberedHeading[2] : hash[2].replace(/^\d+\.\s*/, '');
+      if (/^(Executive Summary & Core Quality Metrics|Multi-Suite Performance Breakdown|Category Breakdown)/i.test(headingText)) continue;
       const section = document.createElement('section'); section.className = 'report-section';
       const title = document.createElement('h3'); const number = numberedHeading ? numberedHeading[1] : (hash[2].match(/^(\d+)\./)?.[1] || '');
       if (number) { const eyebrow = document.createElement('span'); eyebrow.className = 'report-number'; eyebrow.textContent = number.padStart(2, '0'); section.appendChild(eyebrow); }
-      title.textContent = clean(numberedHeading ? numberedHeading[2] : hash[2].replace(/^\d+\.\s*/, '')); section.appendChild(title); prose.appendChild(section); continue;
+      else section.classList.add('report-section-plain');
+      title.textContent = clean(headingText); section.appendChild(title); prose.appendChild(section); continue;
     }
     const defenseHeading = normalized.match(/^(\d+)\.\s+([^:]{4,}):$/);
     if (defenseHeading) {
