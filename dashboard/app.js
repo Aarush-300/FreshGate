@@ -237,7 +237,7 @@ function renderVerificationResults(data, container) {
   if (summary.message || data.error) {
     const banner = document.createElement('div');
     const msgText = quotaExhausted
-      ? 'The configured LLM provider is out of credits. Use “Preview offline” to inspect supported claim patterns without provider calls. Live verification still requires available model and web-search providers.'
+      ? 'The OpenAI-compatible API key used for this request has no remaining quota or credits. Add API billing/credits to the account that issued the key, or enter another key. “Preview offline” works without provider credits.'
       : rawMessage;
     banner.className = 'alert-banner';
     if (quotaExhausted) {
@@ -267,7 +267,7 @@ function renderVerificationResults(data, container) {
       p.textContent = 'No volatile factual claims found. Response passed through as stable (conversational, subjective, or general statements).';
     } else if (status === 'extraction_failed') {
       p.textContent = quotaExhausted
-        ? 'No live freshness verdict is available. Preview supported claims offline, then retry live verification when provider credits are available.'
+        ? 'No live freshness verdict is available. After updating the key or its provider account, enter both keys again and retry. Keys are cleared after every attempt.'
         : 'Claim extraction failed. Unable to verify response freshness.';
       p.classList.add('is-error');
     } else if (status === 'verification_failed') {
