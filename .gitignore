@@ -10,3 +10,15 @@ htmlcov/
 .env
 vendor/
 *.zip
+
+node_modules/
+
+# Local browser UI verification artifacts
+.ui-proof/
+.chrome-verify/
+verify.png
+.verify-ui.*
+
+# SQLite write-ahead log sidecars
+freshgate_cache.db-shm
+freshgate_cache.db-wal

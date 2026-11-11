@@ -1,6 +1,6 @@
 # FreshGate: Real-World Production AI Gateway Middleware
 
-[![Tests](https://img.shields.io/badge/pytest-66%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/pytest-111%20offline%20passed-brightgreen.svg)]()
 [![Production Evaluation](https://img.shields.io/badge/Benchmark-520%20Ground--Truth%20Claims-blue.svg)](bench/benchmark_report.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Gateway: Bifrost & OpenAI](https://img.shields.io/badge/Gateway-Universal%20OpenAI%20%26%20Bifrost-purple.svg)](https://github.com/maximhq/bifrost)
@@ -139,6 +139,7 @@ uvicorn server.app:app --host 0.0.0.0 --port 8000
 
 # 5. Open operational console
 # Navigate to: http://localhost:8000
+# Use “Preview offline” to inspect supported claim patterns without provider credits.
 ```
 
 ### 2. Production Docker Compose
@@ -150,11 +151,24 @@ docker-compose up -d --build
 curl -s http://localhost:8000/health/ready
 ```
 
+## 🖥️ Dashboard
+
+The gateway serves the browser dashboard at `http://localhost:8000`; its static HTML, CSS, JavaScript, and self-hosted Geist fonts are in [`dashboard/`](dashboard/). No separate frontend server is required.
+
+The dashboard has four views:
+
+- **Verify** submits an answer for live verification or uses **Preview offline** for local claim-pattern extraction.
+- **System** shows provider health and polled gateway metrics. Trend lines and status history appear after enough real samples are collected.
+- **Benchmarks** renders the current report returned by `/api/benchmark` as tables, summary metrics, and report sections.
+- **Audit log** requests recent records with the admin key. The key is sent with the request and is not saved by the dashboard; loaded records can be exported as JSON.
+
+The System, Benchmarks, and Audit log views have separate animated banners. The dashboard pauses canvas motion when the page is hidden or when reduced motion is requested.
+
 ---
 
 ## 🧪 Testing & Verification
 
-Run the comprehensive test suite (66 tests across security, verification, scoring, cache, streaming, and deployment):
+Run the offline test suite (111 passing tests; live provider checks are excluded):
 ```bash
 .\.venv\Scripts\pytest.exe -v -m "not live"
 ```

@@ -3,16 +3,21 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data: https:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; connect-src 'self'; img-src 'self' data: https:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'">
   <title>FreshGate | Bifrost Fact-Freshness Gateway Console</title>
-  <link rel="icon" type="image/x-icon" href="/favicon.ico">
-  <link rel="stylesheet" href="/static/style.css">
+  <meta name="theme-color" content="#07070d">
+  <meta name="description" content="FreshGate checks time-sensitive claims against current web sources before they reach your users.">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="stylesheet" href="/static/style.css?v=8">
 </head>
 <body>
+  <canvas id="ambient-background" aria-hidden="true"></canvas>
   <header>
+    <div class="header-inner">
     <div class="brand">
+      <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32" role="img"><path d="M16 2.5 27.7 9v14L16 29.5 4.3 23V9L16 2.5Z"/><path d="m10 16 4 4 8-9"/></svg></span>
       <h1>FreshGate</h1>
-      <span>Bifrost Gateway Layer v1.1</span>
+      <span class="brand-version">BIFROST GATEWAY</span>
     </div>
     <div class="stats-strip">
       <div class="stat-pill">
@@ -21,123 +26,150 @@
       </div>
       <div class="stat-pill">
         <span class="label">Circuit Breaker</span>
-        <span class="value" id="stat-cb" style="color: #34d399;">CLOSED</span>
+        <span class="value status-positive" id="stat-cb">CLOSED</span>
       </div>
       <div class="stat-pill">
         <span class="label">Database</span>
-        <span class="value" id="stat-db" style="color: #34d399;">CONNECTED</span>
+        <span class="value status-positive" id="stat-db">CONNECTED</span>
       </div>
     </div>
+    <nav class="nav-tabs" aria-label="Dashboard sections">
+      <button class="tab-btn active" data-tab="tab-verify">Verify</button>
+      <button class="tab-btn" data-tab="tab-metrics">System</button>
+      <button class="tab-btn" data-tab="tab-benchmark">Benchmarks</button>
+      <button class="tab-btn" data-tab="tab-audits">Audit log</button>
+    </nav>
+    </div>
   </header>
-
-  <nav class="nav-tabs">
-    <button class="tab-btn active" data-tab="tab-verify">Fact Verifier</button>
-    <button class="tab-btn" data-tab="tab-metrics">Metrics & System</button>
-    <button class="tab-btn" data-tab="tab-benchmark">Evaluation & Benchmarks</button>
-    <button class="tab-btn" data-tab="tab-audits">Security Audit Logs</button>
-  </nav>
 
   <main>
     <!-- TAB 1: VERIFIER -->
     <section id="tab-verify" class="tab-content active">
-      <div class="card">
-        <h2 class="card-title">Live Answer Verification Console</h2>
+      <div class="page-intro">
+        <canvas class="hero-canvas" aria-hidden="true"></canvas>
+        <div class="hero-copy">
+          <div class="hero-main">
+            <h2><span class="headline-line">Answers you can trust.</span><span class="headline-line accent-line">Facts that stay current.</span></h2>
+            <p>Find claims that may have changed. Check them against current sources before they reach your users.</p>
+            <div class="hero-actions">
+              <a class="button-primary" href="#verify-input">Start verifying</a>
+              <button class="button-ghost" id="hero-benchmarks" type="button">See benchmarks</button>
+            </div>
+          </div>
+          <div class="intro-foot"><a href="#verify-input"><span>01</span><i></i> PASTE AN ANSWER</a><a href="#verify-results"><span>02</span><i></i> CHECK WHAT CHANGED</a></div>
+        </div>
+        <aside class="hero-demo" aria-label="Example stale claim check">
+          <div class="demo-header"><span>CLAIM CHECK</span><span class="demo-chip" data-demo-status>CHECKING...</span></div>
+          <p class="demo-claim" data-demo-claim aria-label="Python 2.7 is the latest version"></p>
+          <div class="demo-result" data-demo-result>
+            <p>Python 2.7 reached end of life on 1 Jan 2020.</p>
+            <span>source: python.org</span>
+          </div>
+        </aside>
+      </div>
+      <div class="provider-strip"><span class="provider-label">BUILT FOR THE GATEWAY LAYER</span><b class="provider-item">BIFROST</b><b class="provider-item">OPENAI-COMPATIBLE</b><b class="provider-item">LIVE WEB EVIDENCE</b></div>
+      <div class="card" id="verify-workspace">
+        <div class="console-heading"><div><div class="eyebrow">VERIFICATION WORKSPACE</div><h2 class="card-title">Inspect an answer</h2></div><span class="console-mode"><span class="live-dot"></span> READY</span></div>
         <form id="verify-form">
           <div class="form-group">
-            <label for="verify-input">LLM Assistant Response to Verify:</label>
-            <textarea id="verify-input" placeholder="e.g., Python 2.7 is the currently supported version. ChatGPT Plus costs $20/month.">Python 2.7 is the currently supported release. ChatGPT Plus costs $20 per month.</textarea>
+            <label for="verify-input">PASTE AN LLM RESPONSE</label>
+            <textarea id="verify-input" placeholder="Paste a response here. We will extract time-sensitive claims and check the evidence behind them."></textarea>
           </div>
-          <button type="submit" id="verify-submit-btn">Verify Live Answer</button>
+          <div class="form-footer"><span class="input-note">Live verification uses your configured providers.</span><div class="form-actions"><button type="button" id="preview-submit-btn" class="preview-button">Preview offline</button><button type="submit" id="verify-submit-btn"><span id="verify-button-label">Verify live</span></button></div></div>
         </form>
-        <div id="verify-results" style="margin-top: 20px;"></div>
+        <div id="verify-results" class="verification-results"></div>
       </div>
+      <div class="workspace-note"><span>Each claim is scored individually. A missing source never gets treated as confirmation.</span><span class="note-tag">FAIL-OPEN BY DESIGN</span></div>
     </section>
 
     <!-- TAB 2: METRICS & SYSTEM -->
-    <section id="tab-metrics" class="tab-content">
+    <section id="tab-metrics" class="tab-content" data-ambient="system">
+      <section class="tab-banner" aria-labelledby="system-banner-title">
+        <canvas class="banner-canvas" data-mode="system" aria-hidden="true"></canvas>
+        <div class="banner-copy"><span class="eyebrow">SYSTEM</span><h2 id="system-banner-title">Downstream provider health &amp; rate limits</h2><p>Provider status, usage and gateway telemetry.</p></div>
+      </section>
+      <p id="system-status" class="system-state is-loading" role="status">Loading system metrics</p>
       <!-- Operational Provider Panel (Phase 10) -->
-      <div class="card">
-        <h2 class="card-title">Downstream AI Provider Health & Rate-Limit Budgets</h2>
+      <div class="metric-section">
         <div class="metrics-cards-grid">
           <div class="metric-box">
             <div class="metric-title">OpenAI Connection & Model</div>
-            <div class="metric-value" id="stat-llm-status" style="color: #34d399; font-size: 1.3rem;">HEALTHY</div>
-            <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;" id="stat-llm-model">gpt-4o-mini</div>
+            <div class="metric-value status-positive" id="stat-llm-status">HEALTHY</div>
+            <div class="metric-detail" id="stat-llm-model">gpt-4o-mini</div>
           </div>
           <div class="metric-box">
             <div class="metric-title">OpenAI Token Consumption</div>
-            <div class="metric-value" id="stat-llm-tokens" style="color: #60a5fa;">0</div>
-            <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;" id="stat-llm-tokens-detail">Prompt: 0 | Completion: 0</div>
+            <div class="metric-value status-accent" id="stat-llm-tokens">0</div>
+            <div class="metric-detail" id="stat-llm-tokens-detail">Prompt: 0 | Completion: 0</div>
           </div>
           <div class="metric-box">
             <div class="metric-title">Rate-Limit & Retry Budget</div>
-            <div class="metric-value" id="stat-llm-budget" style="color: #34d399; font-size: 1.3rem;">AVAILABLE</div>
-            <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;" id="stat-llm-retries">Retries: 0 | 429s: 0</div>
+            <div class="metric-value status-positive" id="stat-llm-budget">AVAILABLE</div>
+            <div class="metric-detail" id="stat-llm-retries">Retries: 0 | 429s: 0</div>
           </div>
           <div class="metric-box">
             <div class="metric-title">Tavily Web Search Provider</div>
-            <div class="metric-value" id="stat-tavily-status" style="color: #34d399; font-size: 1.3rem;">CONNECTED</div>
-            <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;" id="stat-tavily-failures">Search Failures: 0</div>
+            <div class="metric-value status-positive" id="stat-tavily-status">CONNECTED</div>
+            <div class="metric-detail" id="stat-tavily-failures">Search Failures: 0</div>
           </div>
         </div>
       </div>
 
       <!-- Verification & Gateway Observability -->
-      <div class="card">
-        <h2 class="card-title">Gateway Verification & Performance Telemetry</h2>
+      <div class="metric-section">
+        <div class="section-heading"><span class="eyebrow">TELEMETRY</span><h2 class="card-title">Gateway verification & performance</h2></div>
         <div class="metrics-cards-grid">
           <div class="metric-box">
             <div class="metric-title">Claims Extracted / Checked</div>
-            <div class="metric-value" id="stat-claims-ratio" style="color: #fff;">0 / 0</div>
-            <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;" id="stat-claims-stale">Stale Detected: 0</div>
+            <div class="metric-value" id="stat-claims-ratio">0 / 0</div>
+            <div class="metric-detail" id="stat-claims-stale">Stale Detected: 0</div>
           </div>
           <div class="metric-box">
             <div class="metric-title">Cache Hit Rate</div>
-            <div class="metric-value" id="stat-cache-hitrate" style="color: #60a5fa;">100%</div>
-            <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;" id="stat-cache-ops">Hits: 0 | Misses: 0</div>
+            <div class="metric-value status-accent" id="stat-cache-hitrate">â€”</div>
+            <div class="metric-detail" id="stat-cache-ops">Hits: 0 | Misses: 0</div>
           </div>
           <div class="metric-box">
             <div class="metric-title">Average Latency (Warm)</div>
             <div class="metric-value" id="stat-avg-latency">0 ms</div>
-            <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;">p95 Latency: &lt; 25 ms</div>
+            <div class="metric-detail">p95 Latency: &lt; 25 ms</div>
           </div>
           <div class="metric-box">
             <div class="metric-title">Gateway Concurrency & Queue</div>
-            <div class="metric-value" id="stat-concurrency" style="color: #34d399; font-size: 1.3rem;">0 ACTIVE</div>
-            <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;" id="stat-queued">Queue Depth: 0</div>
+            <div class="metric-value status-positive" id="stat-concurrency">0 ACTIVE</div>
+            <div class="metric-detail" id="stat-queued">Queue Depth: 0</div>
           </div>
         </div>
-        <p style="color: var(--text-muted); font-size: 0.9rem;">
-          Real-time metrics are scraped by Prometheus at <code>/metrics</code>. Gateway health is accessible at <code>/health/live</code> and <code>/health/ready</code>.
-        </p>
       </div>
+      <p class="system-note">Real-time metrics are scraped by Prometheus at <code>/metrics</code>. Gateway health is accessible at <code>/health/live</code> and <code>/health/ready</code>.</p>
     </section>
 
     <!-- TAB 3: BENCHMARK -->
-    <section id="tab-benchmark" class="tab-content">
-      <div class="card">
-        <div class="card-title">
-          <span>Production Benchmark & Reliability Suite (520 Items)</span>
-          <button id="load-benchmark-btn" class="secondary">Reload Results</button>
-        </div>
-        <div id="benchmark-content" style="overflow-x: auto; max-height: 600px;">
-          <p style="color: var(--text-muted);">Loading benchmark report...</p>
+    <section id="tab-benchmark" class="tab-content" data-ambient="benchmarks">
+      <section class="tab-banner" aria-labelledby="benchmark-banner-title">
+        <canvas class="banner-canvas" data-mode="benchmarks" aria-hidden="true"></canvas>
+        <div class="banner-copy"><span class="eyebrow">BENCHMARKS</span><h2 id="benchmark-banner-title">Production benchmark &amp; reliability suite</h2><p class="section-subtitle">Labelled claims across volatile factual categories</p></div>
+        <button id="load-benchmark-btn" class="secondary banner-action"><span aria-hidden="true">↻</span> Reload Results</button>
+      </section>
+      <div class="card benchmark-panel">
+        <div id="benchmark-content" class="benchmark-content">
+          <div class="benchmark-skeleton" role="status" aria-label="Loading benchmark results"><i></i><i></i><i></i></div>
         </div>
       </div>
     </section>
 
     <!-- TAB 4: AUDIT LOGS -->
-    <section id="tab-audits" class="tab-content">
-      <div class="card">
-        <div class="card-title">
-          <span>Immutable Verification Audit Trail</span>
-          <div style="display: flex; gap: 8px; align-items: center;">
-            <input type="password" id="admin-key-input" placeholder="Admin Key" style="background: #0f172a; border: 1px solid var(--card-border); color: #fff; padding: 6px 10px; border-radius: 6px; font-size: 0.85rem;">
-            <button id="refresh-audits-btn" class="secondary">Refresh</button>
-            <button id="export-audits-btn">Export JSON</button>
-          </div>
+    <section id="tab-audits" class="tab-content" data-ambient="audit">
+      <section class="tab-banner audit-banner" aria-labelledby="audit-banner-title">
+        <canvas class="banner-canvas" data-mode="audit" aria-hidden="true"></canvas>
+        <div class="banner-copy"><span class="eyebrow">AUDIT</span><h2 id="audit-banner-title">Immutable verification audit trail</h2><p>Review recorded verification requests and outcomes.</p></div>
+        <div class="audit-tools banner-action">
+          <div class="admin-key-wrap"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg><input type="password" id="admin-key-input" class="admin-key-field" placeholder="Admin Key" aria-label="Admin key"><button type="button" id="toggle-admin-key" aria-label="Show admin key"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg></button></div>
+          <button id="refresh-audits-btn">Refresh</button><button id="export-audits-btn" class="export-ghost">Export JSON</button>
         </div>
-        <div style="overflow-x: auto;">
+      </section>
+      <div class="card">
+        <div class="table-scroll">
           <table class="data-table">
             <thead>
               <tr>
@@ -151,7 +183,7 @@
             </thead>
             <tbody id="audits-table-body">
               <tr>
-                <td colspan="6" style="color: var(--text-muted);">Click Refresh to load audit logs.</td>
+                <td colspan="6" class="muted-copy">Click Refresh to load audit logs.</td>
               </tr>
             </tbody>
           </table>
@@ -160,6 +192,8 @@
     </section>
   </main>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/hero-bg.js?v=4"></script>
+  <script src="/static/app.js?v=8"></script>
+  <script src="/static/ambient.js?v=2"></script>
 </body>
 </html>
