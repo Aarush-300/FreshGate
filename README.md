@@ -2,6 +2,8 @@
 
 FreshGate is a FastAPI gateway and dashboard that extracts time-sensitive claims from an answer, checks them against current web evidence, and reports a structured freshness result. It can also proxy OpenAI-compatible chat completions through Bifrost.
 
+**Live demo:** [freshgate-0cid.onrender.com](https://freshgate-0cid.onrender.com/)
+
 ## Run locally
 
 Requirements: Python 3.11 or newer.
