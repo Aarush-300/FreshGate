@@ -400,6 +400,7 @@ class LLMProviderManager:
                     return await self._execute_with_retry(
                         payload=payload,
                         headers=headers,
+                        effective_key=effective_key,
                         request_type=request_type,
                         start_time=start_time,
                         overall_deadline=overall_deadline,
@@ -413,6 +414,7 @@ class LLMProviderManager:
         self,
         payload: Dict[str, Any],
         headers: Dict[str, str],
+        effective_key: str,
         request_type: str,
         start_time: float,
         overall_deadline: float,
