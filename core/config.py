@@ -242,11 +242,11 @@ def load_config(override_env: Optional[Dict[str, str]] = None) -> FreshGateConfi
 
     if not is_openai_ok:
         logger.warning(
-            "OPENAI_API_KEY is missing, empty, or placeholder. LLM operations will start in degraded mode with heuristic fallback."
+            "No server-side OPENAI_API_KEY is configured. Live requests must supply X-OpenAI-API-Key or use heuristic fallback."
         )
     if not is_tavily_ok:
         logger.warning(
-            "TAVILY_API_KEY is missing, empty, or placeholder. Live search evidence retrieval will be unavailable."
+            "No server-side TAVILY_API_KEY is configured. Live requests must supply X-Tavily-API-Key for web search."
         )
 
     return cfg

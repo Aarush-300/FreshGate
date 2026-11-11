@@ -71,11 +71,19 @@
       <div class="card" id="verify-workspace">
         <div class="console-heading"><div><div class="eyebrow">VERIFICATION WORKSPACE</div><h2 class="card-title">Inspect an answer</h2></div><span class="console-mode"><span class="live-dot"></span> READY</span></div>
         <form id="verify-form">
+          <fieldset class="provider-credentials">
+            <legend>YOUR PROVIDER KEYS</legend>
+            <p>Used only for this request. They are not saved in browser storage or FreshGate configuration.</p>
+            <div class="provider-key-fields">
+              <div class="form-group"><label for="openai-api-key">OPENAI API KEY</label><input id="openai-api-key" name="openai-api-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…" required></div>
+              <div class="form-group"><label for="tavily-api-key">TAVILY API KEY</label><input id="tavily-api-key" name="tavily-api-key" type="password" autocomplete="off" spellcheck="false" placeholder="tvly-…" required></div>
+            </div>
+          </fieldset>
           <div class="form-group">
             <label for="verify-input">PASTE AN LLM RESPONSE</label>
             <textarea id="verify-input" placeholder="Paste a response here. We will extract time-sensitive claims and check the evidence behind them."></textarea>
           </div>
-          <div class="form-footer"><span class="input-note">Live verification uses your configured providers.</span><div class="form-actions"><button type="button" id="preview-submit-btn" class="preview-button">Preview offline</button><button type="submit" id="verify-submit-btn"><span id="verify-button-label">Verify live</span></button></div></div>
+          <div class="form-footer"><span class="input-note">Keys are sent for this request only and cleared when it finishes.</span><div class="form-actions"><button type="button" id="preview-submit-btn" class="preview-button">Preview offline</button><button type="submit" id="verify-submit-btn"><span id="verify-button-label">Verify live</span></button></div></div>
         </form>
         <div id="verify-results" class="verification-results"></div>
       </div>

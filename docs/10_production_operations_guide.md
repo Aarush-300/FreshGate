@@ -32,8 +32,8 @@ All behavior is controlled via environment variables:
 | Variable | Default | Purpose |
 | :--- | :--- | :--- |
 | `BIFROST_UPSTREAM_URL` | `http://127.0.0.1:8080` | URL of upstream Bifrost or LLM gateway |
-| `TAVILY_API_KEY` | *(None)* | Live web search API key |
-| `OPENAI_API_KEY` | *(None)* | LLM Judge and extraction provider key |
+| `TAVILY_API_KEY` | *(None)* | Optional server-side fallback. Otherwise supply `X-Tavily-API-Key` for each `/verify` request. |
+| `OPENAI_API_KEY` | *(None)* | Optional server-side fallback. Otherwise supply `X-OpenAI-API-Key` for each `/verify` request. |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Custom endpoint for judge (Ollama, vLLM, etc.) |
 | `LLM_MODEL` | `gpt-4o-mini` | Default model for atomic extraction and verification judging |
 | `FRESHGATE_TIMEOUT` | `4.0` | Gateway verification fail-open timeout in seconds |
@@ -47,7 +47,7 @@ All behavior is controlled via environment variables:
 | `FRESHGATE_ADMIN_KEY` | *(None)* | Administrative token for cache clearing and breaker resets |
 | `REDIS_URL` | *(None)* | Redis connection string (`redis://redis:6379/0`) for distributed cache |
 | `FRESHGATE_CACHE_DB` | `freshgate_cache.db` | File path for SQLite claim cache |
-| `FRESHGATE_AUDIT_DB` | `freshgate_audit.db` | File path for historical verification audit store |
+| `FRESHGATE_AUDIT_DB` | `freshgate_audit.db` | File path for historical verification audit store; local SQLite needs persistent storage on the host. |
 
 ---
 

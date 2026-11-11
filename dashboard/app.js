@@ -63,13 +63,18 @@ function setupVerificationForm() {
   const submitBtn = document.getElementById('verify-submit-btn');
   const submitLabel = document.getElementById('verify-button-label');
   const previewBtn = document.getElementById('preview-submit-btn');
+  const openaiKey = document.getElementById('openai-api-key');
+  const tavilyKey = document.getElementById('tavily-api-key');
 
   if (!form) return;
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const text = input.value.trim();
-    if (!text) return;
+    if (!text || !openaiKey.value.trim() || !tavilyKey.value.trim()) {
+      form.reportValidity();
+      return;
+    }
 
     submitBtn.disabled = true;
     submitLabel.textContent = 'Verifying…';
@@ -83,7 +88,11 @@ function setupVerificationForm() {
     try {
       const res = await fetch('/verify', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-OpenAI-API-Key': openaiKey.value.trim(),
+          'X-Tavily-API-Key': tavilyKey.value.trim()
+        },
         body: JSON.stringify({ answer: text })
       });
 
@@ -100,6 +109,8 @@ function setupVerificationForm() {
       errBox.textContent = String(err.message || err);
       resultsContainer.appendChild(errBox);
     } finally {
+      openaiKey.value = '';
+      tavilyKey.value = '';
       submitBtn.disabled = false;
       submitLabel.textContent = 'Verify live';
     }

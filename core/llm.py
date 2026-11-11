@@ -38,7 +38,7 @@ class OpenAILLMClient(LLMClient):
         else:
             self.manager = get_llm_manager()
 
-        self.api_key = self.manager.api_key
+        self.api_key = api_key if api_key is not None else self.manager.api_key
         self.base_url = self.manager.base_url
         self.model = self.manager.model
 
@@ -49,4 +49,5 @@ class OpenAILLMClient(LLMClient):
             system_prompt=system_prompt,
             request_type=self.request_type,
             deadline_seconds=self.timeout,
+            api_key=self.api_key,
         )

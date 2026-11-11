@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: freshgate
+    runtime: docker
+    plan: free
+    healthCheckPath: /health/ready
+    envVars:
+      - key: FRESHGATE_ADMIN_KEY
+        generateValue: true
+      - key: FRESHGATE_MODE
+        value: shadow
+      - key: FRESHGATE_FAIL_OPEN
+        value: "true"

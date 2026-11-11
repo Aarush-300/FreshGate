@@ -92,6 +92,12 @@ Standard OpenAI chat completion payload:
 ### `POST /verify`
 Verifies arbitrary assistant text directly without forwarding to an upstream LLM.
 
+#### Headers
+- `X-OpenAI-API-Key`: OpenAI-compatible provider key for claim extraction and judging (optional if configured on the server).
+- `X-Tavily-API-Key`: Tavily key for live web search (optional if configured on the server).
+
+Keys are used for this request only. Send them over HTTPS when deployed; do not put keys in the JSON body, query string, or application logs.
+
 #### Request Body
 ```json
 {

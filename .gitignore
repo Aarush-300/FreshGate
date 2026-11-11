@@ -1,24 +1,34 @@
+# Python environments and generated files
 .venv/
+venv/
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
+*.so
 .pytest_cache/
 .coverage
 htmlcov/
-*.sqlite
-*.db
-.env
-vendor/
-*.zip
 
+# Local secrets and environment files
+.env
+.env.*
+!.env.example
+
+# Runtime databases and SQLite sidecars
+*.db
+*.sqlite
+*.sqlite3
+*-shm
+*-wal
+
+# Frontend tooling (vendored dashboard fonts are committed separately)
 node_modules/
 
-# Local browser UI verification artifacts
+# Local UI proof artifacts
 .ui-proof/
 .chrome-verify/
 verify.png
 .verify-ui.*
 
-# SQLite write-ahead log sidecars
-freshgate_cache.db-shm
-freshgate_cache.db-wal
+# Archives and generated vendor bundles
+*.zip
+vendor/

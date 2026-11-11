@@ -19,8 +19,11 @@ load_dotenv()
 from core.config import get_config
 from core.models import VerificationResult
 from core.pipeline import FreshGatePipeline
-from core.extractor import FallbackHeuristicExtractor
+from core.extractor import ClaimExtractor, FallbackHeuristicExtractor
+from core.llm import OpenAILLMClient
 from core.llm_manager import get_llm_manager
+from core.verifier import ClaimVerifier, TavilySearchClient
+from core.config import is_valid_credential
 from core.security import (
     SecurityHeadersMiddleware,
     RequestBodySizeLimitMiddleware,
@@ -84,6 +87,26 @@ pipeline = FreshGatePipeline()
 
 class VerifyRequest(BaseModel):
     answer: str = Field(..., min_length=1, max_length=50000, description="Assistant answer text to verify")
+
+
+def build_request_pipeline(openai_api_key: Optional[str], tavily_api_key: Optional[str]) -> FreshGatePipeline:
+    """Build clients with keys scoped to this request, sharing bounded LLM resources and cache."""
+    manager = get_llm_manager()
+    extraction_client = OpenAILLMClient(
+        api_key=openai_api_key, manager=manager, request_type="extraction"
+    )
+    judge_client = OpenAILLMClient(
+        api_key=openai_api_key, manager=manager, request_type="judging"
+    )
+    tavily_client = TavilySearchClient(api_key=tavily_api_key)
+    request_verifier = ClaimVerifier(tavily_client=tavily_client, judge_llm=judge_client)
+    # Keep the existing process-wide bound on concurrent evidence checks.
+    request_verifier._semaphore = pipeline.verifier._semaphore
+    return FreshGatePipeline(
+        extractor=ClaimExtractor(llm_client=extraction_client),
+        verifier=request_verifier,
+        cache=pipeline.cache,
+    )
 
 
 async def forward_to_upstream(
@@ -235,14 +258,26 @@ async def get_recent_audits(limit: int = 50):
 
 
 @app.post("/verify", response_model=VerificationResult)
-async def verify_answer(req: VerifyRequest):
+async def verify_answer(req: VerifyRequest, request: Request):
     """Direct verification endpoint for any answer text."""
+    openai_key = request.headers.get("X-OpenAI-API-Key")
+    tavily_key = request.headers.get("X-Tavily-API-Key")
+    if openai_key is not None and not is_valid_credential(openai_key):
+        raise HTTPException(status_code=400, detail="The OpenAI API key is invalid or malformed.")
+    if tavily_key is not None and not is_valid_credential(tavily_key):
+        raise HTTPException(status_code=400, detail="The Tavily API key is invalid or malformed.")
+    request_pipeline = build_request_pipeline(openai_key, tavily_key)
     try:
-        return await pipeline.verify(req.answer)
+        return await request_pipeline.verify(
+            req.answer,
+            single_flight_scope=getattr(request.state, "correlation_id", None),
+        )
     except Exception as e:
         safe_msg = sanitize_error_detail(e)
         logger.error("Direct verification failed: %s", safe_msg)
         raise HTTPException(status_code=500, detail=safe_msg)
+    finally:
+        await request_pipeline.verifier.tavily_client.aclose()
 
 
 @app.post("/preview")

@@ -330,13 +330,18 @@ class LLMProviderManager:
         temperature: float = 0.0,
         max_tokens: Optional[int] = None,
         deadline_seconds: Optional[float] = None,
+        api_key: Optional[str] = None,
     ) -> str:
         """Execute completion through centralized gateway with queue bounds, token tracking, and resilient retry."""
         overall_deadline = deadline_seconds or self.max_retry_duration
         start_time = time.time()
 
         # Check API key validity BEFORE constructing headers or attempting network call
-        effective_key = self.api_key if self.api_key is not None else get_config().openai_api_key
+        # A caller may supply a request-scoped key. Never copy it onto this
+        # shared manager: concurrent users must not overwrite one another.
+        effective_key = api_key if api_key is not None else self.api_key
+        if effective_key is None:
+            effective_key = get_config().openai_api_key
         effective_key = (effective_key or "").strip()
 
         if not is_valid_credential(effective_key):
@@ -345,12 +350,10 @@ class LLMProviderManager:
             raise LLMProviderException(
                 LLMErrorDetail(
                     error_type=LLMErrorType.INVALID_API_KEY,
-                    message="OpenAI API key is missing or invalid. Set a valid OPENAI_API_KEY in the environment.",
+                    message="OpenAI API key is missing or invalid. Provide X-OpenAI-API-Key or configure OPENAI_API_KEY.",
                     is_transient=False,
                 )
             )
-
-        self.api_key = effective_key
 
         messages = []
         if system_prompt:
@@ -455,7 +458,7 @@ class LLMProviderManager:
                     return data["choices"][0]["message"]["content"]
 
                 # Non-200: Classify error
-                resp_text = resp.text
+                resp_text = resp.text.replace(effective_key, "[REDACTED]")
                 error_detail = classify_http_error(resp.status_code, resp_text, dict(resp.headers))
 
             except httpx.TimeoutException as e:
@@ -476,6 +479,11 @@ class LLMProviderManager:
                     message=f"Unexpected error communicating with LLM provider: {e}",
                     is_transient=False,
                 )
+
+            # Provider messages and transport errors can echo request details.
+            # Redact the request-scoped key before metrics, logs, or responses.
+            if effective_key:
+                error_detail.message = error_detail.message.replace(effective_key, "[REDACTED]")
 
             # Record failure state
             self._record_failure(error_detail)

@@ -37,7 +37,11 @@ class FreshGatePipeline:
         self.verifier = verifier or ClaimVerifier()
         self.cache = cache if cache is not None else get_cache()
 
-    async def verify(self, answer_text: str) -> VerificationResult:
+    async def verify(
+        self,
+        answer_text: str,
+        single_flight_scope: Optional[str] = None,
+    ) -> VerificationResult:
         """Execute full FreshGate verification pipeline on an answer string."""
         if not answer_text or not answer_text.strip():
             return VerificationResult(
@@ -217,7 +221,7 @@ class FreshGatePipeline:
             try:
                 tasks = [
                     single_flight.do(
-                        f"{c.type}:{c.text.strip().lower()}",
+                        f"{single_flight_scope or 'default'}:{c.type}:{c.text.strip().lower()}",
                         _verify_single_coalesced,
                         c,
                     )
