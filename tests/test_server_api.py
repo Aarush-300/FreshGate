@@ -39,20 +39,6 @@ async def test_post_verify_endpoint_contract():
 
 
 @pytest.mark.asyncio
-async def test_offline_preview_uses_no_external_providers():
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-        response = await ac.post("/preview", json={"answer": "python2.7 has just been released"})
-
-    assert response.status_code == 200
-    data = response.json()
-    assert data["mode"] == "offline_preview"
-    assert data["status"] == "patterns_found"
-    assert len(data["claims"]) == 1
-    assert data["claims"][0]["verdict"] is None
-    assert "not been checked" in data["message"]
-
-
-@pytest.mark.asyncio
 async def test_health_endpoint():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         response = await ac.get("/health")

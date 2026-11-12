@@ -280,22 +280,6 @@ async def verify_answer(req: VerifyRequest, request: Request):
         await request_pipeline.verifier.tavily_client.aclose()
 
 
-@app.post("/preview")
-async def preview_answer(req: VerifyRequest):
-    """Extract recognizable volatile claims without calling any external provider."""
-    claims = FallbackHeuristicExtractor().extract(req.answer)
-    return {
-        "mode": "offline_preview",
-        "status": "patterns_found" if claims else "no_pattern_match",
-        "claims": [claim.model_dump() for claim in claims],
-        "message": (
-            "Pattern-based candidates only. These claims have not been checked against live sources."
-            if claims
-            else "No supported volatile-claim pattern matched. This preview does not establish that the answer is current."
-        ),
-    }
-
-
 @app.post("/proxy/v1/chat/completions")
 @app.post("/v1/chat/completions")
 async def proxy_chat_completions(request: Request, background_tasks: BackgroundTasks):

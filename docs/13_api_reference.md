@@ -108,9 +108,6 @@ Keys are used for this request only. Send them over HTTPS when deployed; do not 
 #### Response Body
 Returns `VerificationResult` schema.
 
-### `POST /preview`
-Runs the deterministic local fallback extractor without calling an LLM or web-search provider. Returns `mode: "offline_preview"`, candidate claim objects, and a message stating that the candidates are not live-verified. A no-pattern-match result is inconclusive and does not confirm freshness.
-
 #### Request Body
 ```json
 {

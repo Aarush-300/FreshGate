@@ -59,7 +59,6 @@ function setupVerificationForm() {
   const resultsContainer = document.getElementById('verify-results');
   const submitBtn = document.getElementById('verify-submit-btn');
   const submitLabel = document.getElementById('verify-button-label');
-  const previewBtn = document.getElementById('preview-submit-btn');
   const openaiKey = document.getElementById('openai-api-key');
   const tavilyKey = document.getElementById('tavily-api-key');
 
@@ -112,76 +111,6 @@ function setupVerificationForm() {
       submitLabel.textContent = 'Verify live';
     }
   });
-
-  previewBtn?.addEventListener('click', async () => {
-    const text = input.value.trim();
-    if (!text) {
-      input.focus();
-      input.setCustomValidity('Paste an answer to preview its claims.');
-      input.reportValidity();
-      input.addEventListener('input', () => input.setCustomValidity(''), { once: true });
-      return;
-    }
-    previewBtn.disabled = true;
-    previewBtn.textContent = 'Previewing…';
-    clearElement(resultsContainer);
-    const loading = document.createElement('p');
-    loading.className = 'preview-loading';
-    loading.textContent = 'Finding recognizable claim patterns locally…';
-    resultsContainer.appendChild(loading);
-    try {
-      const res = await fetch('/preview', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ answer: text })
-      });
-      if (!res.ok) throw new Error(`Preview failed: HTTP ${res.status}`);
-      renderOfflinePreview(await res.json(), resultsContainer);
-    } catch (err) {
-      clearElement(resultsContainer);
-      const error = document.createElement('p');
-      error.className = 'preview-error';
-      error.textContent = String(err.message || err);
-      resultsContainer.appendChild(error);
-    } finally {
-      previewBtn.disabled = false;
-      previewBtn.textContent = 'Preview offline';
-    }
-  });
-}
-
-function renderOfflinePreview(data, container) {
-  clearElement(container);
-  const panel = document.createElement('section');
-  panel.className = 'offline-preview';
-  const heading = document.createElement('div');
-  heading.className = 'preview-heading';
-  const title = document.createElement('h3');
-  title.textContent = 'Offline extraction preview';
-  const status = document.createElement('span');
-  status.className = 'preview-status';
-  status.textContent = data.claims?.length ? `${data.claims.length} CANDIDATE${data.claims.length === 1 ? '' : 'S'}` : 'NO PATTERN MATCH';
-  heading.append(title, status);
-  panel.appendChild(heading);
-  const note = document.createElement('p');
-  note.className = 'preview-disclaimer';
-  note.textContent = data.message || 'This preview is local and has not verified any claims.';
-  panel.appendChild(note);
-  for (const claim of data.claims || []) {
-    const item = document.createElement('article');
-    item.className = 'preview-claim';
-    const type = document.createElement('span');
-    type.className = 'preview-type';
-    type.textContent = (claim.type || 'claim').replace(/_/g, ' ');
-    const text = document.createElement('p');
-    text.textContent = claim.text;
-    const verdict = document.createElement('span');
-    verdict.className = 'preview-unverified';
-    verdict.textContent = 'NOT LIVE-VERIFIED';
-    item.append(type, text, verdict);
-    panel.appendChild(item);
-  }
-  container.appendChild(panel);
 }
 
 function renderVerificationResults(data, container) {
@@ -234,7 +163,7 @@ function renderVerificationResults(data, container) {
   if (summary.message || data.error) {
     const banner = document.createElement('div');
     const msgText = quotaExhausted
-      ? 'The OpenAI-compatible API key used for this request has no remaining quota or credits. Add API billing/credits to the account that issued the key, or enter another key. “Preview offline” works without provider credits.'
+      ? 'The OpenAI-compatible API key used for this request has no remaining quota or credits. Add API billing/credits to the account that issued the key, or enter another key.'
       : rawMessage;
     banner.className = 'alert-banner';
     if (quotaExhausted) {

@@ -31,20 +31,6 @@
         </button>
       </div>
     </div>
-    <div class="stats-strip">
-      <div class="stat-pill">
-        <span class="label">Deployment Mode</span>
-        <span class="value" id="stat-mode">ENFORCE</span>
-      </div>
-      <div class="stat-pill">
-        <span class="label">Circuit Breaker</span>
-        <span class="value status-positive" id="stat-cb">CLOSED</span>
-      </div>
-      <div class="stat-pill">
-        <span class="label">Database</span>
-        <span class="value status-positive" id="stat-db">CONNECTED</span>
-      </div>
-    </div>
     <nav class="nav-tabs" aria-label="Dashboard sections">
       <button class="tab-btn active" data-tab="tab-verify">Verify</button>
       <button class="tab-btn" data-tab="tab-metrics">System</button>
@@ -99,11 +85,11 @@
             <label for="verify-input">PASTE AN LLM RESPONSE</label>
             <textarea id="verify-input" placeholder="Paste a response here. We will extract time-sensitive claims and check the evidence behind them."></textarea>
           </div>
-          <div class="form-footer"><span class="input-note">Keys are sent for this request only and cleared when it finishes.</span><div class="form-actions"><button type="button" id="preview-submit-btn" class="preview-button">Preview offline</button><button type="submit" id="verify-submit-btn"><span id="verify-button-label">Verify live</span></button></div></div>
+          <div class="form-footer"><span class="input-note">Keys are sent for this request only and cleared when it finishes.</span><div class="form-actions"><button type="submit" id="verify-submit-btn"><span id="verify-button-label">Verify live</span></button></div></div>
         </form>
         <div id="verify-results" class="verification-results"></div>
       </div>
-      <div class="workspace-note"><span>Each claim is scored individually. A missing source never gets treated as confirmation.</span><span class="note-tag">FAIL-OPEN BY DESIGN</span></div>
+      <div class="workspace-note"><span>Each claim is scored individually. A missing source never gets treated as confirmation.</span></div>
     </section>
 
     <!-- TAB 2: METRICS & SYSTEM -->

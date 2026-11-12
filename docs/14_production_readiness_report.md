@@ -7,7 +7,6 @@ This report separates current repository checks from historical benchmark result
 - **Automated tests:** 111 passed; 1 live provider test deselected.
 - **Python source:** `compileall` succeeds.
 - **Dashboard JavaScript:** `node --check dashboard/app.js` succeeds.
-- **Offline preview:** exercises the local pattern extractor without model or web-search requests.
 
 Live model, Tavily, container, and Go plugin behavior still require their respective providers and toolchains. The current environment had no provider credits, so live checks were not run.
 
@@ -20,7 +19,6 @@ The checked-in report covers a labelled 520-item dataset. Its reported stale-cla
 - Redis caching is enabled when configured and falls back to SQLite when Redis is unavailable.
 - Audit persistence currently uses SQLite. The optional PostgreSQL Compose service is not wired to an audit backend.
 - The Go Bifrost plugin needs a matching Go toolchain and Bifrost build to compile and load; it was not compiled in this environment.
-- `Preview offline` shows pattern-based candidates only. It does not establish that a claim is current.
 
 ## Release Checklist
 
