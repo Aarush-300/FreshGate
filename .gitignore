@@ -32,3 +32,5 @@ verify.png
 # Archives and generated vendor bundles
 *.zip
 vendor/
+
+.agents/
