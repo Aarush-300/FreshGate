@@ -48,6 +48,12 @@ All behavior is controlled via environment variables:
 | `REDIS_URL` | *(None)* | Redis connection string (`redis://redis:6379/0`) for distributed cache |
 | `FRESHGATE_CACHE_DB` | `freshgate_cache.db` | File path for SQLite claim cache |
 | `FRESHGATE_AUDIT_DB` | `freshgate_audit.db` | File path for historical verification audit store; local SQLite needs persistent storage on the host. |
+| `FRESHGATE_FEATURE_DB` | `freshgate_features.db` | Durable SQLite path for policies, Watchtower, immutable verification snapshots, and Replay. |
+| `FRESHGATE_WATCHTOWER_ENABLED` | `true` | Enable the lifecycle-managed due-job scheduler. Scheduled checks require server OpenAI-compatible and Tavily credentials. |
+| `FRESHGATE_WATCHTOWER_MAX_CONCURRENCY` | `2` | Maximum simultaneous scheduled checks. |
+| `FRESHGATE_WATCHTOWER_MAX_CLAIMS` | `1000` | Maximum registered monitored claims. |
+
+See [Watchtower](watchtower.md) and [Verification Replay](verification-replay.md) for retry, lease, API, and SQLite durability behavior.
 
 ---
 

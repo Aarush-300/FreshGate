@@ -202,6 +202,10 @@ class CategoryRegistry:
     def get_all_volatile(self) -> List[str]:
         return [k for k, v in self._categories.items() if v.is_volatile]
 
+    def get_all_categories(self) -> List[str]:
+        """Return registered canonical category names in declaration order."""
+        return list(self._categories)
+
     def _init_defaults(self):
         # 1. Pricing
         self.register(CategoryDefinition(

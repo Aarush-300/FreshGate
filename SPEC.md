@@ -66,3 +66,26 @@ Any app that sends LLM calls through the Bifrost gateway gets automatic fact-fre
 - User accounts
 - Multi-tenant config
 - Streaming-response verification (stretch goal only)
+
+## Policy Studio
+- Operators can configure supported claim categories, preferred/allowed/blocked domains, source count and authority requirements, evidence age and freshness thresholds, verification mode, jurisdiction, and cache behavior.
+- Policies are optional on direct `/verify` requests. Without a selected policy, the existing default verification behavior applies.
+- `shadow` and `warn` report policy outcomes without filtering live evidence. `enforce` filters evidence and may reject policy acceptance when evidence requirements are not met; it does not alter the underlying evidence verdict.
+- Policy simulation evaluates caller-supplied sample claims without live search or LLM calls. It is distinct from claim extraction and does not restore the removed offline extraction preview feature.
+- Policy configuration is stored in the shared SQLite feature database. PostgreSQL and multi-tenant access controls are not part of the current implementation.
+
+## Watchtower
+- Operators can monitor volatile claims at bounded intervals and associate an enabled policy.
+- A lifecycle-managed background worker claims due jobs through SQLite leases, so concurrent workers do not run the same claim and expired work can be recovered after restart.
+- Scheduled verification requires server-configured provider credentials. Per-request dashboard credentials are never persisted.
+- Alerts capture verdict/score transitions and old/new evidence. Provider errors and rate limits are retried and do not produce factual-change alerts.
+
+## Verification Replay
+- Each volatile claim verification writes a new immutable snapshot to the shared feature store, including its fingerprint, verification ID, verdict, score dimensions, evidence, policy, cache status, and elapsed duration.
+- History is retrieved by fingerprint or verification ID. Replay compares snapshots and provides a chronological timeline that includes matching Watchtower alerts.
+- Replay is read-only; it never modifies saved snapshots.
+
+## Developer CLI
+- `freshgate` is an HTTP client for the public FreshGate API; it does not duplicate extraction, verification, policy evaluation, or benchmarking logic.
+- It supports answer text/files, JSON batch files, text/JSON/Markdown reports, policy selection, minimum-score gates, optional fail-on-unverifiable, warning-only mode, and readiness checks.
+- CLI reports do not include configured provider API keys. Unverifiable claims do not fail a score threshold unless explicitly configured.

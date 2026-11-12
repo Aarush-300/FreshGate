@@ -87,8 +87,8 @@ def test_contradicted_claim_old_source_score_under_15():
 
 # --- Cache Tests ---
 
-def test_cache_set_and_get(tmp_path):
-    db_file = str(tmp_path / "test_cache.db")
+def test_cache_set_and_get(workspace_tmp_path):
+    db_file = str(workspace_tmp_path / "test_cache.db")
     cache = SQLiteClaimCache(db_path=db_file)
 
     claim = Claim(
@@ -112,8 +112,8 @@ def test_cache_set_and_get(tmp_path):
     assert len(cached_claim.sources) == 1
 
 
-def test_cache_expiration(tmp_path):
-    db_file = str(tmp_path / "test_cache.db")
+def test_cache_expiration(workspace_tmp_path):
+    db_file = str(workspace_tmp_path / "test_cache.db")
     cache = SQLiteClaimCache(db_path=db_file)
 
     claim = Claim(
@@ -134,9 +134,9 @@ def test_cache_expiration(tmp_path):
 # --- Pipeline & Contract Schema Tests ---
 
 @pytest.mark.asyncio
-async def test_pipeline_cached_second_call_zero_tavily(tmp_path):
+async def test_pipeline_cached_second_call_zero_tavily(workspace_tmp_path):
     # Acceptance test: Same claim twice: second call has cached: true and makes zero Tavily calls
-    db_file = str(tmp_path / "pipeline_cache.db")
+    db_file = str(workspace_tmp_path / "pipeline_cache.db")
     cache = SQLiteClaimCache(db_path=db_file)
 
     extractor_json = '[{"id": "c1", "text": "Parag Agrawal is CEO of Twitter", "type": "leadership"}]'
@@ -172,8 +172,8 @@ async def test_pipeline_cached_second_call_zero_tavily(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_pipeline_contract_json_schema(tmp_path):
-    db_file = str(tmp_path / "schema_cache.db")
+async def test_pipeline_contract_json_schema(workspace_tmp_path):
+    db_file = str(workspace_tmp_path / "schema_cache.db")
     cache = SQLiteClaimCache(db_path=db_file)
 
     extractor_json = """[

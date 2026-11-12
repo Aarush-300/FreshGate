@@ -273,9 +273,9 @@ async def test_single_flight_request_coalescing():
 
 # --- 9. SQLite Cache Expired Entry Cleanup ---
 
-def test_sqlite_cache_cleanup_expired(tmp_path):
+def test_sqlite_cache_cleanup_expired(workspace_tmp_path):
     """Verify that expired cache entries are successfully cleaned up."""
-    db_file = str(tmp_path / "cache_cleanup.db")
+    db_file = str(workspace_tmp_path / "cache_cleanup.db")
     cache = SQLiteClaimCache(db_path=db_file)
 
     claim = Claim(

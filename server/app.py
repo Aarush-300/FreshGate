@@ -24,6 +24,7 @@ from core.llm import OpenAILLMClient
 from core.llm_manager import get_llm_manager
 from core.verifier import ClaimVerifier, TavilySearchClient
 from core.config import is_valid_credential
+from core.policies import get_policy
 from core.security import (
     SecurityHeadersMiddleware,
     RequestBodySizeLimitMiddleware,
@@ -33,6 +34,9 @@ from core.security import (
     sanitize_error_detail,
 )
 from core.metrics import metrics
+from server.routes.policies import router as policies_router
+from server.routes.watchtower import router as watchtower_router, watchtower_service
+from server.routes.replay import history_router, replay_router
 from core.logging_config import CorrelationIdMiddleware, get_correlation_id
 from core.audit import audit_store
 from core.circuit_breaker import circuit_breaker
@@ -61,8 +65,10 @@ async def lifespan(app: FastAPI):
     current_cfg = get_config()
     logger.info("Starting FreshGate Gateway (mode=%s, upstream=%s)", current_cfg.freshgate_mode, current_cfg.bifrost_upstream_url)
     _ = get_llm_manager()
+    await watchtower_service.start()
     yield
     logger.info("Shutting down FreshGate Gateway connection pools...")
+    await watchtower_service.stop()
     mgr = get_llm_manager()
     await mgr.aclose()
     if hasattr(pipeline.verifier, "tavily_client") and hasattr(pipeline.verifier.tavily_client, "aclose"):
@@ -81,12 +87,17 @@ app.add_middleware(CorrelationIdMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestBodySizeLimitMiddleware, max_body_bytes=MAX_BODY_SIZE)
 app.add_middleware(RateLimitMiddleware, limiter=rate_limiter)
+app.include_router(policies_router)
+app.include_router(watchtower_router)
+app.include_router(history_router)
+app.include_router(replay_router)
 
 pipeline = FreshGatePipeline()
 
 
 class VerifyRequest(BaseModel):
     answer: str = Field(..., min_length=1, max_length=50000, description="Assistant answer text to verify")
+    policy_id: Optional[str] = Field(default=None, min_length=1, max_length=80)
 
 
 def build_request_pipeline(openai_api_key: Optional[str], tavily_api_key: Optional[str]) -> FreshGatePipeline:
@@ -266,18 +277,25 @@ async def verify_answer(req: VerifyRequest, request: Request):
         raise HTTPException(status_code=400, detail="The OpenAI API key is invalid or malformed.")
     if tavily_key is not None and not is_valid_credential(tavily_key):
         raise HTTPException(status_code=400, detail="The Tavily API key is invalid or malformed.")
-    request_pipeline = build_request_pipeline(openai_key, tavily_key)
+    policy = get_policy(req.policy_id) if req.policy_id else None
+    if req.policy_id and policy is None:
+        raise HTTPException(status_code=404, detail="Policy not found")
+    if policy and not policy.enabled:
+        raise HTTPException(status_code=409, detail="Selected policy is disabled")
+    request_pipeline = build_request_pipeline(openai_key, tavily_key) if (openai_key or tavily_key) else pipeline
     try:
         return await request_pipeline.verify(
             req.answer,
             single_flight_scope=getattr(request.state, "correlation_id", None),
+            policy=policy,
         )
     except Exception as e:
         safe_msg = sanitize_error_detail(e)
         logger.error("Direct verification failed: %s", safe_msg)
         raise HTTPException(status_code=500, detail=safe_msg)
     finally:
-        await request_pipeline.verifier.tavily_client.aclose()
+        if request_pipeline is not pipeline:
+            await request_pipeline.verifier.tavily_client.aclose()
 
 
 @app.post("/proxy/v1/chat/completions")

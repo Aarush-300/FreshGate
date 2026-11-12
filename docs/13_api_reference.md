@@ -106,14 +106,73 @@ Keys are used for this request only. Send them over HTTPS when deployed; do not 
 ```
 
 #### Response Body
-Returns `VerificationResult` schema.
+Returns `VerificationResult` schema. Each checked volatile claim includes a `claim_fingerprint` and a `verification_id` that identify its history and immutable snapshot. Claims excluded from live verification may not have these fields.
 
 #### Request Body
 ```json
 {
-  "answer": "Python 2.7 has just been released."
+  "answer": "Python 2.7 has just been released.",
+  "policy_id": "optional-saved-policy-id"
 }
 ```
+
+When a policy is selected, the response includes a `policy_evaluation` object with the policy decision and per-claim results. Omit `policy_id` to preserve default behavior. See [Policy Studio](policy-studio.md) for the complete policy contract.
+
+### Policy Studio
+
+- `GET /api/policies/categories` — supported categories.
+- `GET /api/policies` and `GET /api/policies/{policy_id}` — list or retrieve policies.
+- `POST /api/policies` — create a policy; returns HTTP 201.
+- `PUT /api/policies/{policy_id}` — replace policy settings.
+- `DELETE /api/policies/{policy_id}` — delete a policy; returns HTTP 204.
+- `POST /api/policies/validate` — validate proposed settings before saving.
+- `POST /api/policies/{policy_id}/validate` — validate settings in the context of a saved policy.
+- `POST /api/policies/{policy_id}/preview` — simulate policy evaluation against supplied sample claims without live search or LLM calls.
+- `POST /api/policies/{policy_id}/duplicate` — create a copy; returns HTTP 201.
+
+Policy preview request example:
+
+```json
+{
+  "claims": [
+    {
+      "id": "claim-1",
+      "text": "The current release is 3.13",
+      "category": "version",
+      "freshness_score": 92,
+      "sources": [
+        {
+          "url": "https://docs.python.org/3/",
+          "snippet": "Current documentation",
+          "published": "2026-11-10",
+          "authority_score": 0.95
+        }
+      ]
+    }
+  ]
+}
+```
+
+### Watchtower
+
+- `POST /api/watchtower/monitor` — register a volatile claim, interval, optional policy, and optional verified baseline.
+- `GET /api/watchtower/claims` and `GET /api/watchtower/claims/{id}` — list monitored claims/overview or retrieve claim details/history.
+- `PATCH /api/watchtower/claims/{id}` and `DELETE /api/watchtower/claims/{id}` — update monitoring state/interval/policy or remove the claim.
+- `POST /api/watchtower/claims/{id}/check` — request a controlled immediate recheck; a current job lease returns HTTP 409.
+- `GET /api/watchtower/alerts` and `GET /api/watchtower/alerts/{id}` — list or retrieve alerts.
+- `POST /api/watchtower/alerts/{id}/acknowledge` — acknowledge an alert.
+
+Monitoring intervals are specified in seconds and must be between one hour and 30 days. Scheduled checks use server-configured provider credentials and never reuse keys sent to `/verify`. `FRESHGATE_WATCHTOWER_*` settings bound claim count, concurrency, polling, lease duration, and retries. See [Watchtower operations](watchtower.md).
+
+### Verification History and Replay
+
+- `GET /api/history/claims/{fingerprint}?limit=100&offset=0` — paginated immutable snapshots for a SHA-256 claim fingerprint.
+- `GET /api/history/verifications/{verification_id}` — retrieve one immutable snapshot by the ID returned on a verified claim.
+- `GET /api/replay/{fingerprint}?limit=100&offset=0` — chronological snapshot page and the latest comparison.
+- `GET /api/replay/{fingerprint}/compare?from={verification_id}&to={verification_id}` — compare two snapshots of that claim.
+- `GET /api/replay/{fingerprint}/timeline?limit=100&offset=0` — paginated verification and Watchtower alert events.
+
+Replay endpoints are read-only. They compare verdict, score, authority/recency/agreement dimensions, sources and snippets, corrections, and applied policy. See [Verification Replay](verification-replay.md).
 
 ---
 

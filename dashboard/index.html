@@ -8,7 +8,7 @@
   <meta name="theme-color" content="#07070d">
   <meta name="description" content="FreshGate checks time-sensitive claims against current web sources before they reach your users.">
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-  <link rel="stylesheet" href="/static/style.css?v=15">
+  <link rel="stylesheet" href="/static/style.css?v=16">
   <script src="/static/preferences.js?v=1"></script>
 </head>
 <body>
@@ -36,6 +36,9 @@
       <button class="tab-btn" data-tab="tab-metrics">System</button>
       <button class="tab-btn" data-tab="tab-benchmark">Benchmarks</button>
       <button class="tab-btn" data-tab="tab-audits">Audit log</button>
+      <button class="tab-btn" data-tab="tab-policies">Policy Studio</button>
+      <button class="tab-btn" data-tab="tab-watchtower">Watchtower</button>
+      <button class="tab-btn" data-tab="tab-replay">Replay</button>
     </nav>
     </div>
   </header>
@@ -85,6 +88,7 @@
             <label for="verify-input">PASTE AN LLM RESPONSE</label>
             <textarea id="verify-input" placeholder="Paste a response here. We will extract time-sensitive claims and check the evidence behind them."></textarea>
           </div>
+          <div class="form-group policy-selection"><label for="verify-policy">VERIFICATION POLICY</label><select id="verify-policy"><option value="">Default FreshGate behavior</option></select></div>
           <div class="form-footer"><span class="input-note">Keys are sent for this request only and cleared when it finishes.</span><div class="form-actions"><button type="submit" id="verify-submit-btn"><span id="verify-button-label">Verify live</span></button></div></div>
         </form>
         <div id="verify-results" class="verification-results"></div>
@@ -200,10 +204,121 @@
         </div>
       </div>
     </section>
+
+    <!-- TAB 5: POLICY STUDIO -->
+    <section id="tab-policies" class="tab-content" data-ambient="system">
+      <section class="tab-banner" aria-labelledby="policy-banner-title">
+        <canvas class="banner-canvas" data-mode="system" aria-hidden="true"></canvas>
+        <div class="banner-copy"><span class="eyebrow">POLICY STUDIO</span><h2 id="policy-banner-title">Set rules for claim verification</h2><p>Choose the categories, sources, evidence age, and freshness thresholds FreshGate should apply.</p></div>
+        <button type="button" id="new-policy-btn" class="secondary banner-action">New policy</button>
+      </section>
+      <div class="policy-layout">
+        <section class="card policy-list-card" aria-labelledby="policy-list-title">
+          <div class="section-heading"><span class="eyebrow">SAVED POLICIES</span><h2 class="card-title" id="policy-list-title">Policies</h2></div>
+          <p id="policy-list-state" class="muted-copy" role="status">Loading policies…</p>
+          <div id="policy-list" class="policy-list"></div>
+        </section>
+        <section class="card policy-editor-card" aria-labelledby="policy-editor-title">
+          <div class="section-heading"><span class="eyebrow">CONFIGURATION</span><h2 class="card-title" id="policy-editor-title">Create a policy</h2></div>
+          <form id="policy-form">
+            <input id="policy-id" type="hidden">
+            <div class="form-group"><label for="policy-name">NAME</label><input id="policy-name" type="text" maxlength="120" required placeholder="Official product facts"></div>
+            <div class="form-group"><label for="policy-description">DESCRIPTION</label><input id="policy-description" type="text" maxlength="1000" placeholder="How this policy should be used"></div>
+            <div class="form-group"><label for="policy-categories">CLAIM CATEGORIES</label><select id="policy-categories" multiple size="6" required aria-describedby="policy-categories-help"></select><small id="policy-categories-help" class="muted-copy">Use Ctrl or Command to select multiple categories.</small></div>
+            <div class="policy-field-grid">
+              <div class="form-group"><label for="policy-allowed-domains">ALLOWED SOURCE DOMAINS</label><textarea id="policy-allowed-domains" rows="3" placeholder="example.com&#10;docs.example.org"></textarea></div>
+              <div class="form-group"><label for="policy-blocked-domains">BLOCKED SOURCE DOMAINS</label><textarea id="policy-blocked-domains" rows="3" placeholder="forum.example.net"></textarea></div>
+              <div class="form-group"><label for="policy-preferred-domains">PREFERRED SOURCE DOMAINS</label><textarea id="policy-preferred-domains" rows="3" placeholder="docs.python.org"></textarea></div>
+              <div class="form-group"><label for="policy-jurisdiction">JURISDICTION</label><input id="policy-jurisdiction" type="text" maxlength="120" placeholder="Optional, e.g. California"></div>
+            </div>
+            <div class="policy-field-grid policy-number-grid">
+              <div class="form-group"><label for="policy-min-sources">MINIMUM SOURCES</label><input id="policy-min-sources" type="number" min="0" max="10" value="1"></div>
+              <div class="form-group"><label for="policy-min-authority">MINIMUM SOURCE AUTHORITY</label><input id="policy-min-authority" type="number" min="0" max="1" step="0.05" value="0"></div>
+              <div class="form-group"><label for="policy-min-score">MINIMUM FRESHNESS SCORE</label><input id="policy-min-score" type="number" min="0" max="100" value="0"></div>
+              <div class="form-group"><label for="policy-max-age">MAX EVIDENCE AGE (DAYS)</label><input id="policy-max-age" type="number" min="1" max="3650" placeholder="No limit"></div>
+            </div>
+            <div class="form-group"><label for="policy-category-age">CATEGORY EVIDENCE AGE LIMITS (JSON)</label><input id="policy-category-age" type="text" placeholder='{"pricing": 30, "law": 90}'></div>
+            <div class="form-group"><label for="policy-category-scores">CATEGORY FRESHNESS THRESHOLDS (JSON)</label><input id="policy-category-scores" type="text" placeholder='{"pricing": 80, "version": 70}'></div>
+            <div class="form-group"><label for="policy-cache-ttls">CATEGORY CACHE TTL OVERRIDES (SECONDS, JSON)</label><input id="policy-cache-ttls" type="text" placeholder='{"pricing": 3600}'></div>
+            <div class="policy-field-grid policy-number-grid">
+              <div class="form-group"><label for="policy-mode">VERIFICATION MODE</label><select id="policy-mode"><option value="shadow">Shadow</option><option value="warn" selected>Warn</option><option value="enforce">Enforce</option></select></div>
+              <label class="policy-check"><input id="policy-enabled" type="checkbox" checked> Enabled</label>
+              <label class="policy-check"><input id="policy-cache-enabled" type="checkbox" checked> Reuse policy cache</label>
+            </div>
+            <div class="policy-actions"><button type="submit" id="save-policy-btn">Save policy</button><button type="button" id="cancel-policy-btn" class="secondary">Clear</button></div>
+            <p id="policy-form-state" class="system-state" role="status"></p>
+          </form>
+          <section class="policy-preview" aria-labelledby="policy-preview-title">
+            <div class="section-heading"><span class="eyebrow">POLICY SIMULATION</span><h3 class="card-title" id="policy-preview-title">Try sample evidence</h3></div>
+            <div class="form-group"><label for="policy-preview-text">SAMPLE CLAIM</label><input id="policy-preview-text" type="text" value="Python 3.13 is a current release"></div>
+            <div class="policy-field-grid">
+              <div class="form-group"><label for="policy-preview-category">CATEGORY</label><select id="policy-preview-category"></select></div>
+              <div class="form-group"><label for="policy-preview-domain">SOURCE DOMAIN</label><input id="policy-preview-domain" type="text" value="docs.python.org"></div>
+              <div class="form-group"><label for="policy-preview-score">SAMPLE SCORE</label><input id="policy-preview-score" type="number" min="0" max="100" value="90"></div>
+            </div>
+            <button type="button" id="run-policy-preview-btn" class="secondary">Preview policy</button>
+            <pre id="policy-preview-result" class="policy-preview-result" role="status">Save or select a policy to preview its rules.</pre>
+          </section>
+        </section>
+      </div>
+    </section>
+
+    <!-- TAB 6: WATCHTOWER -->
+    <section id="tab-watchtower" class="tab-content" data-ambient="system">
+      <section class="tab-banner" aria-labelledby="watchtower-banner-title">
+        <canvas class="banner-canvas" data-mode="system" aria-hidden="true"></canvas>
+        <div class="banner-copy"><span class="eyebrow">WATCHTOWER</span><h2 id="watchtower-banner-title">Keep verified claims up to date</h2><p>FreshGate rechecks monitored claims on a schedule and flags meaningful changes.</p></div>
+        <button type="button" id="watchtower-refresh" class="secondary banner-action">Refresh</button>
+      </section>
+      <div class="watchtower-overview" id="watchtower-overview" aria-label="Monitoring overview"></div>
+      <div class="watchtower-layout">
+        <section class="card" aria-labelledby="watchtower-claims-title">
+          <div class="section-heading"><span class="eyebrow">SCHEDULED CLAIMS</span><h2 class="card-title" id="watchtower-claims-title">Monitoring</h2></div>
+          <p id="watchtower-claims-state" class="muted-copy" role="status">Loading monitored claims…</p>
+          <div id="watchtower-claims" class="watchtower-claims"></div>
+        </section>
+        <section class="card" aria-labelledby="watchtower-alerts-title">
+          <div class="section-heading"><span class="eyebrow">CHANGE DETECTION</span><h2 class="card-title" id="watchtower-alerts-title">Alerts</h2></div>
+          <p id="watchtower-alerts-state" class="muted-copy" role="status">Loading alerts…</p>
+          <div id="watchtower-alerts" class="watchtower-alerts"></div>
+        </section>
+      </div>
+      <section class="card watchtower-detail-card" id="watchtower-detail-card" hidden>
+        <div class="section-heading"><span class="eyebrow">CLAIM DETAIL</span><h2 class="card-title" id="watchtower-detail-title">Monitoring detail</h2></div>
+        <pre id="watchtower-detail" class="policy-preview-result"></pre>
+      </section>
+    </section>
+
+    <!-- TAB 7: VERIFICATION REPLAY -->
+    <section id="tab-replay" class="tab-content" data-ambient="system">
+      <section class="tab-banner" aria-labelledby="replay-banner-title">
+        <canvas class="banner-canvas" data-mode="system" aria-hidden="true"></canvas>
+        <div class="banner-copy"><span class="eyebrow">VERIFICATION REPLAY</span><h2 id="replay-banner-title">Compare how evidence changed</h2><p>Inspect immutable verification snapshots and alerts for a claim.</p></div>
+      </section>
+      <section class="card replay-search-card">
+        <div class="form-group"><label for="replay-fingerprint">CLAIM FINGERPRINT</label><input id="replay-fingerprint" type="text" autocomplete="off" spellcheck="false" placeholder="Paste a SHA-256 fingerprint or open Replay from Watchtower"></div>
+        <div class="replay-toolbar"><button type="button" id="load-replay-btn">Load history</button><span id="replay-state" class="muted-copy" role="status">Choose a monitored claim or paste its fingerprint.</span></div>
+      </section>
+      <div class="replay-layout">
+        <section class="card" aria-labelledby="replay-timeline-title">
+          <div class="section-heading"><span class="eyebrow">TIMELINE</span><h2 class="card-title" id="replay-timeline-title">Verification events</h2></div>
+          <div id="replay-timeline" class="replay-timeline"></div>
+        </section>
+        <section class="card" aria-labelledby="replay-comparison-title">
+          <div class="section-heading"><span class="eyebrow">SIDE-BY-SIDE</span><h2 class="card-title" id="replay-comparison-title">Compare snapshots</h2></div>
+          <div class="replay-selectors">
+            <div class="form-group"><label for="replay-from">PREVIOUS</label><select id="replay-from"></select></div>
+            <div class="form-group"><label for="replay-to">CURRENT</label><select id="replay-to"></select></div>
+          </div>
+          <button type="button" id="compare-replay-btn" class="secondary">Compare selected</button>
+          <div id="replay-comparison" class="replay-comparison"></div>
+        </section>
+      </div>
+    </section>
   </main>
 
   <script src="/static/hero-bg.js?v=6"></script>
-  <script src="/static/app.js?v=13"></script>
+  <script src="/static/app.js?v=16"></script>
   <script src="/static/ambient.js?v=3"></script>
 </body>
 </html>

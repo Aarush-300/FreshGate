@@ -113,6 +113,14 @@ class FreshGateConfig:
 
     # Cache and Storage
     cache_db_path: str = "freshgate_cache.db"
+    feature_db_path: str = "freshgate_features.db"
+    watchtower_enabled: bool = True
+    watchtower_poll_seconds: int = 10
+    watchtower_max_concurrency: int = 2
+    watchtower_max_monitored_claims: int = 1000
+    watchtower_lease_seconds: int = 900
+    watchtower_max_retries: int = 3
+    watchtower_retry_base_seconds: int = 60
     redis_url: Optional[str] = None
 
     # Security and Policy
@@ -229,6 +237,14 @@ def load_config(override_env: Optional[Dict[str, str]] = None) -> FreshGateConfi
         max_pending_queue=_int_env("FRESHGATE_MAX_PENDING_QUEUE", 50),
         queue_timeout_seconds=_float_env("FRESHGATE_QUEUE_TIMEOUT", 8.0),
         cache_db_path=env.get("FRESHGATE_CACHE_DB") or env.get("CACHE_DB_PATH", "freshgate_cache.db"),
+        feature_db_path=env.get("FRESHGATE_FEATURE_DB", "freshgate_features.db"),
+        watchtower_enabled=_bool_env("FRESHGATE_WATCHTOWER_ENABLED", True),
+        watchtower_poll_seconds=max(1, min(300, _int_env("FRESHGATE_WATCHTOWER_POLL_SECONDS", 10))),
+        watchtower_max_concurrency=max(1, min(10, _int_env("FRESHGATE_WATCHTOWER_MAX_CONCURRENCY", 2))),
+        watchtower_max_monitored_claims=max(1, min(10000, _int_env("FRESHGATE_WATCHTOWER_MAX_CLAIMS", 1000))),
+        watchtower_lease_seconds=max(60, min(3600, _int_env("FRESHGATE_WATCHTOWER_LEASE_SECONDS", 900))),
+        watchtower_max_retries=max(1, min(10, _int_env("FRESHGATE_WATCHTOWER_MAX_RETRIES", 3))),
+        watchtower_retry_base_seconds=max(5, min(3600, _int_env("FRESHGATE_WATCHTOWER_RETRY_BASE_SECONDS", 60))),
         redis_url=env.get("REDIS_URL"),
         admin_key=(env.get("FRESHGATE_ADMIN_KEY") or "").strip(),
         rate_limit_per_minute=_int_env("FRESHGATE_RATE_LIMIT_PER_MINUTE", 60),

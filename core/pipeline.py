@@ -6,6 +6,7 @@ multi-dimensional scoring, and execution status reporting.
 
 import logging
 import asyncio
+import time
 from typing import Optional, List, Dict, Any
 from core.models import (
     Claim,
@@ -20,6 +21,10 @@ from core.verifier import ClaimVerifier
 from core.scorer import calculate_score
 from core.cache import ClaimCacheBase, get_cache, single_flight
 from core.metrics import metrics
+from core.policy_models import PolicyConfig
+from core.policies import cached_result_is_eligible, evaluate_policy_result
+from core.history import record_claims
+from core.persistence import SQLiteFeatureStore
 
 logger = logging.getLogger(__name__)
 
@@ -32,17 +37,21 @@ class FreshGatePipeline:
         extractor: Optional[ClaimExtractor] = None,
         verifier: Optional[ClaimVerifier] = None,
         cache: Optional[ClaimCacheBase] = None,
+        history_store: Optional[SQLiteFeatureStore] = None,
     ):
         self.extractor = extractor or ClaimExtractor()
         self.verifier = verifier or ClaimVerifier()
         self.cache = cache if cache is not None else get_cache()
+        self.history_store = history_store
 
     async def verify(
         self,
         answer_text: str,
         single_flight_scope: Optional[str] = None,
+        policy: Optional[PolicyConfig] = None,
     ) -> VerificationResult:
         """Execute full FreshGate verification pipeline on an answer string."""
+        verification_started = time.perf_counter()
         if not answer_text or not answer_text.strip():
             return VerificationResult(
                 claims=[],
@@ -158,10 +167,13 @@ class FreshGatePipeline:
 
         # Step 2: Triage - filter volatile claims, normalizing categories
         volatile_claims = triage_claims(all_claims)
+        if policy:
+            volatile_claims = [claim for claim in volatile_claims if claim.type in policy.categories]
         metrics.inc_claims_checked(len(volatile_claims))
 
         # If claims were extracted but NONE are volatile (all evergreen static facts)
         if not volatile_claims:
+            empty_policy = evaluate_policy_result(policy, []) if policy else None
             return VerificationResult(
                 claims=all_claims,
                 summary=Summary(
@@ -177,16 +189,27 @@ class FreshGatePipeline:
                 ),
                 status="completed",
                 provider_health=provider_health,
+                policy_evaluation=empty_policy,
             )
 
         # Step 3: Check cache for each volatile claim
         processed_claims: List[Optional[Claim]] = [None] * len(volatile_claims)
         misses_indices: List[int] = []
         misses_to_verify: List[Claim] = []
+        cache_enabled = policy.cache_enabled if policy else True
+        cache_jurisdiction = policy.jurisdiction or "global" if policy else "global"
+        cache_scope = f"{policy.id}:{policy.updated_at}" if policy else None
 
         for idx, claim in enumerate(volatile_claims):
             entity = claim.entities[0] if claim.entities else "general"
-            cached_result = self.cache.get(claim.text, claim.type, entity=entity)
+            cached_result = (
+                self.cache.get(
+                    claim.text, claim.type, jurisdiction=cache_jurisdiction, entity=entity, policy_scope=cache_scope
+                )
+                if cache_enabled else None
+            )
+            if cached_result is not None and policy and policy.verification_mode == "enforce" and not cached_result_is_eligible(cached_result, policy):
+                cached_result = None
             if cached_result is not None:
                 # Cache hit
                 metrics.inc_cache_hit()
@@ -205,17 +228,32 @@ class FreshGatePipeline:
             async def _verify_single_coalesced(c: Claim) -> Claim:
                 # Re-check cache inside coalesced call
                 entity_name = c.entities[0] if c.entities else "general"
-                cached_c = self.cache.get(c.text, c.type, entity=entity_name)
+                cached_c = (
+                    self.cache.get(
+                        c.text, c.type, jurisdiction=cache_jurisdiction, entity=entity_name, policy_scope=cache_scope
+                    )
+                    if cache_enabled else None
+                )
+                if cached_c is not None and policy and policy.verification_mode == "enforce" and not cached_result_is_eligible(cached_c, policy):
+                    cached_c = None
                 if cached_c is not None:
                     cached_c.id = c.id
                     cached_c.cached = True
                     return cached_c
 
                 # Verify against live sources
-                verified = await self.verifier.verify_claim(c)
+                verified = await self.verifier.verify_claim(c, policy=policy) if policy else await self.verifier.verify_claim(c)
                 verified.score = calculate_score(verified)
                 verified.cached = False
-                self.cache.set(verified, entity=entity_name)
+                if cache_enabled:
+                    ttl_override = policy.cache_ttl_seconds.get(c.type) if policy else None
+                    self.cache.set(
+                        verified,
+                        jurisdiction=cache_jurisdiction,
+                        entity=entity_name,
+                        ttl_seconds=ttl_override,
+                        policy_scope=cache_scope,
+                    )
                 return verified
 
             try:
@@ -287,10 +325,23 @@ class FreshGatePipeline:
             provider_health=provider_health,
         )
 
+        policy_evaluation = evaluate_policy_result(policy, final_claims) if policy else None
+        try:
+            await asyncio.to_thread(
+                record_claims,
+                final_claims,
+                policy=policy,
+                duration_seconds=time.perf_counter() - verification_started,
+                store=self.history_store,
+            )
+        except Exception:
+            # History persistence must not turn a completed verification into an API failure.
+            logger.exception("Could not persist immutable verification history")
         return VerificationResult(
             claims=final_claims,
             summary=summary,
             status=pipeline_status,
             error=verification_error or extraction_res.error,
             provider_health=provider_health,
+            policy_evaluation=policy_evaluation,
         )

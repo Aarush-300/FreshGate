@@ -49,6 +49,8 @@ class Claim(BaseModel):
     cached: bool = False
     correction: Optional[str] = None
     verification_timestamp: Optional[str] = None
+    verification_id: Optional[str] = None
+    claim_fingerprint: Optional[str] = None
 
 
 class ExtractionResult(BaseModel):
@@ -97,3 +99,4 @@ class VerificationResult(BaseModel):
     status: PipelineStatus = "completed"
     error: Optional[str] = None
     provider_health: Optional[Dict[str, Any]] = None
+    policy_evaluation: Optional[Dict[str, Any]] = None

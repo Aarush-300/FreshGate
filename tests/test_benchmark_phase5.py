@@ -76,4 +76,6 @@ async def test_run_unit_evaluation_suite():
     assert summary["f1"] >= 90.0
     assert summary["false_positive_rate"] <= 5.0
     assert summary["cache_hit_rate"] == 100.0
-    assert summary["mean_warm_latency_ms"] < 10.0
+    # Verification now persists every checked volatile claim to immutable
+    # history in addition to reading the warm cache; allow that write cost.
+    assert summary["mean_warm_latency_ms"] < 20.0

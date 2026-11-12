@@ -16,6 +16,9 @@ document.addEventListener('DOMContentLoaded', () => {
   setupMetricsPolling();
   setupBenchmarkView();
   setupAuditView();
+  setupPolicyStudio();
+  setupWatchtower();
+  setupReplay();
 });
 
 function setStatusTone(element, tone) {
@@ -61,6 +64,7 @@ function setupVerificationForm() {
   const submitLabel = document.getElementById('verify-button-label');
   const openaiKey = document.getElementById('openai-api-key');
   const tavilyKey = document.getElementById('tavily-api-key');
+  const policySelect = document.getElementById('verify-policy');
 
   if (!form) return;
 
@@ -89,7 +93,10 @@ function setupVerificationForm() {
           'X-OpenAI-API-Key': openaiKey.value.trim(),
           'X-Tavily-API-Key': tavilyKey.value.trim()
         },
-        body: JSON.stringify({ answer: text })
+        body: JSON.stringify({
+          answer: text,
+          ...(policySelect?.value ? { policy_id: policySelect.value } : {})
+        })
       });
 
       if (!res.ok) {
@@ -180,6 +187,24 @@ function renderVerificationResults(data, container) {
   }
 
   container.appendChild(summaryBox);
+
+  if (data.policy_evaluation) {
+    const policyBox = document.createElement('section');
+    policyBox.className = 'claim-card policy-result-card';
+    const policyTitle = document.createElement('h3');
+    policyTitle.textContent = `Policy: ${data.policy_evaluation.policy_name || 'Selected policy'}`;
+    const policyStatus = document.createElement('p');
+    policyStatus.className = 'result-stats';
+    policyStatus.textContent = `Mode: ${data.policy_evaluation.verification_mode} · Decision: ${data.policy_evaluation.decision}`;
+    policyBox.append(policyTitle, policyStatus);
+    for (const outcome of data.policy_evaluation.claims || []) {
+      const row = document.createElement('p');
+      row.className = 'policy-result-item';
+      row.textContent = `${outcome.category}: ${outcome.decision} · sources ${outcome.eligible_source_count}/${outcome.required_source_count} · score ${outcome.freshness_score ?? 'N/A'}/${outcome.minimum_freshness_score ?? 0}`;
+      policyBox.appendChild(row);
+    }
+    container.appendChild(policyBox);
+  }
 
   // Handle empty claims cases based on status
   if (claims.length === 0) {
@@ -313,6 +338,46 @@ function renderVerificationResults(data, container) {
       });
     }
 
+    if (c.verdict && c.verdict !== 'unverifiable') {
+      const monitorButton = document.createElement('button');
+      monitorButton.type = 'button';
+      monitorButton.className = 'secondary monitor-claim-btn';
+      monitorButton.textContent = 'Monitor this claim';
+      monitorButton.addEventListener('click', async () => {
+        monitorButton.disabled = true;
+        try {
+          const response = await fetch('/api/watchtower/monitor', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              claim_text: c.text,
+              category: c.type || c.category,
+              entities: c.entities || [],
+              ...(data.policy_evaluation?.policy_id ? { policy_id: data.policy_evaluation.policy_id } : {}),
+              monitoring_interval: 86400,
+              baseline: { verdict: c.verdict, score: c.score, sources: c.sources || [] }
+            })
+          });
+          const body = await response.json();
+          if (!response.ok) throw new Error(body.detail || `HTTP ${response.status}`);
+          monitorButton.textContent = 'Claim is monitored';
+          document.querySelector('[data-tab="tab-watchtower"]')?.click();
+          document.dispatchEvent(new CustomEvent('freshgate:watchtower-refresh'));
+        } catch (error) {
+          monitorButton.textContent = `Could not monitor: ${error.message}`;
+          monitorButton.disabled = false;
+        }
+      });
+      card.appendChild(monitorButton);
+    }
+    if (c.claim_fingerprint) {
+      const replayButton = document.createElement('button');
+      replayButton.type = 'button';
+      replayButton.className = 'secondary replay-claim-btn';
+      replayButton.textContent = 'Open Replay history';
+      replayButton.addEventListener('click', () => window.openFreshGateReplay?.(c.claim_fingerprint));
+      card.appendChild(replayButton);
+    }
     targetContainer.appendChild(card);
   }
 
@@ -790,6 +855,574 @@ function setupAuditView() {
   }
 
   fetchAudits();
+}
+
+function setupPolicyStudio() {
+  const form = document.getElementById('policy-form');
+  if (!form) return;
+
+  const list = document.getElementById('policy-list');
+  const listState = document.getElementById('policy-list-state');
+  const categorySelect = document.getElementById('policy-categories');
+  const verifySelect = document.getElementById('verify-policy');
+  const previewCategory = document.getElementById('policy-preview-category');
+  const formState = document.getElementById('policy-form-state');
+  let policies = [];
+
+  const request = async (url, options = {}) => {
+    const response = await fetch(url, {
+      ...options,
+      headers: { 'Content-Type': 'application/json', ...(options.headers || {}) }
+    });
+    if (!response.ok) {
+      let detail = `HTTP ${response.status}`;
+      try {
+        const body = await response.json();
+        detail = body.detail || detail;
+      } catch (_) {}
+      throw new Error(detail);
+    }
+    return response.status === 204 ? null : response.json();
+  };
+
+  const splitDomains = (id) => document.getElementById(id).value
+    .split(/[\n,]+/).map(value => value.trim()).filter(Boolean);
+  const parseObject = (id) => {
+    const value = document.getElementById(id).value.trim();
+    if (!value) return {};
+    const parsed = JSON.parse(value);
+    if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
+      throw new Error(`${id.replaceAll('-', ' ')} must be a JSON object`);
+    }
+    return parsed;
+  };
+
+  const payloadFromForm = () => {
+    const categories = [...categorySelect.selectedOptions].map(option => option.value);
+    return {
+      name: document.getElementById('policy-name').value.trim(),
+      description: document.getElementById('policy-description').value.trim(),
+      enabled: document.getElementById('policy-enabled').checked,
+      categories,
+      preferred_domains: splitDomains('policy-preferred-domains'),
+      allowed_domains: splitDomains('policy-allowed-domains'),
+      blocked_domains: splitDomains('policy-blocked-domains'),
+      minimum_source_count: Number(document.getElementById('policy-min-sources').value),
+      minimum_source_authority: Number(document.getElementById('policy-min-authority').value),
+      minimum_freshness_score: Number(document.getElementById('policy-min-score').value),
+      maximum_evidence_age_days: document.getElementById('policy-max-age').value
+        ? Number(document.getElementById('policy-max-age').value) : null,
+      category_maximum_evidence_age_days: parseObject('policy-category-age'),
+      category_minimum_freshness_scores: parseObject('policy-category-scores'),
+      cache_ttl_seconds: parseObject('policy-cache-ttls'),
+      verification_mode: document.getElementById('policy-mode').value,
+      cache_enabled: document.getElementById('policy-cache-enabled').checked,
+      jurisdiction: document.getElementById('policy-jurisdiction').value.trim() || null
+    };
+  };
+
+  const clearForm = () => {
+    form.reset();
+    document.getElementById('policy-id').value = '';
+    document.getElementById('policy-editor-title').textContent = 'Create a policy';
+    document.getElementById('save-policy-btn').textContent = 'Save policy';
+    document.getElementById('policy-enabled').checked = true;
+    document.getElementById('policy-cache-enabled').checked = true;
+    for (const option of categorySelect.options) option.selected = option.dataset.volatile === 'true';
+    formState.textContent = '';
+    formState.classList.remove('is-error');
+  };
+
+  const fillForm = (policy) => {
+    document.getElementById('policy-id').value = policy.id;
+    document.getElementById('policy-name').value = policy.name;
+    document.getElementById('policy-description').value = policy.description || '';
+    document.getElementById('policy-enabled').checked = policy.enabled;
+    for (const option of categorySelect.options) option.selected = policy.categories.includes(option.value);
+    document.getElementById('policy-allowed-domains').value = (policy.allowed_domains || []).join('\n');
+    document.getElementById('policy-blocked-domains').value = (policy.blocked_domains || []).join('\n');
+    document.getElementById('policy-preferred-domains').value = (policy.preferred_domains || []).join('\n');
+    document.getElementById('policy-jurisdiction').value = policy.jurisdiction || '';
+    document.getElementById('policy-min-sources').value = policy.minimum_source_count;
+    document.getElementById('policy-min-authority').value = policy.minimum_source_authority;
+    document.getElementById('policy-min-score').value = policy.minimum_freshness_score;
+    document.getElementById('policy-max-age').value = policy.maximum_evidence_age_days ?? '';
+    document.getElementById('policy-category-age').value = JSON.stringify(policy.category_maximum_evidence_age_days || {});
+    document.getElementById('policy-category-scores').value = JSON.stringify(policy.category_minimum_freshness_scores || {});
+    document.getElementById('policy-cache-ttls').value = JSON.stringify(policy.cache_ttl_seconds || {});
+    document.getElementById('policy-mode').value = policy.verification_mode;
+    document.getElementById('policy-cache-enabled').checked = policy.cache_enabled;
+    document.getElementById('policy-editor-title').textContent = 'Edit policy';
+    document.getElementById('save-policy-btn').textContent = 'Update policy';
+    formState.textContent = '';
+    formState.classList.remove('is-error');
+    document.getElementById('policy-editor-title').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  const renderPolicyList = () => {
+    clearElement(list);
+    listState.textContent = policies.length ? `${policies.length} policy${policies.length === 1 ? '' : 'ies'}` : 'No policies yet. Create one to customize verification.';
+    for (const policy of policies) {
+      const card = document.createElement('article');
+      card.className = 'policy-list-item';
+      const heading = document.createElement('div');
+      heading.className = 'policy-list-heading';
+      const title = document.createElement('h3');
+      title.textContent = policy.name;
+      const state = document.createElement('span');
+      state.className = policy.enabled ? 'policy-enabled' : 'policy-disabled';
+      state.textContent = policy.enabled ? 'ENABLED' : 'DISABLED';
+      heading.append(title, state);
+      const description = document.createElement('p');
+      description.className = 'muted-copy';
+      description.textContent = policy.description || 'No description';
+      const meta = document.createElement('p');
+      meta.className = 'policy-list-meta';
+      meta.textContent = `${policy.categories.length} categories · ${policy.verification_mode} · score ≥ ${policy.minimum_freshness_score}`;
+      const actions = document.createElement('div');
+      actions.className = 'policy-list-actions';
+      for (const [action, label] of [['edit', 'Edit'], ['toggle', policy.enabled ? 'Disable' : 'Enable'], ['duplicate', 'Duplicate'], ['delete', 'Delete']]) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = action === 'delete' ? 'secondary policy-delete' : 'secondary';
+        button.dataset.action = action;
+        button.dataset.policyId = policy.id;
+        button.textContent = label;
+        actions.appendChild(button);
+      }
+      card.append(heading, description, meta, actions);
+      list.appendChild(card);
+    }
+  };
+
+  const loadPolicies = async () => {
+    try {
+      const data = await request('/api/policies?limit=100');
+      policies = data.policies || [];
+      renderPolicyList();
+      const selectedId = verifySelect.value;
+      clearElement(verifySelect);
+      const defaultOption = document.createElement('option');
+      defaultOption.value = '';
+      defaultOption.textContent = 'Default FreshGate behavior';
+      verifySelect.appendChild(defaultOption);
+      for (const policy of policies.filter(item => item.enabled)) {
+        const option = document.createElement('option');
+        option.value = policy.id;
+        option.textContent = policy.name;
+        verifySelect.appendChild(option);
+      }
+      if ([...verifySelect.options].some(option => option.value === selectedId)) verifySelect.value = selectedId;
+    } catch (err) {
+      listState.textContent = `Could not load policies: ${err.message}`;
+    }
+  };
+
+  request('/api/policies/categories').then(data => {
+    clearElement(categorySelect);
+    clearElement(previewCategory);
+    for (const category of data.categories || []) {
+      const option = document.createElement('option');
+      option.value = category.name;
+      option.textContent = `${category.name.replaceAll('_', ' ')}${category.volatile ? '' : ' (stable)'}`;
+      option.dataset.volatile = String(category.volatile);
+      categorySelect.appendChild(option);
+      const previewOption = document.createElement('option');
+      previewOption.value = category.name;
+      previewOption.textContent = category.name.replaceAll('_', ' ');
+      previewCategory.appendChild(previewOption);
+    }
+    clearForm();
+  }).catch(err => { listState.textContent = `Could not load categories: ${err.message}`; });
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const saveButton = document.getElementById('save-policy-btn');
+    saveButton.disabled = true;
+    formState.textContent = 'Validating policy…';
+    try {
+      const payload = payloadFromForm();
+      const policyId = document.getElementById('policy-id').value;
+      const validation = await request(policyId ? `/api/policies/${encodeURIComponent(policyId)}/validate` : '/api/policies/validate', {
+        method: 'POST', body: JSON.stringify(payload)
+      });
+      const saved = await request(policyId ? `/api/policies/${encodeURIComponent(policyId)}` : '/api/policies', {
+        method: policyId ? 'PUT' : 'POST', body: JSON.stringify(payload)
+      });
+      formState.textContent = validation.warnings?.length
+        ? `Saved with note: ${validation.warnings[0].message}` : 'Policy saved.';
+      await loadPolicies();
+      document.getElementById('policy-id').value = saved.id;
+      document.getElementById('policy-editor-title').textContent = 'Edit policy';
+      document.getElementById('save-policy-btn').textContent = 'Update policy';
+    } catch (err) {
+      formState.textContent = `Could not save policy: ${err.message}`;
+      formState.classList.add('is-error');
+    } finally {
+      saveButton.disabled = false;
+    }
+  });
+
+  list.addEventListener('click', async (event) => {
+    const button = event.target.closest('button[data-action]');
+    if (!button) return;
+    const policy = policies.find(item => item.id === button.dataset.policyId);
+    if (!policy) return;
+    try {
+      if (button.dataset.action === 'edit') fillForm(policy);
+      if (button.dataset.action === 'delete') {
+        if (!window.confirm(`Delete policy “${policy.name}”?`)) return;
+        await request(`/api/policies/${encodeURIComponent(policy.id)}`, { method: 'DELETE' });
+        if (document.getElementById('policy-id').value === policy.id) clearForm();
+        await loadPolicies();
+      }
+      if (button.dataset.action === 'duplicate') {
+        await request(`/api/policies/${encodeURIComponent(policy.id)}/duplicate`, { method: 'POST' });
+        await loadPolicies();
+      }
+      if (button.dataset.action === 'toggle') {
+        const payload = {
+          name: policy.name, description: policy.description, enabled: !policy.enabled,
+          categories: policy.categories, preferred_domains: policy.preferred_domains,
+          allowed_domains: policy.allowed_domains, blocked_domains: policy.blocked_domains,
+          minimum_source_count: policy.minimum_source_count,
+          minimum_source_authority: policy.minimum_source_authority,
+          minimum_freshness_score: policy.minimum_freshness_score,
+          maximum_evidence_age_days: policy.maximum_evidence_age_days,
+          category_maximum_evidence_age_days: policy.category_maximum_evidence_age_days,
+          category_minimum_freshness_scores: policy.category_minimum_freshness_scores,
+          verification_mode: policy.verification_mode, cache_enabled: policy.cache_enabled,
+          cache_ttl_seconds: policy.cache_ttl_seconds, jurisdiction: policy.jurisdiction
+        };
+        await request(`/api/policies/${encodeURIComponent(policy.id)}`, { method: 'PUT', body: JSON.stringify(payload) });
+        await loadPolicies();
+      }
+    } catch (err) {
+      listState.textContent = `Policy action failed: ${err.message}`;
+    }
+  });
+
+  document.getElementById('new-policy-btn').addEventListener('click', clearForm);
+  document.getElementById('cancel-policy-btn').addEventListener('click', clearForm);
+  document.getElementById('run-policy-preview-btn').addEventListener('click', async () => {
+    const policyId = document.getElementById('policy-id').value || verifySelect.value;
+    const output = document.getElementById('policy-preview-result');
+    if (!policyId) {
+      output.textContent = 'Save or select a policy before running its simulation.';
+      return;
+    }
+    const domain = document.getElementById('policy-preview-domain').value.trim();
+    const sample = {
+      id: 'sample-claim',
+      text: document.getElementById('policy-preview-text').value.trim(),
+      category: previewCategory.value,
+      freshness_score: Number(document.getElementById('policy-preview-score').value),
+      sources: domain ? [{
+        url: `https://${domain}/`, domain,
+        snippet: 'Sample evidence supplied for policy simulation.',
+        published: new Date().toISOString(), authority_score: 0.95,
+        is_primary: true, relevance_score: 1
+      }] : []
+    };
+    try {
+      const result = await request(`/api/policies/${encodeURIComponent(policyId)}/preview`, {
+        method: 'POST', body: JSON.stringify({ claims: [sample] })
+      });
+      output.textContent = JSON.stringify(result, null, 2);
+    } catch (err) {
+      output.textContent = `Preview failed: ${err.message}`;
+    }
+  });
+
+  clearForm();
+  loadPolicies();
+}
+
+function setupWatchtower() {
+  const claims = document.getElementById('watchtower-claims');
+  if (!claims) return;
+  const claimsState = document.getElementById('watchtower-claims-state');
+  const alerts = document.getElementById('watchtower-alerts');
+  const alertsState = document.getElementById('watchtower-alerts-state');
+  const overview = document.getElementById('watchtower-overview');
+  const detailCard = document.getElementById('watchtower-detail-card');
+  const detail = document.getElementById('watchtower-detail');
+  const detailTitle = document.getElementById('watchtower-detail-title');
+
+  const request = async (url, options = {}) => {
+    const response = await fetch(url, {
+      ...options,
+      headers: { 'Content-Type': 'application/json', ...(options.headers || {}) }
+    });
+    if (!response.ok) {
+      let message = `HTTP ${response.status}`;
+      try { message = (await response.json()).detail || message; } catch (_) {}
+      throw new Error(message);
+    }
+    return response.status === 204 ? null : response.json();
+  };
+  const dateLabel = value => value ? new Date(value * 1000).toLocaleString() : 'Not checked yet';
+  const makeAction = (label, action, id, secondary = true) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = secondary ? 'secondary' : '';
+    button.dataset.action = action;
+    button.dataset.id = id;
+    button.textContent = label;
+    return button;
+  };
+
+  const load = async () => {
+    try {
+      const [claimData, alertData] = await Promise.all([
+        request('/api/watchtower/claims?limit=100'),
+        request('/api/watchtower/alerts?limit=100')
+      ]);
+      clearElement(claims);
+      clearElement(alerts);
+      clearElement(overview);
+      const totals = claimData.overview || {};
+      for (const [label, value] of [['Monitored', totals.total], ['Healthy', totals.healthy], ['Changed', totals.changed], ['Pending', totals.pending], ['Failed', totals.failed]]) {
+        const stat = document.createElement('div');
+        stat.className = 'watchtower-stat';
+        const name = document.createElement('span'); name.textContent = label;
+        const amount = document.createElement('strong'); amount.textContent = String(value ?? 0);
+        stat.append(name, amount); overview.appendChild(stat);
+      }
+      claimsState.textContent = claimData.claims.length ? `${claimData.claims.length} monitored claim${claimData.claims.length === 1 ? '' : 's'}` : 'No monitored claims. Verify a claim, then choose “Monitor this claim.”';
+      for (const item of claimData.claims) {
+        const card = document.createElement('article'); card.className = 'watchtower-claim';
+        const title = document.createElement('h3'); title.textContent = item.claim_text;
+        const meta = document.createElement('p'); meta.className = 'watchtower-meta';
+        meta.textContent = `${item.category} · ${item.last_verdict || 'baseline needed'} · score ${item.last_score ?? '—'} · last attempt ${dateLabel(item.last_checked_at)} · last success ${dateLabel(item.last_successful_at)} · next ${dateLabel(item.next_check_at)} · ${item.enabled ? 'enabled' : 'paused'}`;
+        const actions = document.createElement('div'); actions.className = 'watchtower-actions';
+        actions.append(
+          makeAction('Check now', 'check', item.id, false),
+          makeAction('Details', 'details', item.id),
+          makeAction('Replay', 'replay', item.claim_fingerprint),
+          makeAction(item.enabled ? 'Pause' : 'Resume', 'toggle', item.id),
+          makeAction('Remove', 'delete', item.id)
+        );
+        card.append(title, meta, actions); claims.appendChild(card);
+      }
+      alertsState.textContent = alertData.alerts.length ? `${alertData.alerts.length} alert${alertData.alerts.length === 1 ? '' : 's'}` : 'No detected changes.';
+      for (const item of alertData.alerts) {
+        const card = document.createElement('article'); card.className = 'watchtower-alert';
+        const title = document.createElement('h3'); title.textContent = item.reason;
+        const transition = document.createElement('p'); transition.textContent = `${item.previous_verdict || '—'} → ${item.current_verdict || '—'} · score ${item.previous_score ?? '—'} → ${item.current_score ?? '—'} · ${dateLabel(item.created_at)}`;
+        const actions = document.createElement('div'); actions.className = 'watchtower-actions';
+        const fingerprint = item.metadata?.claim_fingerprint;
+        if (fingerprint) actions.appendChild(makeAction('Open in Replay', 'replay', fingerprint));
+        if (!item.acknowledged_at) actions.appendChild(makeAction('Acknowledge', 'acknowledge', item.id));
+        const sources = document.createElement('div'); sources.className = 'watchtower-evidence';
+        for (const [label, evidence] of [['Previous evidence', item.old_evidence], ['Current evidence', item.new_evidence]]) {
+          if (!evidence?.length) continue;
+          const group = document.createElement('div'); group.className = 'watchtower-evidence-group';
+          const heading = document.createElement('span'); heading.textContent = `${label}: `; group.appendChild(heading);
+          for (const source of evidence) {
+            try {
+              const url = new URL(source.url);
+              if (!['http:', 'https:'].includes(url.protocol)) continue;
+              const link = document.createElement('a'); link.href = url.href; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.textContent = source.domain || url.hostname; group.appendChild(link);
+            } catch (_) {}
+          }
+          sources.appendChild(group);
+        }
+        card.append(title, transition, sources, actions); alerts.appendChild(card);
+      }
+    } catch (error) {
+      claimsState.textContent = `Could not load Watchtower: ${error.message}`;
+      alertsState.textContent = `Could not load Watchtower: ${error.message}`;
+    }
+  };
+
+  claims.addEventListener('click', async event => {
+    const button = event.target.closest('button[data-action]'); if (!button) return;
+    const { action, id } = button.dataset;
+    try {
+      if (action === 'replay') {
+        window.openFreshGateReplay?.(id);
+        return;
+      }
+      if (action === 'check') {
+        button.disabled = true; button.textContent = 'Checking…';
+        const outcome = await request(`/api/watchtower/claims/${encodeURIComponent(id)}/check`, { method: 'POST' });
+        claimsState.textContent = outcome.status === 'completed' ? `Check finished: ${outcome.verdict}` : `Check ${outcome.status}: ${outcome.error || ''}`;
+      }
+      if (action === 'toggle') {
+        const item = await request(`/api/watchtower/claims/${encodeURIComponent(id)}`);
+        await request(`/api/watchtower/claims/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify({ enabled: !item.enabled }) });
+      }
+      if (action === 'delete') {
+        if (!window.confirm('Remove this monitored claim? Existing alerts remain in history.')) return;
+        await request(`/api/watchtower/claims/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      }
+      if (action === 'details') {
+        const item = await request(`/api/watchtower/claims/${encodeURIComponent(id)}`);
+        detailTitle.textContent = item.claim_text;
+        detail.textContent = JSON.stringify(item, null, 2);
+        detailCard.hidden = false;
+      }
+      await load();
+    } catch (error) { claimsState.textContent = `Watchtower action failed: ${error.message}`; }
+  });
+
+  alerts.addEventListener('click', async event => {
+    const button = event.target.closest('button[data-action]'); if (!button) return;
+    if (button.dataset.action === 'replay') {
+      window.openFreshGateReplay?.(button.dataset.id);
+      return;
+    }
+    if (button.dataset.action !== 'acknowledge') return;
+    try { await request(`/api/watchtower/alerts/${encodeURIComponent(button.dataset.id)}/acknowledge`, { method: 'POST' }); await load(); }
+    catch (error) { alertsState.textContent = `Could not acknowledge alert: ${error.message}`; }
+  });
+  document.getElementById('watchtower-refresh').addEventListener('click', load);
+  document.addEventListener('freshgate:watchtower-refresh', load);
+  document.querySelector('[data-tab="tab-watchtower"]')?.addEventListener('click', load);
+  load();
+}
+
+function setupReplay() {
+  const fingerprintInput = document.getElementById('replay-fingerprint');
+  if (!fingerprintInput) return;
+  const state = document.getElementById('replay-state');
+  const timeline = document.getElementById('replay-timeline');
+  const comparison = document.getElementById('replay-comparison');
+  const fromSelect = document.getElementById('replay-from');
+  const toSelect = document.getElementById('replay-to');
+  let currentFingerprint = '';
+
+  const request = async url => {
+    const response = await fetch(url);
+    if (!response.ok) {
+      let message = `HTTP ${response.status}`;
+      try { message = (await response.json()).detail || message; } catch (_) {}
+      throw new Error(message);
+    }
+    return response.json();
+  };
+  const dateLabel = value => value ? new Date(value * 1000).toLocaleString() : 'Unknown time';
+  const appendSourceLinks = (container, sources, label) => {
+    if (!sources?.length) return;
+    const group = document.createElement('div'); group.className = 'replay-diff';
+    const heading = document.createElement('strong'); heading.textContent = label; group.appendChild(heading);
+    for (const source of sources) {
+      try {
+        const url = new URL(source.url);
+        if (!['http:', 'https:'].includes(url.protocol)) continue;
+        const link = document.createElement('a'); link.href = url.href; link.target = '_blank'; link.rel = 'noopener noreferrer';
+        link.textContent = `${source.domain || url.hostname}${source.published ? ` · ${source.published}` : ''}`;
+        group.appendChild(link);
+      } catch (_) {}
+    }
+    container.appendChild(group);
+  };
+  const renderComparison = result => {
+    clearElement(comparison);
+    const before = result.previous;
+    const after = result.current;
+    const panes = document.createElement('div'); panes.className = 'replay-panes';
+    for (const [label, snapshot] of [['Previous', before], ['Current', after]]) {
+      const pane = document.createElement('article'); pane.className = 'replay-pane';
+      const title = document.createElement('h3'); title.textContent = `${label} · ${dateLabel(snapshot.checked_at)}`;
+      const verdict = document.createElement('p'); verdict.textContent = `Verdict: ${snapshot.verdict || 'unknown'} · score: ${snapshot.freshness_score ?? '—'}`;
+      const policy = document.createElement('p'); policy.textContent = `Policy: ${snapshot.metadata?.policy_name || snapshot.policy_id || 'Default'}`;
+      const correction = document.createElement('p'); correction.textContent = snapshot.metadata?.correction ? `Correction: ${snapshot.metadata.correction}` : 'No correction recorded';
+      const evidence = document.createElement('p'); evidence.textContent = `${(snapshot.sources || []).length} evidence source(s)`;
+      pane.append(title, verdict, policy, correction, evidence);
+      appendSourceLinks(pane, snapshot.sources, `${label} sources`);
+      panes.appendChild(pane);
+    }
+    comparison.appendChild(panes);
+    const diff = document.createElement('div'); diff.className = 'replay-diff';
+    const title = document.createElement('strong'); title.textContent = 'Changes'; diff.appendChild(title);
+    const summary = document.createElement('p');
+    summary.textContent = `Verdict: ${result.verdict.previous || '—'} → ${result.verdict.current || '—'} · score change: ${result.freshness_score.delta ?? '—'} · policy changed: ${result.policy.changed ? 'yes' : 'no'} · evidence changed: ${result.evidence_changed ? 'yes' : 'no'}`;
+    if (result.verdict.changed) summary.classList.add('replay-status-changed');
+    diff.appendChild(summary);
+    const factors = document.createElement('p');
+    factors.textContent = `Source authority ${result.sources.authority.previous ?? '—'} → ${result.sources.authority.current ?? '—'} · recency ${result.sources.recency.previous ?? '—'} → ${result.sources.recency.current ?? '—'} · agreement ${result.sources.agreement.previous ?? '—'} → ${result.sources.agreement.current ?? '—'}`;
+    diff.appendChild(factors);
+    appendSourceLinks(diff, result.sources.added, 'Added sources');
+    appendSourceLinks(diff, result.sources.removed, 'Removed sources');
+    for (const source of result.sources.changed || []) {
+      const changed = document.createElement('p'); changed.textContent = `Evidence changed at ${source.url}`; diff.appendChild(changed);
+    }
+    comparison.appendChild(diff);
+  };
+
+  const loadReplay = async (fingerprint, compareImmediately = true) => {
+    currentFingerprint = fingerprint.trim();
+    fingerprintInput.value = currentFingerprint;
+    if (!/^[a-f0-9]{64}$/.test(currentFingerprint)) {
+      state.textContent = 'Enter a valid 64-character claim fingerprint.';
+      return;
+    }
+    state.textContent = 'Loading immutable history…';
+    clearElement(timeline); clearElement(comparison); clearElement(fromSelect); clearElement(toSelect);
+    try {
+      const [replay, timelineData] = await Promise.all([
+        request(`/api/replay/${encodeURIComponent(currentFingerprint)}?limit=100`),
+        request(`/api/replay/${encodeURIComponent(currentFingerprint)}/timeline?limit=100`)
+      ]);
+      const snapshots = replay.snapshots || [];
+      for (const snapshot of snapshots) {
+        const id = snapshot.verification_id;
+        const label = `${dateLabel(snapshot.checked_at)} · ${snapshot.verdict || 'unknown'} · ${snapshot.freshness_score ?? '—'}`;
+        for (const select of [fromSelect, toSelect]) {
+          const option = document.createElement('option'); option.value = id; option.textContent = label; select.appendChild(option);
+        }
+      }
+      if (snapshots.length >= 2) {
+        fromSelect.value = snapshots[snapshots.length - 2].verification_id;
+        toSelect.value = snapshots[snapshots.length - 1].verification_id;
+      }
+      for (const event of timelineData.events || []) {
+        const card = document.createElement('article'); card.className = `replay-event${event.event_type === 'alert' ? ' is-alert' : ''}`;
+        const heading = document.createElement('h3');
+        const detail = document.createElement('p');
+        if (event.event_type === 'verification') {
+          const snapshot = event.verification;
+          heading.textContent = `${snapshot.verdict || 'Verification'} · score ${snapshot.freshness_score ?? '—'}`;
+          detail.textContent = `${dateLabel(snapshot.checked_at)} · ${snapshot.metadata?.policy_name || snapshot.policy_id || 'Default policy'} · ${snapshot.cached ? 'cached' : 'live'} · ${snapshot.verification_id}`;
+        } else {
+          const alert = event.alert;
+          heading.textContent = `Alert · ${alert.reason}`;
+          detail.textContent = `${dateLabel(alert.created_at)} · ${alert.previous_verdict || '—'} → ${alert.current_verdict || '—'} · score ${alert.previous_score ?? '—'} → ${alert.current_score ?? '—'}`;
+        }
+        card.append(heading, detail); timeline.appendChild(card);
+      }
+      if (replay.latest_comparison) renderComparison(replay.latest_comparison);
+      state.textContent = `${replay.total} historical event(s) for ${currentFingerprint}`;
+      if (compareImmediately && snapshots.length < 2) comparison.textContent = 'At least two verification snapshots are needed for a comparison.';
+    } catch (error) {
+      if (error.message === 'No history found for this claim') {
+        state.textContent = 'No verification history exists for this claim yet. New live verifications will appear here.';
+        comparison.textContent = 'A comparison will be available after at least two verification snapshots.';
+      } else {
+        state.textContent = `Could not load Replay: ${error.message}`;
+      }
+    }
+  };
+
+  document.getElementById('load-replay-btn').addEventListener('click', () => loadReplay(fingerprintInput.value));
+  fingerprintInput.addEventListener('keydown', event => {
+    if (event.key === 'Enter') { event.preventDefault(); loadReplay(fingerprintInput.value); }
+  });
+  document.getElementById('compare-replay-btn').addEventListener('click', async () => {
+    if (!currentFingerprint || !fromSelect.value || !toSelect.value) return;
+    const query = new URLSearchParams({ from: fromSelect.value, to: toSelect.value });
+    try { renderComparison(await request(`/api/replay/${encodeURIComponent(currentFingerprint)}/compare?${query}`)); }
+    catch (error) { state.textContent = `Comparison failed: ${error.message}`; }
+  });
+  document.querySelector('[data-tab="tab-replay"]')?.addEventListener('click', () => {
+    if (fingerprintInput.value.trim() && fingerprintInput.value.trim() !== currentFingerprint) loadReplay(fingerprintInput.value);
+  });
+  window.openFreshGateReplay = fingerprint => {
+    document.querySelector('[data-tab="tab-replay"]')?.click();
+    loadReplay(fingerprint);
+  };
 }
 
 // Utility: Safe DOM Clear

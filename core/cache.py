@@ -16,6 +16,7 @@ import time
 import threading
 import asyncio
 import logging
+from contextlib import contextmanager
 from abc import ABC, abstractmethod
 from typing import Optional, List, Dict, Any
 from core.models import Claim, Source
@@ -32,6 +33,7 @@ def build_structured_cache_key(
     category: str = "other",
     jurisdiction: str = "global",
     entity: str = "general",
+    policy_scope: Optional[str] = None,
 ) -> str:
     """Build deterministic, versioned, jurisdiction-isolated cache key."""
     norm_text = " ".join(claim_text.strip().lower().split())
@@ -39,7 +41,8 @@ def build_structured_cache_key(
     clean_cat = category.strip().lower()
     clean_jur = jurisdiction.strip().lower()
     clean_ent = entity.strip().lower()
-    return f"{CACHE_KEY_VERSION}:{clean_cat}:{clean_jur}:{clean_ent}:{text_hash}"
+    scope = f":policy:{hashlib.sha256(policy_scope.encode('utf-8')).hexdigest()[:16]}" if policy_scope else ""
+    return f"{CACHE_KEY_VERSION}{scope}:{clean_cat}:{clean_jur}:{clean_ent}:{text_hash}"
 
 
 class ClaimCacheBase(ABC):
@@ -52,6 +55,7 @@ class ClaimCacheBase(ABC):
         category: str = "other",
         jurisdiction: str = "global",
         entity: str = "general",
+        policy_scope: Optional[str] = None,
     ) -> Optional[Claim]:
         pass
 
@@ -62,6 +66,7 @@ class ClaimCacheBase(ABC):
         jurisdiction: str = "global",
         entity: Optional[str] = None,
         ttl_seconds: Optional[int] = None,
+        policy_scope: Optional[str] = None,
     ):
         pass
 
@@ -103,8 +108,17 @@ class SQLiteClaimCache(ClaimCacheBase):
         conn.execute("PRAGMA busy_timeout=5000;")
         return conn
 
+    @contextmanager
+    def _connection(self):
+        conn = self._get_connection()
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
+
     def _init_db(self):
-        with self._lock, self._get_connection() as conn:
+        with self._lock, self._connection() as conn:
             cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='claim_cache'")
             table_exists = bool(cursor.fetchone())
 
@@ -162,11 +176,12 @@ class SQLiteClaimCache(ClaimCacheBase):
         category: str = "other",
         jurisdiction: str = "global",
         entity: str = "general",
+        policy_scope: Optional[str] = None,
     ) -> Optional[Claim]:
-        key = build_structured_cache_key(claim_text, category, jurisdiction, entity)
+        key = build_structured_cache_key(claim_text, category, jurisdiction, entity, policy_scope)
         now = time.time()
 
-        with self._lock, self._get_connection() as conn:
+        with self._lock, self._connection() as conn:
             cursor = conn.execute(
                 "SELECT * FROM claim_cache WHERE cache_key = ? AND expires_at > ?",
                 (key, now),
@@ -208,9 +223,10 @@ class SQLiteClaimCache(ClaimCacheBase):
         jurisdiction: str = "global",
         entity: Optional[str] = None,
         ttl_seconds: Optional[int] = None,
+        policy_scope: Optional[str] = None,
     ):
         target_entity = entity or (claim.entities[0] if claim.entities else "general")
-        key = build_structured_cache_key(claim.text, claim.type, jurisdiction, target_entity)
+        key = build_structured_cache_key(claim.text, claim.type, jurisdiction, target_entity, policy_scope)
         now = time.time()
 
         if ttl_seconds is None:
@@ -224,7 +240,7 @@ class SQLiteClaimCache(ClaimCacheBase):
         expires_at = now + ttl_seconds
         sources_json = json.dumps([s.model_dump() for s in claim.sources])
 
-        with self._lock, self._get_connection() as conn:
+        with self._lock, self._connection() as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO claim_cache 
@@ -252,7 +268,7 @@ class SQLiteClaimCache(ClaimCacheBase):
             conn.commit()
 
     def invalidate(self, category: Optional[str] = None, jurisdiction: Optional[str] = None):
-        with self._lock, self._get_connection() as conn:
+        with self._lock, self._connection() as conn:
             if category and jurisdiction:
                 conn.execute(
                     "DELETE FROM claim_cache WHERE category = ? AND jurisdiction = ?",
@@ -270,7 +286,7 @@ class SQLiteClaimCache(ClaimCacheBase):
         total_ops = self._hits + self._misses
         hit_rate = round(self._hits / total_ops, 3) if total_ops > 0 else 0.0
 
-        with self._lock, self._get_connection() as conn:
+        with self._lock, self._connection() as conn:
             cursor = conn.execute("SELECT COUNT(*) as count FROM claim_cache WHERE expires_at > ?", (time.time(),))
             active_count = cursor.fetchone()["count"]
 
@@ -283,14 +299,14 @@ class SQLiteClaimCache(ClaimCacheBase):
         }
 
     def clear(self):
-        with self._lock, self._get_connection() as conn:
+        with self._lock, self._connection() as conn:
             conn.execute("DELETE FROM claim_cache")
             conn.commit()
 
     def cleanup_expired(self) -> int:
         """Prune expired entries and return number of deleted records."""
         now = time.time()
-        with self._lock, self._get_connection() as conn:
+        with self._lock, self._connection() as conn:
             cursor = conn.execute("DELETE FROM claim_cache WHERE expires_at <= ?", (now,))
             deleted = cursor.rowcount
             conn.commit()
@@ -319,12 +335,13 @@ class RedisClaimCache(ClaimCacheBase):
         category: str = "other",
         jurisdiction: str = "global",
         entity: str = "general",
+        policy_scope: Optional[str] = None,
     ) -> Optional[Claim]:
         if not self.available or not self.client:
             self._misses += 1
             return None
 
-        key = build_structured_cache_key(claim_text, category, jurisdiction, entity)
+        key = build_structured_cache_key(claim_text, category, jurisdiction, entity, policy_scope)
         try:
             raw = self.client.get(key)
         except Exception as exc:
@@ -354,12 +371,13 @@ class RedisClaimCache(ClaimCacheBase):
         jurisdiction: str = "global",
         entity: Optional[str] = None,
         ttl_seconds: Optional[int] = None,
+        policy_scope: Optional[str] = None,
     ):
         if not self.available or not self.client:
             return
 
         target_entity = entity or (claim.entities[0] if claim.entities else "general")
-        key = build_structured_cache_key(claim.text, claim.type, jurisdiction, target_entity)
+        key = build_structured_cache_key(claim.text, claim.type, jurisdiction, target_entity, policy_scope)
 
         if ttl_seconds is None:
             if claim.verdict == "unverifiable":

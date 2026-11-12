@@ -117,7 +117,12 @@ class TavilySearchClient:
             "failed_searches": self.failed_searches,
         }
 
-    async def search(self, query: str, max_results: int = 5) -> List[Dict[str, Any]]:
+    async def search(
+        self,
+        query: str,
+        max_results: int = 5,
+        include_domains: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
         """Perform search on Tavily with retry and backoff."""
         effective_key = self.api_key if self.api_key is not None else get_config().tavily_api_key
         effective_key = (effective_key or "").strip()
@@ -139,6 +144,8 @@ class TavilySearchClient:
             "include_answer": False,
             "include_raw_content": False,
         }
+        if include_domains:
+            payload["include_domains"] = include_domains[:50]
 
         headers = {
             "Content-Type": "application/json",
@@ -303,14 +310,19 @@ class ClaimVerifier:
             return cat_def.search_query_builder(claim)
         return claim.text.rstrip(".")
 
-    async def verify_claim(self, claim: Claim) -> Claim:
+    async def verify_claim(self, claim: Claim, policy: Optional[Any] = None) -> Claim:
         """Verify an individual claim against live sources. Fail open to 'unverifiable' on errors."""
         async with self._semaphore:
             query = self._build_search_query(claim)
 
             # Step 1: Tavily search
             try:
-                raw_results = await self.tavily_client.search(query, max_results=5)
+                if policy and policy.verification_mode == "enforce" and policy.preferred_domains:
+                    raw_results = await self.tavily_client.search(
+                        query, max_results=5, include_domains=policy.preferred_domains
+                    )
+                else:
+                    raw_results = await self.tavily_client.search(query, max_results=5)
             except Exception as e:
                 logger.error("Tavily search failed for claim %s: %s. Returning unverifiable.", claim.id, e)
                 claim.verdict = "unverifiable"
@@ -346,6 +358,31 @@ class ClaimVerifier:
 
             # Filter syndicated/duplicate reporting
             independent_sources = self.source_validator.filter_independent_sources(scored_sources)
+            if policy and policy.verification_mode == "enforce":
+                from core.policies import source_is_eligible
+                independent_sources = [
+                    source for source in independent_sources
+                    if source_is_eligible(source, policy, claim.type)
+                ]
+                if policy.preferred_domains:
+                    from core.policies import domain_matches
+                    independent_sources.sort(
+                        key=lambda source: not domain_matches(source.domain, policy.preferred_domains)
+                    )
+                if len(independent_sources) < policy.minimum_source_count:
+                    claim.verdict = "unverifiable"
+                    claim.verification_method = "deterministic_evidence_rule"
+                    claim.explanation = (
+                        f"Policy requires at least {policy.minimum_source_count} eligible independent source(s); "
+                        f"found {len(independent_sources)}."
+                    )
+                    claim.sources = independent_sources
+                    claim.supporting_sources = []
+                    claim.contradicting_sources = []
+                    claim.evidence = [source.snippet for source in independent_sources]
+                    claim.confidence = 0.4
+                    claim.correction = None
+                    return claim
             claim.sources = independent_sources
 
             # Step 3: LLM Judge evaluation with prompt-injection defense

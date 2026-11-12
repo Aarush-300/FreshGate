@@ -83,6 +83,14 @@ flowchart TD
 - Exposes Prometheus operational metrics on `/metrics`.
 - Persists immutable request audit records to SQLite. PostgreSQL audit persistence is not implemented yet.
 
+### 2.10 Feature history and Replay (`core/persistence.py`, `core/history.py`, `core/replay.py`)
+- Stores policy configuration, monitored claims, immutable per-claim verification snapshots, and Watchtower alerts in the separately configured feature database.
+- Each checked volatile claim receives a `verification_id` and stable context-aware fingerprint. Snapshots preserve score dimensions, source evidence, policy, cache status, and verification duration.
+- Replay reads snapshots and alerts to build chronological timelines and evidence comparisons; it does not mutate history.
+- Watchtower leases due rows in SQLite so worker processes sharing the same database do not claim the same active job.
+
+See [Feature architecture](feature-architecture.md) and [Verification Replay](verification-replay.md) for data flow and storage limits.
+
 ---
 
 ## 3. Streaming (SSE) Architecture

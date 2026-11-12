@@ -1,6 +1,7 @@
 import pytest
 from httpx import AsyncClient, ASGITransport
 from unittest.mock import patch, AsyncMock
+from types import SimpleNamespace
 
 from server.app import app
 from core.models import Claim, Source, Summary, VerificationResult
@@ -24,9 +25,17 @@ async def test_post_verify_endpoint_contract():
         summary=Summary(total=1, checked=1, stale=1, avg_score=10),
     )
 
-    with patch("server.app.pipeline.verify", new=AsyncMock(return_value=mock_result)):
+    scoped_pipeline = SimpleNamespace(
+        verify=AsyncMock(return_value=mock_result),
+        verifier=SimpleNamespace(tavily_client=SimpleNamespace(aclose=AsyncMock())),
+    )
+    with patch("server.app.build_request_pipeline", return_value=scoped_pipeline):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            response = await ac.post("/verify", json={"answer": "GPT-4 costs $30 per million input tokens."})
+            response = await ac.post(
+                "/verify",
+                headers={"X-OpenAI-API-Key": "sk-test-valid-key", "X-Tavily-API-Key": "tvly-test-valid-key"},
+                json={"answer": "GPT-4 costs $30 per million input tokens."},
+            )
 
     assert response.status_code == 200
     data = response.json()

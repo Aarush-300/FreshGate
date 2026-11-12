@@ -472,12 +472,12 @@ async def test_partially_extracted_claims():
 
 
 # --- 11. Test Cache Contamination ---
-def test_cache_contamination(tmp_path):
+def test_cache_contamination(workspace_tmp_path):
     """Verify that an unverifiable or partial result does not contaminate or override
 
     a verified result, and cache stores confirmed/contradicted properly.
     """
-    db_file = str(tmp_path / "test_cache.db")
+    db_file = str(workspace_tmp_path / "test_cache.db")
     cache = SQLiteClaimCache(db_path=db_file)
 
     claim_text = "Claude 3.5 Sonnet costs $3 per million input tokens"

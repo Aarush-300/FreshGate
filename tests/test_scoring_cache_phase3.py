@@ -99,8 +99,8 @@ def test_structured_cache_keys_jurisdiction_isolation():
     assert ":eu:" in key_eu
 
 
-def test_cache_jurisdiction_isolation_in_db(tmp_path):
-    db_file = str(tmp_path / "jurisdiction_test.db")
+def test_cache_jurisdiction_isolation_in_db(workspace_tmp_path):
+    db_file = str(workspace_tmp_path / "jurisdiction_test.db")
     cache = SQLiteClaimCache(db_path=db_file)
 
     claim_ca = Claim(
@@ -131,8 +131,8 @@ def test_cache_jurisdiction_isolation_in_db(tmp_path):
     assert read_eu.verdict == "confirmed"
 
 
-def test_unverifiable_claim_short_ttl(tmp_path):
-    db_file = str(tmp_path / "short_ttl_test.db")
+def test_unverifiable_claim_short_ttl(workspace_tmp_path):
+    db_file = str(workspace_tmp_path / "short_ttl_test.db")
     cache = SQLiteClaimCache(db_path=db_file)
 
     claim_unverifiable = Claim(
@@ -152,8 +152,8 @@ def test_unverifiable_claim_short_ttl(tmp_path):
     assert cached.verdict == "unverifiable"
 
 
-def test_cache_stats_and_invalidation(tmp_path):
-    db_file = str(tmp_path / "stats_test.db")
+def test_cache_stats_and_invalidation(workspace_tmp_path):
+    db_file = str(workspace_tmp_path / "stats_test.db")
     cache = SQLiteClaimCache(db_path=db_file)
 
     claim = Claim(id="c1", text="Node 20 is active LTS", type="version", verdict="confirmed", score=90)
@@ -179,8 +179,8 @@ def test_cache_stats_and_invalidation(tmp_path):
     assert stats_after["total_entries"] == 0
 
 
-def test_sqlite_concurrent_access_protection(tmp_path):
-    db_file = str(tmp_path / "concurrent_cache.db")
+def test_sqlite_concurrent_access_protection(workspace_tmp_path):
+    db_file = str(workspace_tmp_path / "concurrent_cache.db")
     cache = SQLiteClaimCache(db_path=db_file)
 
     def write_worker(idx):
