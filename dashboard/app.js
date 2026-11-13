@@ -680,7 +680,7 @@ function drawMetricHistory(container, history, status) {
   if (status) { const dots = document.createElement('div'); dots.className = 'history-dots'; history.forEach(sample => { const dot = document.createElement('i'); dot.className = `tone-${sample.tone}`; dots.appendChild(dot); }); container.append(dots); return; }
   const values = history.map(sample => sample.value).filter(Number.isFinite), min = Math.min(...values), max = Math.max(...values), span = max - min || 1;
   const svg = document.createElementNS('http://www.w3.org/2000/svg','svg'); svg.setAttribute('viewBox','0 0 160 24'); svg.setAttribute('preserveAspectRatio','none'); svg.setAttribute('aria-hidden','true');
-  const polyline = document.createElementNS('http://www.w3.org/2000/svg','polyline'); polyline.setAttribute('fill','none'); polyline.setAttribute('stroke','rgba(185,164,255,.8)'); polyline.setAttribute('stroke-width','1.5'); polyline.setAttribute('points', values.map((value,index) => `${index * 160 / (values.length - 1)},${22 - (value - min) / span * 18}`).join(' ')); svg.appendChild(polyline); container.appendChild(svg);
+  const polyline = document.createElementNS('http://www.w3.org/2000/svg','polyline'); polyline.setAttribute('fill','none'); polyline.setAttribute('stroke','rgba(0,212,146,.8)'); polyline.setAttribute('stroke-width','1.5'); polyline.setAttribute('points', values.map((value,index) => `${index * 160 / (values.length - 1)},${22 - (value - min) / span * 18}`).join(' ')); svg.appendChild(polyline); container.appendChild(svg);
 }
 
 // --- Benchmark & Reliability View ---
