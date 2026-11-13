@@ -334,6 +334,8 @@ class LLMProviderManager:
         max_tokens: Optional[int] = None,
         deadline_seconds: Optional[float] = None,
         api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        model: Optional[str] = None,
     ) -> str:
         """Execute completion through centralized gateway with queue bounds, token tracking, and resilient retry."""
         overall_deadline = deadline_seconds or self.max_retry_duration
@@ -368,8 +370,11 @@ class LLMProviderManager:
             "Authorization": f"Bearer {effective_key}",
         }
 
+        effective_model = (model or self.model).strip()
+        effective_base_url = (base_url or self.base_url).rstrip("/")
+
         payload: Dict[str, Any] = {
-            "model": self.model,
+            "model": effective_model,
             "messages": messages,
             "temperature": temperature,
         }
@@ -407,6 +412,7 @@ class LLMProviderManager:
                         request_type=request_type,
                         start_time=start_time,
                         overall_deadline=overall_deadline,
+                        base_url=effective_base_url,
                     )
                 finally:
                     self._active_requests = max(0, self._active_requests - 1)
@@ -421,9 +427,11 @@ class LLMProviderManager:
         request_type: str,
         start_time: float,
         overall_deadline: float,
+        base_url: Optional[str] = None,
     ) -> str:
         attempt = 0
-        target_url = f"{self.base_url}/chat/completions"
+        effective_base = (base_url or self.base_url).rstrip("/")
+        target_url = f"{effective_base}/chat/completions"
 
         while True:
             attempt += 1
@@ -469,13 +477,13 @@ class LLMProviderManager:
             except httpx.TimeoutException as e:
                 error_detail = LLMErrorDetail(
                     error_type=LLMErrorType.REQUEST_TIMEOUT,
-                    message=f"Request timeout on connection to {self.base_url}: {e}",
+                    message=f"Request timeout on connection to {effective_base}: {e}",
                     is_transient=True,
                 )
             except httpx.NetworkError as e:
                 error_detail = LLMErrorDetail(
                     error_type=LLMErrorType.CONNECTION_ERROR,
-                    message=f"Network connection error to {self.base_url}: {e}",
+                    message=f"Network connection error to {effective_base}: {e}",
                     is_transient=True,
                 )
             except Exception as e:

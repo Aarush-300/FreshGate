@@ -77,11 +77,43 @@
         <div class="console-heading"><div><div class="eyebrow">VERIFICATION WORKSPACE</div><h2 class="card-title">Inspect an answer</h2></div><span class="console-mode"><span class="live-dot"></span> READY</span></div>
         <form id="verify-form">
           <fieldset class="provider-credentials">
-            <legend>YOUR PROVIDER KEYS</legend>
-            <p>Used only for this request. Leave blank to use server-configured .env keys.</p>
+            <legend>AI PROVIDER &amp; CREDENTIALS</legend>
+            <div class="provider-header-row">
+              <p>Configure model inference and web evidence keys. Leave blank to use server .env defaults.</p>
+              <div class="bifrost-badge-pill" title="Integrated with Bifrost Gateway upstream"><span class="live-dot"></span> BIFROST INTEGRATED</div>
+            </div>
+
+            <div class="provider-select-grid">
+              <div class="form-group">
+                <label for="ai-provider-select">AI PROVIDER</label>
+                <select id="ai-provider-select">
+                  <option value="openai" selected>OpenAI (GPT-4o-mini / Custom)</option>
+                  <option value="groq">Groq (Llama 3.3 70B — Free Tier, No Card)</option>
+                  <option value="gemini">Google Gemini (Gemini 1.5 Flash — Free Tier)</option>
+                  <option value="ollama">Ollama (Local &amp; Offline — 100% Free)</option>
+                  <option value="openrouter">OpenRouter (Free / Multi-Model)</option>
+                  <option value="custom">Custom OpenAI-Compatible Provider</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="ai-model-input">MODEL</label>
+                <input id="ai-model-input" type="text" spellcheck="false" placeholder="gpt-4o-mini" value="gpt-4o-mini">
+              </div>
+            </div>
+
             <div class="provider-key-fields">
-              <div class="form-group"><label for="openai-api-key">OPENAI API KEY</label><input id="openai-api-key" name="openai-api-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-… (or leave blank for server .env)"></div>
+              <div class="form-group"><label for="openai-api-key" id="ai-key-label">OPENAI API KEY</label><input id="openai-api-key" name="openai-api-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-… (or leave blank for server .env)"></div>
               <div class="form-group"><label for="tavily-api-key">TAVILY API KEY</label><input id="tavily-api-key" name="tavily-api-key" type="password" autocomplete="off" spellcheck="false" placeholder="tvly-… (or leave blank for server .env)"></div>
+            </div>
+
+            <div class="provider-base-url-row" id="provider-base-url-row">
+              <div class="form-group">
+                <label for="ai-base-url">PROVIDER BASE URL</label>
+                <input id="ai-base-url" type="url" spellcheck="false" placeholder="https://api.openai.com/v1" value="https://api.openai.com/v1">
+              </div>
+              <div class="provider-hint-box" id="provider-hint-box">
+                <span id="provider-hint-text">Standard OpenAI developer platform. Requires prepaid credits at platform.openai.com.</span>
+              </div>
             </div>
           </fieldset>
           <div class="form-group">
@@ -224,7 +256,12 @@
             <input id="policy-id" type="hidden">
             <div class="form-group"><label for="policy-name">NAME</label><input id="policy-name" type="text" maxlength="120" required placeholder="Official product facts"></div>
             <div class="form-group"><label for="policy-description">DESCRIPTION</label><input id="policy-description" type="text" maxlength="1000" placeholder="How this policy should be used"></div>
-            <div class="form-group"><label for="policy-categories">CLAIM CATEGORIES</label><select id="policy-categories" multiple size="6" required aria-describedby="policy-categories-help"></select><small id="policy-categories-help" class="muted-copy">Use Ctrl or Command to select multiple categories.</small></div>
+            <div class="form-group">
+              <label for="policy-categories">CLAIM CATEGORIES</label>
+              <div id="policy-category-pills" class="category-pills" aria-label="Quick category selector"></div>
+              <select id="policy-categories" multiple size="6" required aria-describedby="policy-categories-help"></select>
+              <small id="policy-categories-help" class="muted-copy">Click pill tags above or hold Ctrl / Command to select multiple categories.</small>
+            </div>
             <div class="policy-field-grid">
               <div class="form-group"><label for="policy-allowed-domains">ALLOWED SOURCE DOMAINS</label><textarea id="policy-allowed-domains" rows="3" placeholder="example.com&#10;docs.example.org"></textarea></div>
               <div class="form-group"><label for="policy-blocked-domains">BLOCKED SOURCE DOMAINS</label><textarea id="policy-blocked-domains" rows="3" placeholder="forum.example.net"></textarea></div>

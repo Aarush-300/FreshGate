@@ -107,16 +107,32 @@ pipeline = FreshGatePipeline()
 class VerifyRequest(BaseModel):
     answer: str = Field(..., min_length=1, max_length=50000, description="Assistant answer text to verify")
     policy_id: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    provider: Optional[str] = Field(default=None, max_length=80)
+    base_url: Optional[str] = Field(default=None, max_length=500)
+    model: Optional[str] = Field(default=None, max_length=120)
 
 
-def build_request_pipeline(openai_api_key: Optional[str], tavily_api_key: Optional[str]) -> FreshGatePipeline:
+def build_request_pipeline(
+    openai_api_key: Optional[str],
+    tavily_api_key: Optional[str],
+    base_url: Optional[str] = None,
+    model: Optional[str] = None,
+) -> FreshGatePipeline:
     """Build clients with keys scoped to this request, sharing bounded LLM resources and cache."""
     manager = get_llm_manager()
     extraction_client = OpenAILLMClient(
-        api_key=openai_api_key, manager=manager, request_type="extraction"
+        api_key=openai_api_key,
+        base_url=base_url,
+        model=model,
+        manager=manager,
+        request_type="extraction",
     )
     judge_client = OpenAILLMClient(
-        api_key=openai_api_key, manager=manager, request_type="judging"
+        api_key=openai_api_key,
+        base_url=base_url,
+        model=model,
+        manager=manager,
+        request_type="judging",
     )
     tavily_client = TavilySearchClient(api_key=tavily_api_key)
     request_verifier = ClaimVerifier(tavily_client=tavily_client, judge_llm=judge_client)
@@ -237,7 +253,12 @@ async def run_async_verification(text: str):
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "service": "freshgate", "upstream": BIFROST_UPSTREAM_URL}
+    return {
+        "status": "ok",
+        "service": "freshgate",
+        "upstream": BIFROST_UPSTREAM_URL,
+        "providers": ["openai", "groq", "gemini", "ollama", "openrouter", "custom"],
+    }
 
 
 @app.get("/health/live")
@@ -290,6 +311,8 @@ async def verify_answer(req: VerifyRequest, request: Request):
     """Direct verification endpoint for any answer text."""
     openai_key = request.headers.get("X-OpenAI-API-Key") or request.headers.get("X-OpenAI-Key")
     tavily_key = request.headers.get("X-Tavily-API-Key") or request.headers.get("X-Tavily-Key")
+    llm_base_url = request.headers.get("X-LLM-Base-URL") or req.base_url
+    llm_model = request.headers.get("X-LLM-Model") or req.model
     if openai_key is not None and not is_valid_credential(openai_key):
         raise HTTPException(status_code=400, detail="The OpenAI API key is invalid or malformed.")
     if tavily_key is not None and not is_valid_credential(tavily_key):
@@ -299,7 +322,12 @@ async def verify_answer(req: VerifyRequest, request: Request):
         raise HTTPException(status_code=404, detail="Policy not found")
     if policy and not policy.enabled:
         raise HTTPException(status_code=409, detail="Selected policy is disabled")
-    request_pipeline = build_request_pipeline(openai_key, tavily_key) if (openai_key or tavily_key) else pipeline
+    if llm_base_url or llm_model:
+        request_pipeline = build_request_pipeline(openai_key, tavily_key, llm_base_url, llm_model)
+    elif openai_key or tavily_key:
+        request_pipeline = build_request_pipeline(openai_key, tavily_key)
+    else:
+        request_pipeline = pipeline
     try:
         return await request_pipeline.verify(
             req.answer,

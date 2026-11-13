@@ -514,3 +514,260 @@ html[data-motion-paused="true"] select {
   transform: none !important;
 }
 
+/* Universal Select & Dropdown Styling (Fixing Glitch in Screenshot 2) */
+select:not([multiple]) {
+  appearance: none;
+  -webkit-appearance: none;
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 38px 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background-color: #080810;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='rgba(185,164,255,0.75)' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 14px center;
+  background-size: 15px;
+  color: var(--text);
+  font: 400 14px/1.5 var(--font-sans);
+  cursor: pointer;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease, transform 0.16s ease;
+}
+
+select:not([multiple]):hover {
+  border-color: rgba(185, 164, 255, 0.4);
+}
+
+select:not([multiple]):focus {
+  outline: none;
+  border-color: rgba(185, 164, 255, 0.85);
+  box-shadow: 0 0 0 3px rgba(185, 164, 255, 0.22), 0 2px 12px rgba(0, 0, 0, 0.22);
+}
+
+select:not([multiple]) option {
+  background-color: #0e0d18;
+  color: var(--text);
+  padding: 10px 14px;
+}
+
+/* Multi-Select Styling (Fixing Cyan Background Glitch in Screenshot 1) */
+select[multiple] {
+  appearance: none;
+  -webkit-appearance: none;
+  display: block;
+  width: 100%;
+  height: auto;
+  min-height: 154px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #080810;
+  color: var(--text);
+  font: 400 13px/1.6 var(--font-mono);
+  outline: none;
+  overflow-y: auto;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+select[multiple]:focus {
+  border-color: rgba(185, 164, 255, 0.85);
+  box-shadow: 0 0 0 3px rgba(185, 164, 255, 0.22), 0 2px 12px rgba(0, 0, 0, 0.22);
+}
+
+select[multiple] option {
+  padding: 8px 12px;
+  margin: 3px 0;
+  border-radius: 8px;
+  background: transparent;
+  color: rgba(244, 241, 250, 0.85);
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background-color 0.16s ease, color 0.16s ease, border-color 0.16s ease;
+}
+
+select[multiple] option:hover {
+  background: rgba(255, 255, 255, 0.07);
+  color: #ffffff;
+}
+
+select[multiple] option:checked {
+  background: rgba(185, 164, 255, 0.24) linear-gradient(0deg, rgba(185, 164, 255, 0.24) 0%, rgba(185, 164, 255, 0.24) 100%) !important;
+  color: #ffffff !important;
+  font-weight: 500;
+  border-color: rgba(185, 164, 255, 0.38);
+}
+
+select[multiple]::-webkit-scrollbar {
+  width: 6px;
+}
+select[multiple]::-webkit-scrollbar-track {
+  background: transparent;
+}
+select[multiple]::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+}
+select[multiple]::-webkit-scrollbar-thumb:hover {
+  background: rgba(185, 164, 255, 0.45);
+}
+
+/* Category Interactive Tag Pills */
+.category-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin: 6px 0 10px;
+}
+
+.category-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--muted);
+  font: 400 11px/1.3 var(--font-mono);
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: transform 0.16s ease, background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.category-pill:hover {
+  transform: translateY(-1px);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+  border-color: rgba(185, 164, 255, 0.35);
+}
+
+.category-pill.active {
+  background: rgba(185, 164, 255, 0.2);
+  border-color: rgba(185, 164, 255, 0.55);
+  color: #ede9ff;
+  font-weight: 500;
+  box-shadow: 0 2px 8px rgba(185, 164, 255, 0.18);
+}
+
+/* Provider Selector & Bifrost Badge System */
+.provider-header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+
+.provider-header-row p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.bifrost-badge-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 11px;
+  border: 1px solid rgba(185, 164, 255, 0.3);
+  border-radius: 999px;
+  background: rgba(185, 164, 255, 0.08);
+  color: var(--violet);
+  font: 500 10.5px/1.3 var(--font-mono);
+  letter-spacing: 0.08em;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.22);
+}
+
+.provider-select-grid {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.provider-base-url-row {
+  display: grid;
+  grid-template-columns: 1.3fr 1fr;
+  gap: 16px;
+  align-items: end;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.provider-hint-box {
+  padding: 10px 14px;
+  border: 1px solid rgba(185, 164, 255, 0.16);
+  border-radius: 10px;
+  background: rgba(185, 164, 255, 0.04);
+  color: var(--muted);
+  font: 11.5px/1.55 var(--font-mono);
+}
+
+/* Light Theme Overrides */
+html[data-theme="light"] select:not([multiple]) {
+  background-color: #ffffff;
+  color: #22212b;
+  border-color: var(--line);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='rgba(98,82,188,0.75)' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+}
+
+html[data-theme="light"] select:not([multiple]) option {
+  background-color: #ffffff;
+  color: #22212b;
+}
+
+html[data-theme="light"] select[multiple] {
+  background: #ffffff;
+  color: #22212b;
+  border-color: var(--line);
+}
+
+html[data-theme="light"] select[multiple] option {
+  color: #22212b;
+}
+
+html[data-theme="light"] select[multiple] option:checked {
+  background: rgba(98, 82, 188, 0.18) linear-gradient(0deg, rgba(98, 82, 188, 0.18) 0%, rgba(98, 82, 188, 0.18) 100%) !important;
+  color: #2e2266 !important;
+  border-color: rgba(98, 82, 188, 0.35);
+}
+
+html[data-theme="light"] .category-pill {
+  background: rgba(34, 33, 43, 0.04);
+  border-color: var(--line);
+  color: rgba(34, 33, 43, 0.72);
+}
+
+html[data-theme="light"] .category-pill:hover {
+  background: rgba(34, 33, 43, 0.08);
+  color: #22212b;
+}
+
+html[data-theme="light"] .category-pill.active {
+  background: rgba(98, 82, 188, 0.15);
+  border-color: rgba(98, 82, 188, 0.45);
+  color: #2e2266;
+}
+
+html[data-theme="light"] .bifrost-badge-pill {
+  background: rgba(98, 82, 188, 0.08);
+  border-color: rgba(98, 82, 188, 0.28);
+  color: #6252bc;
+}
+
+html[data-theme="light"] .provider-hint-box {
+  background: rgba(98, 82, 188, 0.04);
+  border-color: rgba(98, 82, 188, 0.18);
+  color: rgba(34, 33, 43, 0.75);
+}
+
+@media(max-width: 600px) {
+  .provider-select-grid,
+  .provider-base-url-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+

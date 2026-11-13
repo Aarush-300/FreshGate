@@ -39,8 +39,8 @@ class OpenAILLMClient(LLMClient):
             self.manager = get_llm_manager()
 
         self.api_key = api_key if api_key is not None else self.manager.api_key
-        self.base_url = self.manager.base_url
-        self.model = self.manager.model
+        self.base_url = base_url if base_url is not None else self.manager.base_url
+        self.model = model if model is not None else self.manager.model
 
 
     async def complete(self, prompt: str, system_prompt: Optional[str] = None) -> str:
@@ -50,4 +50,6 @@ class OpenAILLMClient(LLMClient):
             request_type=self.request_type,
             deadline_seconds=self.timeout,
             api_key=self.api_key,
+            base_url=self.base_url,
+            model=self.model,
         )

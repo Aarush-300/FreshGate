@@ -77,6 +77,51 @@ function setupTabs() {
 }
 
 // --- Verification Console ---
+const PROVIDER_PRESETS = {
+  openai: {
+    baseUrl: 'https://api.openai.com/v1',
+    model: 'gpt-4o-mini',
+    keyLabel: 'OPENAI API KEY',
+    placeholder: 'sk-… (or leave blank for server .env)',
+    hint: 'Standard OpenAI developer platform. Requires prepaid credit balance at platform.openai.com.'
+  },
+  groq: {
+    baseUrl: 'https://api.groq.com/openai/v1',
+    model: 'llama-3.3-70b-versatile',
+    keyLabel: 'GROQ API KEY',
+    placeholder: 'gsk_… (free at console.groq.com)',
+    hint: '100% Free tier (30 RPM, no card required). Fast sub-second inference.'
+  },
+  gemini: {
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    model: 'gemini-1.5-flash',
+    keyLabel: 'GOOGLE GEMINI API KEY',
+    placeholder: 'AIzaSy… (free at aistudio.google.com)',
+    hint: 'Google AI Studio free tier (15 RPM, no billing required).'
+  },
+  ollama: {
+    baseUrl: 'http://localhost:11434/v1',
+    model: 'llama3.2',
+    keyLabel: 'OLLAMA API KEY',
+    placeholder: 'Optional (defaults to "ollama")',
+    hint: 'Local offline execution. Run "ollama run llama3.2" on your machine.'
+  },
+  openrouter: {
+    baseUrl: 'https://openrouter.ai/api/v1',
+    model: 'meta-llama/llama-3.3-70b-instruct:free',
+    keyLabel: 'OPENROUTER API KEY',
+    placeholder: 'sk-or-v1-…',
+    hint: 'Free-tier models available at openrouter.ai.'
+  },
+  custom: {
+    baseUrl: '',
+    model: '',
+    keyLabel: 'API KEY',
+    placeholder: 'Enter provider API key',
+    hint: 'Custom OpenAI-compatible Chat Completions endpoint.'
+  }
+};
+
 function setupVerificationForm() {
   const form = document.getElementById('verify-form');
   const input = document.getElementById('verify-input');
@@ -86,8 +131,40 @@ function setupVerificationForm() {
   const openaiKey = document.getElementById('openai-api-key');
   const tavilyKey = document.getElementById('tavily-api-key');
   const policySelect = document.getElementById('verify-policy');
+  const providerSelect = document.getElementById('ai-provider-select');
+  const modelInput = document.getElementById('ai-model-input');
+  const baseUrlInput = document.getElementById('ai-base-url');
+  const keyLabel = document.getElementById('ai-key-label');
+  const hintText = document.getElementById('provider-hint-text');
 
   if (!form) return;
+
+  function updateProviderFields() {
+    if (!providerSelect) return;
+    const provider = providerSelect.value;
+    const preset = PROVIDER_PRESETS[provider] || PROVIDER_PRESETS.openai;
+    if (modelInput && preset.model !== undefined) {
+      modelInput.value = preset.model;
+      modelInput.placeholder = preset.model || 'model-name';
+    }
+    if (baseUrlInput && preset.baseUrl !== undefined) {
+      baseUrlInput.value = preset.baseUrl;
+      baseUrlInput.placeholder = preset.baseUrl || 'https://...';
+    }
+    if (keyLabel) {
+      keyLabel.textContent = preset.keyLabel;
+    }
+    if (openaiKey) {
+      openaiKey.placeholder = preset.placeholder;
+    }
+    if (hintText) {
+      hintText.textContent = preset.hint;
+    }
+  }
+
+  if (providerSelect) {
+    providerSelect.addEventListener('change', updateProviderFields);
+  }
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -113,11 +190,22 @@ function setupVerificationForm() {
       if (customOpenAI) headers['X-OpenAI-API-Key'] = customOpenAI;
       if (customTavily) headers['X-Tavily-API-Key'] = customTavily;
 
+      const providerValue = providerSelect?.value || 'openai';
+      const customModel = modelInput?.value.trim() || '';
+      const customBaseUrl = baseUrlInput?.value.trim() || '';
+
+      if (providerValue) headers['X-LLM-Provider'] = providerValue;
+      if (customModel) headers['X-LLM-Model'] = customModel;
+      if (customBaseUrl) headers['X-LLM-Base-URL'] = customBaseUrl;
+
       const res = await fetch('/verify', {
         method: 'POST',
         headers,
         body: JSON.stringify({
           answer: text,
+          provider: providerValue,
+          model: customModel || undefined,
+          base_url: customBaseUrl || undefined,
           ...(policySelect?.value ? { policy_id: policySelect.value } : {})
         })
       });
@@ -888,10 +976,22 @@ function setupPolicyStudio() {
   const list = document.getElementById('policy-list');
   const listState = document.getElementById('policy-list-state');
   const categorySelect = document.getElementById('policy-categories');
+  const categoryPillsContainer = document.getElementById('policy-category-pills');
   const verifySelect = document.getElementById('verify-policy');
   const previewCategory = document.getElementById('policy-preview-category');
   const formState = document.getElementById('policy-form-state');
   let policies = [];
+
+  const updateCategoryPillsState = () => {
+    if (!categoryPillsContainer) return;
+    const selected = new Set([...categorySelect.selectedOptions].map(o => o.value));
+    for (const pill of categoryPillsContainer.querySelectorAll('.category-pill')) {
+      const cat = pill.dataset.category;
+      pill.classList.toggle('active', selected.has(cat));
+    }
+  };
+
+  categorySelect.addEventListener('change', updateCategoryPillsState);
 
   const request = async (url, options = {}) => {
     const response = await fetch(url, {
@@ -953,6 +1053,7 @@ function setupPolicyStudio() {
     document.getElementById('policy-enabled').checked = true;
     document.getElementById('policy-cache-enabled').checked = true;
     for (const option of categorySelect.options) option.selected = option.dataset.volatile === 'true';
+    updateCategoryPillsState();
     formState.textContent = '';
     formState.classList.remove('is-error');
   };
@@ -963,6 +1064,7 @@ function setupPolicyStudio() {
     document.getElementById('policy-description').value = policy.description || '';
     document.getElementById('policy-enabled').checked = policy.enabled;
     for (const option of categorySelect.options) option.selected = policy.categories.includes(option.value);
+    updateCategoryPillsState();
     document.getElementById('policy-allowed-domains').value = (policy.allowed_domains || []).join('\n');
     document.getElementById('policy-blocked-domains').value = (policy.blocked_domains || []).join('\n');
     document.getElementById('policy-preferred-domains').value = (policy.preferred_domains || []).join('\n');
@@ -1045,12 +1147,28 @@ function setupPolicyStudio() {
   request('/api/policies/categories').then(data => {
     clearElement(categorySelect);
     clearElement(previewCategory);
+    if (categoryPillsContainer) clearElement(categoryPillsContainer);
     for (const category of data.categories || []) {
       const option = document.createElement('option');
       option.value = category.name;
       option.textContent = `${category.name.replaceAll('_', ' ')}${category.volatile ? '' : ' (stable)'}`;
       option.dataset.volatile = String(category.volatile);
       categorySelect.appendChild(option);
+
+      if (categoryPillsContainer) {
+        const pill = document.createElement('button');
+        pill.type = 'button';
+        pill.className = 'category-pill';
+        pill.dataset.category = category.name;
+        pill.textContent = category.name.replaceAll('_', ' ');
+        pill.addEventListener('click', () => {
+          option.selected = !option.selected;
+          updateCategoryPillsState();
+          categorySelect.dispatchEvent(new Event('change'));
+        });
+        categoryPillsContainer.appendChild(pill);
+      }
+
       const previewOption = document.createElement('option');
       previewOption.value = category.name;
       previewOption.textContent = category.name.replaceAll('_', ' ');
