@@ -455,22 +455,26 @@ class SingleFlightCoalescer:
         self._lock = asyncio.Lock()
 
     async def do(self, key: str, coroutine_func, *args, **kwargs) -> Any:
+        fut = None
+        is_leader = False
         async with self._lock:
             if key in self._in_flight:
                 fut = self._in_flight[key]
-                # Await in-flight verification
-                return await fut
+            else:
+                loop = asyncio.get_running_loop()
+                fut = loop.create_future()
+                self._in_flight[key] = fut
+                is_leader = True
 
-            loop = asyncio.get_running_loop()
-            fut = loop.create_future()
-            self._in_flight[key] = fut
+        if not is_leader:
+            return await fut
 
         try:
             result = await coroutine_func(*args, **kwargs)
             if not fut.done():
                 fut.set_result(result)
             return result
-        except Exception as e:
+        except BaseException as e:
             if not fut.done():
                 fut.set_exception(e)
             raise e

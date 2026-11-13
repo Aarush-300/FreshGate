@@ -57,7 +57,10 @@ class WatchtowerService:
         if self._owns_pipeline and self.pipeline is not None:
             client = getattr(getattr(self.pipeline, "verifier", None), "tavily_client", None)
             if client is not None and hasattr(client, "aclose"):
-                await client.aclose()
+                try:
+                    await client.aclose()
+                except (RuntimeError, Exception) as exc:
+                    logger.debug("Error during watchtower pipeline client teardown: %s", exc)
             self.pipeline = None
 
     async def _scheduler_loop(self) -> None:

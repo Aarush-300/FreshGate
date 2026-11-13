@@ -105,7 +105,10 @@ class TavilySearchClient:
     async def aclose(self):
         """Close connection pool gracefully on shutdown."""
         if self._client and not self._client.is_closed:
-            await self._client.aclose()
+            try:
+                await self._client.aclose()
+            except (RuntimeError, Exception) as exc:
+                logger.debug("Error during Tavily search client teardown: %s", exc)
 
     def get_stats_summary(self) -> Dict[str, Any]:
         return {

@@ -48,27 +48,31 @@ class SQLiteAuditStore(AuditStoreBase):
 
     def _init_db(self):
         with self._lock:
-            conn = sqlite3.connect(self.db_path)
-            conn.execute("PRAGMA journal_mode=WAL;")
-            conn.execute("PRAGMA busy_timeout=5000;")
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS verification_audit (
-                    id TEXT PRIMARY KEY,
-                    correlation_id TEXT,
-                    created_at REAL,
-                    input_text TEXT,
-                    claims_json TEXT,
-                    total_claims INTEGER,
-                    stale_claims INTEGER,
-                    avg_score INTEGER,
-                    latency_ms INTEGER,
-                    status TEXT
-                );
-            """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_created ON verification_audit(created_at);")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_corr ON verification_audit(correlation_id);")
-            conn.commit()
-            conn.close()
+            conn = None
+            try:
+                conn = sqlite3.connect(self.db_path)
+                conn.execute("PRAGMA journal_mode=WAL;")
+                conn.execute("PRAGMA busy_timeout=5000;")
+                with conn:
+                    conn.execute("""
+                        CREATE TABLE IF NOT EXISTS verification_audit (
+                            id TEXT PRIMARY KEY,
+                            correlation_id TEXT,
+                            created_at REAL,
+                            input_text TEXT,
+                            claims_json TEXT,
+                            total_claims INTEGER,
+                            stale_claims INTEGER,
+                            avg_score INTEGER,
+                            latency_ms INTEGER,
+                            status TEXT
+                        );
+                    """)
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_created ON verification_audit(created_at);")
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_corr ON verification_audit(correlation_id);")
+            finally:
+                if conn:
+                    conn.close()
 
     def record_audit(
         self,
@@ -83,34 +87,38 @@ class SQLiteAuditStore(AuditStoreBase):
         status: str = "verified",
     ):
         with self._lock:
+            conn = None
             try:
                 conn = sqlite3.connect(self.db_path, timeout=5.0)
-                conn.execute(
-                    """
-                    INSERT OR REPLACE INTO verification_audit
-                    (id, correlation_id, created_at, input_text, claims_json, total_claims, stale_claims, avg_score, latency_ms, status)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        audit_id,
-                        correlation_id,
-                        time.time(),
-                        input_text[:5000],
-                        json.dumps(claims_data),
-                        total_claims,
-                        stale_claims,
-                        avg_score,
-                        latency_ms,
-                        status,
-                    ),
-                )
-                conn.commit()
-                conn.close()
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT OR REPLACE INTO verification_audit
+                        (id, correlation_id, created_at, input_text, claims_json, total_claims, stale_claims, avg_score, latency_ms, status)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            audit_id,
+                            correlation_id,
+                            time.time(),
+                            input_text[:5000],
+                            json.dumps(claims_data),
+                            total_claims,
+                            stale_claims,
+                            avg_score,
+                            latency_ms,
+                            status,
+                        ),
+                    )
             except Exception as e:
                 logger.error("Failed to write to verification audit store: %s", e)
+            finally:
+                if conn:
+                    conn.close()
 
     def get_recent_audits(self, limit: int = 50) -> List[Dict[str, Any]]:
         with self._lock:
+            conn = None
             try:
                 conn = sqlite3.connect(self.db_path, timeout=5.0)
                 conn.row_factory = sqlite3.Row
@@ -134,11 +142,13 @@ class SQLiteAuditStore(AuditStoreBase):
                         "latency_ms": r["latency_ms"],
                         "status": r["status"],
                     })
-                conn.close()
                 return results
             except Exception as e:
                 logger.error("Failed to read from audit store: %s", e)
                 return []
+            finally:
+                if conn:
+                    conn.close()
 
 
 def get_audit_store() -> AuditStoreBase:

@@ -14,6 +14,7 @@ COPY core/ ./core/
 COPY server/ ./server/
 COPY dashboard/ ./dashboard/
 COPY bench/ ./bench/
+COPY cli/ ./cli/
 
 # Set ownership to non-root user and create persistent data volume
 RUN mkdir -p /data && chown -R freshgate:freshgate /app /data

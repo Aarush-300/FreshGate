@@ -40,7 +40,10 @@ def extract_clean_domain(url: str) -> str:
     if not url:
         return ""
     try:
-        netloc = urlparse(url.strip()).netloc.lower()
+        clean = url.strip()
+        if "://" not in clean:
+            clean = "https://" + clean
+        netloc = urlparse(clean).netloc.lower()
         if ":" in netloc:
             netloc = netloc.split(":")[0]
         if netloc.startswith("www."):

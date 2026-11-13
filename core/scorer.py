@@ -50,19 +50,27 @@ def _parse_date_to_timestamp(date_str: Optional[str]) -> Optional[float]:
     """Parse ISO and standard date formats into UTC timestamp."""
     if not date_str:
         return None
-    clean_date = date_str.strip().replace("Z", "+00:00")
+    clean_date = date_str.strip()
+    # Try native ISO parser first (handles ISO 8601, offsets, Z, microseconds)
+    try:
+        iso_str = clean_date.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(iso_str)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except (ValueError, TypeError):
+        pass
+
     for fmt in (
-        "%Y-%m-%dT%H:%M:%S%z",
-        "%Y-%m-%dT%H:%M:%S",
         "%Y-%m-%d",
         "%Y/%m/%d",
         "%B %d, %Y",
+        "%b %d, %Y",
+        "%d %b %Y",
+        "%d %B %Y",
     ):
         try:
-            dt = datetime.strptime(
-                clean_date[:19] if "T" in clean_date and fmt == "%Y-%m-%d" else clean_date,
-                fmt,
-            )
+            dt = datetime.strptime(clean_date, fmt)
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
             return dt.timestamp()
@@ -78,8 +86,9 @@ def compute_recency_factor(sources: List[Source]) -> float:
 
     for source in sources:
         ts = _parse_date_to_timestamp(source.published)
-        if ts is not None and ts <= now:
-            age_days = (now - ts) / 86400.0
+        if ts is not None:
+            # Future timestamps within a small delta (e.g. timezone or clock skew) are treated as now (age 0)
+            age_days = max(0.0, (now - ts) / 86400.0)
             if min_age_days is None or age_days < min_age_days:
                 min_age_days = age_days
 

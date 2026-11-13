@@ -13,6 +13,7 @@ import os
 import hmac
 import time
 import re
+import threading
 from typing import Optional, Dict, Tuple
 from urllib.parse import urlparse
 from collections import defaultdict
@@ -106,27 +107,36 @@ class SlidingWindowRateLimiter:
         self.requests_per_minute = requests_per_minute
         self.window_size_seconds = 60.0
         self._history: Dict[str, list[float]] = defaultdict(list)
+        self._lock = threading.Lock()
 
     def is_allowed(self, client_id: str) -> Tuple[bool, int]:
         """Check if client request is within rate limit. Returns (is_allowed, retry_after)."""
         now = time.time()
         cutoff = now - self.window_size_seconds
-        timestamps = self._history[client_id]
+        with self._lock:
+            timestamps = self._history[client_id]
 
-        # Prune expired timestamps
-        valid_timestamps = [t for t in timestamps if t > cutoff]
-        self._history[client_id] = valid_timestamps
+            # Prune expired timestamps
+            valid_timestamps = [t for t in timestamps if t > cutoff]
+            if not valid_timestamps:
+                self._history.pop(client_id, None)
+            else:
+                self._history[client_id] = valid_timestamps
 
-        if len(valid_timestamps) >= self.requests_per_minute:
-            oldest = valid_timestamps[0]
-            retry_after = int(oldest + self.window_size_seconds - now) + 1
-            return False, max(1, retry_after)
+            if len(valid_timestamps) >= self.requests_per_minute:
+                oldest = valid_timestamps[0]
+                retry_after = int(oldest + self.window_size_seconds - now) + 1
+                return False, max(1, retry_after)
 
-        valid_timestamps.append(now)
-        return True, 0
+            if client_id not in self._history:
+                self._history[client_id] = [now]
+            else:
+                self._history[client_id].append(now)
+            return True, 0
 
     def reset(self):
-        self._history.clear()
+        with self._lock:
+            self._history.clear()
 
 
 # Default instance
@@ -187,7 +197,7 @@ class DistributedRateLimiter:
         self.local_limiter.reset()
         if self.redis_client:
             try:
-                keys = self.redis_client.keys("ratelimit:*")
+                keys = list(self.redis_client.scan_iter(match="ratelimit:*", count=500))
                 if keys:
                     self.redis_client.delete(*keys)
             except Exception:

@@ -282,7 +282,10 @@ class LLMProviderManager:
     async def aclose(self):
         """Gracefully close HTTP client connection pool on shutdown."""
         if self._client and not self._client.is_closed:
-            await self._client.aclose()
+            try:
+                await self._client.aclose()
+            except (RuntimeError, Exception) as exc:
+                logger.debug("Error during LLM manager HTTP client teardown: %s", exc)
 
     def get_stats_summary(self) -> Dict[str, Any]:
         """Return provider health and usage metrics for the dashboard and observability."""

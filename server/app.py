@@ -68,11 +68,20 @@ async def lifespan(app: FastAPI):
     await watchtower_service.start()
     yield
     logger.info("Shutting down FreshGate Gateway connection pools...")
-    await watchtower_service.stop()
-    mgr = get_llm_manager()
-    await mgr.aclose()
-    if hasattr(pipeline.verifier, "tavily_client") and hasattr(pipeline.verifier.tavily_client, "aclose"):
-        await pipeline.verifier.tavily_client.aclose()
+    try:
+        await watchtower_service.stop()
+    except Exception as exc:
+        logger.debug("Error during watchtower stop: %s", exc)
+    try:
+        mgr = get_llm_manager()
+        await mgr.aclose()
+    except Exception as exc:
+        logger.debug("Error during LLM manager aclose: %s", exc)
+    try:
+        if hasattr(pipeline.verifier, "tavily_client") and hasattr(pipeline.verifier.tavily_client, "aclose"):
+            await pipeline.verifier.tavily_client.aclose()
+    except Exception as exc:
+        logger.debug("Error during Tavily client aclose: %s", exc)
 
 
 app = FastAPI(
@@ -191,6 +200,10 @@ async def run_streaming_verification(completion_id: str, text: str):
             "duration_ms": duration_ms,
             "timestamp": time.time(),
         }
+        if len(stream_verifications) > 500:
+            oldest_keys = sorted(stream_verifications, key=lambda k: stream_verifications[k].get("timestamp", 0))[:50]
+            for old_key in oldest_keys:
+                stream_verifications.pop(old_key, None)
         logger.info("Streaming verification for %s finished in %.1fms", completion_id, duration_ms)
     except Exception as e:
         safe_err = sanitize_error_detail(e)
@@ -199,6 +212,10 @@ async def run_streaming_verification(completion_id: str, text: str):
             "error": safe_err,
             "timestamp": time.time(),
         }
+        if len(stream_verifications) > 500:
+            oldest_keys = sorted(stream_verifications, key=lambda k: stream_verifications[k].get("timestamp", 0))[:50]
+            for old_key in oldest_keys:
+                stream_verifications.pop(old_key, None)
         logger.error("Streaming verification for %s failed: %s", completion_id, safe_err)
 
 
