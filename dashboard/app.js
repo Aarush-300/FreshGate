@@ -987,7 +987,9 @@ function setupPolicyStudio() {
     const selected = new Set([...categorySelect.selectedOptions].map(o => o.value));
     for (const pill of categoryPillsContainer.querySelectorAll('.category-pill')) {
       const cat = pill.dataset.category;
-      pill.classList.toggle('active', selected.has(cat));
+      const isSelected = selected.has(cat);
+      pill.classList.toggle('active', isSelected);
+      pill.setAttribute('aria-pressed', String(isSelected));
     }
   };
 
@@ -1165,6 +1167,10 @@ function setupPolicyStudio() {
           option.selected = !option.selected;
           updateCategoryPillsState();
           categorySelect.dispatchEvent(new Event('change'));
+          if (categorySelect.selectedOptions.length) {
+            formState.textContent = '';
+            formState.classList.remove('is-error');
+          }
         });
         categoryPillsContainer.appendChild(pill);
       }
@@ -1179,6 +1185,12 @@ function setupPolicyStudio() {
 
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
+    if (!categorySelect.selectedOptions.length) {
+      formState.textContent = 'Choose at least one claim category to save this policy.';
+      formState.classList.add('is-error');
+      categoryPillsContainer.querySelector('.category-pill')?.focus();
+      return;
+    }
     const saveButton = document.getElementById('save-policy-btn');
     saveButton.disabled = true;
     formState.textContent = 'Validating policy…';

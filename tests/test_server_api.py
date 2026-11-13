@@ -48,6 +48,35 @@ async def test_post_verify_endpoint_contract():
 
 
 @pytest.mark.asyncio
+async def test_post_verify_uses_selected_provider_model_and_base_url():
+    scoped_pipeline = SimpleNamespace(
+        verify=AsyncMock(return_value=VerificationResult(
+            claims=[],
+            summary=Summary(total=0, checked=0, stale=0, avg_score=None),
+        )),
+        verifier=SimpleNamespace(tavily_client=SimpleNamespace(aclose=AsyncMock())),
+    )
+    base_url = "https://api.groq.com/openai/v1"
+    model = "llama-3.3-70b-versatile"
+
+    with patch("server.app.build_request_pipeline", return_value=scoped_pipeline) as build_pipeline:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            response = await ac.post(
+                "/verify",
+                headers={
+                    "X-LLM-Provider": "groq",
+                    "X-LLM-Model": model,
+                    "X-LLM-Base-URL": base_url,
+                },
+                json={"answer": "A sample answer", "provider": "groq", "model": model, "base_url": base_url},
+            )
+
+    assert response.status_code == 200
+    build_pipeline.assert_called_once_with(None, None, base_url, model)
+    scoped_pipeline.verify.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_health_endpoint():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         response = await ac.get("/health")
