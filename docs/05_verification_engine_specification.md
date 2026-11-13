@@ -39,10 +39,11 @@ The Category Registry (`core/categories.py`) provides an extensible framework fo
 | `public_health` | CDC/WHO isolation directives, vaccine guidance | `"<entity> official public health advisory guidance"` | 3 days |
 | `scientific_findings` | Replications, breakthrough discoveries, models | `"<entity> scientific findings paper replication nature"` | 7 days |
 | `company_info` | Mergers, acquisitions, headquarters relocations | `"<entity> acquisition merger company corporate announcement"` | 48 hours |
-| `other` | Static evergreen facts (math, physics, syntax) | Filtered out during triage | N/A |
+| `dated_event` | Results of dated events, competitions, elections, and awards | Claim text plus official result/outcome | 24 hours |
+| `other` | Timeless facts (math, geography, universal syntax) | Filtered out during triage | N/A |
 
 ### 2.2 Volatility Triage (`core/triage.py`)
-Claims classified as `other` (evergreen geography, classical history, mathematical truths) bypass web search and are immediately assigned a perfect freshness score (100) with zero outbound API queries. Only volatile categories proceed to search retrieval.
+Claims classified as `other` (timeless geography, mathematical truths, universal syntax) bypass web search. Claims about dated events and outcomes remain eligible for evidence checks, including when they describe historical events.
 
 ---
 

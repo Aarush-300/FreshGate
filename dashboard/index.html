@@ -516,7 +516,7 @@
           <fieldset class="provider-credentials">
             <legend>AI PROVIDER &amp; CREDENTIALS</legend>
             <div class="provider-header-row">
-              <p>Configure model inference and web evidence keys. Leave blank to use server .env defaults.</p>
+              <p>Keys stay in this page until cleared. Blank OpenAI and Tavily fields use server defaults; other providers use only their own key.</p>
               <div class="bifrost-badge-pill" title="Integrated with Bifrost Gateway upstream">
                 <span class="live-dot"></span> BIFROST INTEGRATED
               </div>
@@ -528,7 +528,7 @@
                 <select id="ai-provider-select">
                   <option value="openai" selected>OpenAI (GPT-4o-mini / Custom)</option>
                   <option value="groq">Groq (GPT-OSS 20B)</option>
-                  <option value="gemini">Google Gemini (Gemini 1.5 Flash — Free Tier)</option>
+                  <option value="gemini">Google Gemini (Gemini 3.8 Flash)</option>
                   <option value="ollama">Ollama (Local &amp; Offline — 100% Free)</option>
                   <option value="openrouter">OpenRouter (Free / Multi-Model)</option>
                   <option value="custom">Custom OpenAI-Compatible Provider</option>
@@ -575,8 +575,9 @@
           </div>
 
           <div class="form-footer">
-            <span class="input-note">Per-request keys are cleared after completion. Server .env keys are used when blank.</span>
+            <span class="input-note">Credentials stay in this page only and are never saved in browser storage. Use Clear keys when finished.</span>
             <div class="form-actions">
+              <button type="button" class="button-secondary" id="clear-provider-keys">Clear keys</button>
               <button type="submit" id="verify-submit-btn"><span id="verify-button-label">Verify live</span></button>
             </div>
           </div>

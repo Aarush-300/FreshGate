@@ -309,12 +309,17 @@ async def get_recent_audits(limit: int = 50):
 @app.post("/verify", response_model=VerificationResult)
 async def verify_answer(req: VerifyRequest, request: Request):
     """Direct verification endpoint for any answer text."""
-    openai_key = request.headers.get("X-OpenAI-API-Key") or request.headers.get("X-OpenAI-Key")
+    if "X-LLM-API-Key" in request.headers:
+        # Explicit provider-scoped credentials must never fall back to the server's
+        # OpenAI key when blank or invalid.
+        openai_key = request.headers.get("X-LLM-API-Key")
+    else:
+        openai_key = request.headers.get("X-OpenAI-API-Key") or request.headers.get("X-OpenAI-Key")
     tavily_key = request.headers.get("X-Tavily-API-Key") or request.headers.get("X-Tavily-Key")
     llm_base_url = request.headers.get("X-LLM-Base-URL") or req.base_url
     llm_model = request.headers.get("X-LLM-Model") or req.model
     if openai_key is not None and not is_valid_credential(openai_key):
-        raise HTTPException(status_code=400, detail="The OpenAI API key is invalid or malformed.")
+        raise HTTPException(status_code=400, detail="The selected AI provider API key is invalid or missing.")
     if tavily_key is not None and not is_valid_credential(tavily_key):
         raise HTTPException(status_code=400, detail="The Tavily API key is invalid or malformed.")
     policy = get_policy(req.policy_id) if req.policy_id else None
@@ -324,7 +329,7 @@ async def verify_answer(req: VerifyRequest, request: Request):
         raise HTTPException(status_code=409, detail="Selected policy is disabled")
     if llm_base_url or llm_model:
         request_pipeline = build_request_pipeline(openai_key, tavily_key, llm_base_url, llm_model)
-    elif openai_key or tavily_key:
+    elif openai_key is not None or tavily_key:
         request_pipeline = build_request_pipeline(openai_key, tavily_key)
     else:
         request_pipeline = pipeline

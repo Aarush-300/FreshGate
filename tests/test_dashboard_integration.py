@@ -84,3 +84,29 @@ def test_groq_dashboard_preset_uses_supported_model_and_actionable_recovery():
     assert "Use GPT-OSS 20B" in app
     assert "model_not_found" in app
     assert "Claim extraction failed. Unable to verify response freshness." not in app
+
+
+def test_provider_keys_remain_available_for_retries_without_browser_persistence():
+    app = (ROOT / "dashboard/app.js").read_text(encoding="utf-8")
+    html = (ROOT / "dashboard/index.html").read_text(encoding="utf-8")
+    verify_cleanup = re.search(r"} finally \{(?P<body>.*?)\n    }", app, re.DOTALL)
+
+    assert verify_cleanup is not None
+    assert "openaiKey.value = ''" not in verify_cleanup.group("body")
+    assert "tavilyKey.value = ''" not in verify_cleanup.group("body")
+    assert "clear-provider-keys" in app and "clear-provider-keys" in html
+    assert "X-LLM-API-Key" in app
+    assert "other providers use only their own key" in html
+    assert "never saved in browser storage" in html
+    assert "localStorage" not in app and "sessionStorage" not in app
+
+
+def test_provider_presets_use_current_documented_model_routes():
+    app = (ROOT / "dashboard/app.js").read_text(encoding="utf-8")
+    html = (ROOT / "dashboard/index.html").read_text(encoding="utf-8")
+
+    assert "model: 'gemini-3.8-flash'" in app
+    assert "Google Gemini (Gemini 3.8 Flash)" in html
+    assert "model: 'openrouter/free'" in app
+    assert "model: 'openai/gpt-oss-20b'" in app
+    assert "'ollama-local'" in app

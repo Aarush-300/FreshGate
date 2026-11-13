@@ -1809,6 +1809,20 @@ input:focus, select:focus, textarea:focus {
   box-shadow: 0 0 30px rgba(0, 212, 146, 0.6);
 }
 
+.form-actions .button-secondary {
+  padding-inline: 20px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  box-shadow: none;
+}
+
+.form-actions .button-secondary:hover {
+  border-color: var(--quiet);
+  background: var(--surface-2);
+  box-shadow: none;
+}
+
 /* Verification results styling */
 .verification-results {
   margin-top: 24px;

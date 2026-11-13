@@ -94,10 +94,10 @@ const PROVIDER_PRESETS = {
   },
   gemini: {
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-    model: 'gemini-1.5-flash',
+    model: 'gemini-3.8-flash',
     keyLabel: 'GOOGLE GEMINI API KEY',
     placeholder: 'AIzaSy… (free at aistudio.google.com)',
-    hint: 'Google AI Studio free tier (15 RPM, no billing required).'
+    hint: 'Google Gemini 3.8 Flash via the OpenAI-compatible API. Availability and quotas depend on your Google AI Studio project.'
   },
   ollama: {
     baseUrl: 'http://localhost:11434/v1',
@@ -108,10 +108,10 @@ const PROVIDER_PRESETS = {
   },
   openrouter: {
     baseUrl: 'https://openrouter.ai/api/v1',
-    model: 'meta-llama/llama-3.3-70b-instruct:free',
+    model: 'openrouter/free',
     keyLabel: 'OPENROUTER API KEY',
     placeholder: 'sk-or-v1-…',
-    hint: 'Free-tier models available at openrouter.ai.'
+    hint: 'Routes each request to an available free OpenRouter model. Free models have changing availability and rate limits.'
   },
   custom: {
     baseUrl: '',
@@ -136,6 +136,7 @@ function setupVerificationForm() {
   const baseUrlInput = document.getElementById('ai-base-url');
   const keyLabel = document.getElementById('ai-key-label');
   const hintText = document.getElementById('provider-hint-text');
+  const clearKeysBtn = document.getElementById('clear-provider-keys');
 
   if (!form) return;
 
@@ -166,6 +167,12 @@ function setupVerificationForm() {
     providerSelect.addEventListener('change', updateProviderFields);
   }
 
+  clearKeysBtn?.addEventListener('click', () => {
+    if (openaiKey) openaiKey.value = '';
+    if (tavilyKey) tavilyKey.value = '';
+    openaiKey?.focus();
+  });
+
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const text = input.value.trim();
@@ -195,6 +202,13 @@ function setupVerificationForm() {
       const customModel = modelInput?.value.trim() || '';
       const customBaseUrl = baseUrlInput?.value.trim() || '';
 
+      if (providerValue !== 'openai') {
+        // Keep the server's OpenAI fallback key from being sent to another provider.
+        // Ollama ignores API-key auth, but the gateway still requires a non-empty header.
+        headers['X-LLM-API-Key'] = providerValue === 'ollama' && !customOpenAI
+          ? 'ollama-local'
+          : customOpenAI;
+      }
       if (providerValue) headers['X-LLM-Provider'] = providerValue;
       if (customModel) headers['X-LLM-Model'] = customModel;
       if (customBaseUrl) headers['X-LLM-Base-URL'] = customBaseUrl;
@@ -243,8 +257,6 @@ function setupVerificationForm() {
       errBox.textContent = getProviderErrorMessage(String(err.message || err), providerSelect?.value || 'openai', modelInput?.value.trim() || '');
       resultsContainer.appendChild(errBox);
     } finally {
-      openaiKey.value = '';
-      tavilyKey.value = '';
       submitBtn.disabled = false;
       submitLabel.textContent = 'Verify live';
       resultsContainer.setAttribute('aria-busy', 'false');

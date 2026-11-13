@@ -128,6 +128,16 @@ CATEGORY_ALIASES: Dict[str, str] = {
     "research": "scientific_findings",
     "study": "scientific_findings",
 
+    # Dated event outcomes and reported results
+    "event": "dated_event",
+    "event_result": "dated_event",
+    "sports_result": "dated_event",
+    "match_result": "dated_event",
+    "competition_result": "dated_event",
+    "tournament_result": "dated_event",
+    "election_result": "dated_event",
+    "award_result": "dated_event",
+
     # Other / Static evergreen facts
     "general": "other",
     "general_fact": "other",
@@ -337,7 +347,18 @@ class CategoryRegistry:
             search_query_builder=lambda c: f"{c.text.rstrip('.')} acquisition merger headquarters"
         ))
 
-        # 12. Other / Non-Volatile Static Facts
+        # Dated events and outcomes require evidence even when the event is historical.
+        self.register(CategoryDefinition(
+            name="dated_event",
+            display_name="Dated Events & Outcomes",
+            description="Results and outcomes of dated events, competitions, elections, and awards",
+            is_volatile=True,
+            default_ttl_seconds=86400,
+            min_confidence=0.8,
+            search_query_builder=lambda c: f"{c.text.rstrip('.')} official result outcome"
+        ))
+
+        # Other / Non-Volatile Static Facts
         self.register(CategoryDefinition(
             name="other",
             display_name="General & Static Facts",

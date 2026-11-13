@@ -26,7 +26,7 @@ def test_category_registry_defaults():
     categories = [
         "pricing", "version", "law", "leadership", "product_availability",
         "cybersecurity", "financial", "government_policy", "public_health",
-        "scientific_findings", "company_info"
+        "scientific_findings", "company_info", "dated_event"
     ]
     for cat in categories:
         definition = category_registry.get(cat)

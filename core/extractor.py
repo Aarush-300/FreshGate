@@ -39,7 +39,8 @@ For each claim extracted, provide:
    - "product_availability": general availability, waitlists, launch dates, discontinuations.
    - "company_info": acquisitions, mergers, bankruptcies, headquarters relocations.
    - "scientific_findings": scientific discoveries, peer-reviewed replications, preprints.
-   - "other": static general facts (geography, history, math, universal syntax).
+   - "dated_event": outcomes and results tied to a specific event or date, including match and competition results, election outcomes, and awards. Use this for historical results too; a past date does not make an assertion verified.
+   - "other": timeless general facts only (geography, math, universal syntax). Do not use "other" for a claim about a specific dated event or outcome.
 4. "entities": Array of specific named entities referenced (e.g. ["Python"], ["ChatGPT Plus", "OpenAI"]).
 5. "numerical_value": Extracted price, rate, percentage, or quantity, if present (e.g. "$20 per month").
 6. "temporal_anchor": Relevant date, deadline, year, or release time, if present (e.g. "currently", "2024").
@@ -419,6 +420,11 @@ class ClaimExtractor:
             entities = [str(e).strip() for e in item.get("entities", []) if str(e).strip()]
             num_val = item.get("numerical_value")
             temp_anchor = item.get("temporal_anchor")
+
+            # Keep dated factual assertions eligible for evidence checks even if the
+            # extractor mislabels them as timeless "other" facts.
+            if norm_type == "other" and temp_anchor:
+                norm_type = "dated_event"
 
             try:
                 conf = float(item.get("confidence", 1.0))

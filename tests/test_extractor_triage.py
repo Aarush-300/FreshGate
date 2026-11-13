@@ -38,6 +38,20 @@ async def test_extract_factual_claims():
 
 
 @pytest.mark.asyncio
+async def test_dated_claim_labeled_other_is_reclassified_for_evidence_checking():
+    mock_response = """[
+        {"text": "A team won a competition in 2024", "type": "other", "entities": ["A team", "a competition"], "temporal_anchor": "2024"}
+    ]"""
+    extractor = ClaimExtractor(llm_client=MockLLM([mock_response]))
+
+    result = await extractor.extract("A team won a competition in 2024.")
+
+    assert len(result.claims) == 1
+    assert result.claims[0].type == "dated_event"
+    assert [claim.type for claim in triage_claims(result.claims)] == ["dated_event"]
+
+
+@pytest.mark.asyncio
 async def test_extract_no_facts_greeting():
     mock_response = "[]"
     llm = MockLLM([mock_response])
@@ -124,11 +138,12 @@ def test_triage_drops_other_and_keeps_volatile():
         Claim(id="c5", text="SB 1047 was vetoed", type="law"),
         Claim(id="c6", text="Sundar Pichai is CEO", type="leadership"),
         Claim(id="c7", text="Random claim", type="unknown_type"),
+        Claim(id="c8", text="A dated competition result", type="dated_event"),
     ]
 
     triaged = triage_claims(claims)
 
     # In Phase 2, unknown categories are conservatively kept as volatile; only explicitly non-volatile "other" is dropped
-    assert len(triaged) == 5
+    assert len(triaged) == 6
     types = [c.type for c in triaged]
-    assert types == ["pricing", "version", "law", "leadership", "unknown_type"]
+    assert types == ["pricing", "version", "law", "leadership", "unknown_type", "dated_event"]
