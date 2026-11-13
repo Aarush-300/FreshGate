@@ -57,7 +57,7 @@ async def test_post_verify_uses_selected_provider_model_and_base_url():
         verifier=SimpleNamespace(tavily_client=SimpleNamespace(aclose=AsyncMock())),
     )
     base_url = "https://api.groq.com/openai/v1"
-    model = "llama-3.3-70b-versatile"
+    model = "openai/gpt-oss-20b"
 
     with patch("server.app.build_request_pipeline", return_value=scoped_pipeline) as build_pipeline:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:

@@ -87,10 +87,10 @@ const PROVIDER_PRESETS = {
   },
   groq: {
     baseUrl: 'https://api.groq.com/openai/v1',
-    model: 'llama-3.3-70b-versatile',
+    model: 'openai/gpt-oss-20b',
     keyLabel: 'GROQ API KEY',
-    placeholder: 'gsk_… (free at console.groq.com)',
-    hint: '100% Free tier (30 RPM, no card required). Fast sub-second inference.'
+    placeholder: 'gsk_… (from console.groq.com)',
+    hint: 'Groq GPT-OSS 20B. Requires a Groq API key; account access, limits, and pricing apply.'
   },
   gemini: {
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
@@ -176,6 +176,7 @@ function setupVerificationForm() {
 
     submitBtn.disabled = true;
     submitLabel.textContent = 'Verifying…';
+    resultsContainer.setAttribute('aria-busy', 'true');
     clearElement(resultsContainer);
 
     const loadingP = document.createElement('p');
@@ -211,27 +212,76 @@ function setupVerificationForm() {
       });
 
       if (!res.ok) {
-        throw new Error(`Verification failed: HTTP ${res.status}`);
+        let detail = '';
+        try {
+          const errorData = await res.json();
+          const candidate = errorData.detail || errorData.error || errorData.message || '';
+          detail = typeof candidate === 'string' ? candidate : (candidate?.message || '');
+        } catch (_) {}
+        throw new Error(detail ? String(detail) : `Verification failed: HTTP ${res.status}`);
       }
 
       const data = await res.json();
-      renderVerificationResults(data, resultsContainer);
+      renderVerificationResults(data, resultsContainer, {
+        provider: providerValue,
+        model: customModel,
+        onUseGroqModel: () => {
+          if (providerSelect) providerSelect.value = 'groq';
+          updateProviderFields();
+          if (modelInput) {
+            modelInput.value = PROVIDER_PRESETS.groq.model;
+            modelInput.focus();
+            modelInput.select();
+          }
+        }
+      });
     } catch (err) {
       clearElement(resultsContainer);
       const errBox = document.createElement('div');
       errBox.className = 'result-error';
-      errBox.textContent = String(err.message || err);
+      errBox.setAttribute('role', 'alert');
+      errBox.textContent = getProviderErrorMessage(String(err.message || err), providerSelect?.value || 'openai', modelInput?.value.trim() || '');
       resultsContainer.appendChild(errBox);
     } finally {
       openaiKey.value = '';
       tavilyKey.value = '';
       submitBtn.disabled = false;
       submitLabel.textContent = 'Verify live';
+      resultsContainer.setAttribute('aria-busy', 'false');
     }
   });
 }
 
-function renderVerificationResults(data, container) {
+function getProviderErrorMessage(message, provider, model = '') {
+  const text = String(message || '');
+  if (/model_not_found|model.{0,40}(does not exist|not found|unavailable)|does not exist or you do not have access/i.test(text)) {
+    if (provider === 'groq') {
+      if (/llama-3\.3-70b-versatile/i.test(model) || /llama-3\.3-70b-versatile/i.test(text)) {
+        return 'Groq retired the former Llama 3.3 default for developer accounts. FreshGate now defaults to openai/gpt-oss-20b; confirm that model is available to your Groq project and retry.';
+      }
+      return `Groq could not access ${model || 'the selected model'}. Check the model ID and confirm it is available to your Groq project.`;
+    }
+    return `The selected ${provider} model is unavailable or your account cannot access it. Check the model ID and provider account permissions, then retry.`;
+  }
+  if (/invalid_api_key|incorrect api key|unauthorized|authentication failed/i.test(text)) {
+    return `The ${provider} API key was rejected. Check the key for this provider and try again.`;
+  }
+  if (/insufficient[_ ]quota|quota exhausted|no credits remaining|credit balance|billing limit/i.test(text)) {
+    return `The ${provider} account has reached its API quota or billing limit. Check its current plan, usage, and billing settings.`;
+  }
+  if (/rate_limit|rate limit|too many requests/i.test(text)) {
+    return `The ${provider} account is being rate limited. Wait briefly, then retry.`;
+  }
+  if (/failed to fetch|networkerror|load failed|connection error/i.test(text)) {
+    return 'FreshGate could not reach the verification service. Check your connection and try again.';
+  }
+  if (/timeout|timed out|aborterror/i.test(text)) {
+    return 'The verification request took too long. Try again, or shorten the response you submitted.';
+  }
+  return text;
+}
+
+function renderVerificationResults(data, container, requestContext = {}) {
   clearElement(container);
 
   const summary = data.summary || {};
@@ -239,7 +289,10 @@ function renderVerificationResults(data, container) {
   const status = summary.status || data.status || 'completed';
   const extractionStatus = summary.extraction_status || (data.extraction ? data.extraction.status : 'success');
   const rawMessage = summary.message || data.error || '';
+  const provider = requestContext.provider || 'openai';
+  const model = requestContext.model || '';
   const quotaExhausted = /insufficient[_ ]quota|quota exhausted|no credits remaining|credit balance|billing limit/i.test(rawMessage);
+  const modelUnavailable = /model_not_found|model.{0,40}(does not exist|not found|unavailable)|does not exist or you do not have access/i.test(rawMessage);
 
   // Summary Card
   const summaryBox = document.createElement('div');
@@ -280,9 +333,7 @@ function renderVerificationResults(data, container) {
   // Informative / Alert Message Banner
   if (summary.message || data.error) {
     const banner = document.createElement('div');
-    const msgText = quotaExhausted
-      ? 'The OpenAI-compatible API key used for this request has no remaining quota or credits. Add prepaid API credits at platform.openai.com/settings/organization/billing (note: ChatGPT Plus subscriptions do not provide API credits), or leave fields blank to use server .env credentials.'
-      : rawMessage;
+    const msgText = getProviderErrorMessage(rawMessage, provider, model);
     banner.className = 'alert-banner';
     if (quotaExhausted) {
       banner.className += ' alert-banner-warning';
@@ -328,9 +379,9 @@ function renderVerificationResults(data, container) {
     if (status === 'no_claims_detected') {
       p.textContent = 'No volatile factual claims found. Response passed through as stable (conversational, subjective, or general statements).';
     } else if (status === 'extraction_failed') {
-      p.textContent = quotaExhausted
-        ? 'No live freshness verdict is available. Add prepaid credits to your OpenAI platform account or leave key fields blank to use server .env credentials.'
-        : 'Claim extraction failed. Unable to verify response freshness.';
+      p.textContent = modelUnavailable
+        ? 'No freshness verdict is available yet. Update the model above and run the check again.'
+        : 'No freshness verdict is available. Review the error above, then check your provider settings and retry.';
       p.classList.add('is-error');
     } else if (status === 'verification_failed') {
       p.textContent = 'Fact verification failed due to engine or external service error.';
@@ -339,6 +390,14 @@ function renderVerificationResults(data, container) {
       p.textContent = 'No claims were processed.';
     }
     emptyBox.appendChild(p);
+    if (status === 'extraction_failed' && modelUnavailable && provider === 'groq' && requestContext.onUseGroqModel) {
+      const recoveryButton = document.createElement('button');
+      recoveryButton.type = 'button';
+      recoveryButton.className = 'secondary model-recovery-button';
+      recoveryButton.textContent = 'Use GPT-OSS 20B';
+      recoveryButton.addEventListener('click', requestContext.onUseGroqModel);
+      emptyBox.appendChild(recoveryButton);
+    }
     container.appendChild(emptyBox);
     return;
   }

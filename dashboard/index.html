@@ -8,7 +8,7 @@
   <meta name="theme-color" content="#07070a">
   <meta name="description" content="FreshGate checks time-sensitive claims against current web sources before they reach your users. Powered by Bifrost Gateway.">
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-  <link rel="stylesheet" href="/static/style.css?v=21">
+  <link rel="stylesheet" href="/static/style.css?v=22">
   <script src="/static/preferences.js?v=1"></script>
 </head>
 <body>
@@ -527,7 +527,7 @@
                 <label for="ai-provider-select">AI PROVIDER</label>
                 <select id="ai-provider-select">
                   <option value="openai" selected>OpenAI (GPT-4o-mini / Custom)</option>
-                  <option value="groq">Groq (Llama 3.3 70B — Free Tier, No Card)</option>
+                  <option value="groq">Groq (GPT-OSS 20B)</option>
                   <option value="gemini">Google Gemini (Gemini 1.5 Flash — Free Tier)</option>
                   <option value="ollama">Ollama (Local &amp; Offline — 100% Free)</option>
                   <option value="openrouter">OpenRouter (Free / Multi-Model)</option>
@@ -582,7 +582,7 @@
           </div>
         </form>
 
-        <div id="verify-results" class="verification-results"></div>
+        <div id="verify-results" class="verification-results" aria-live="polite" aria-busy="false"></div>
       </div>
 
       <div class="workspace-note">
@@ -888,7 +888,7 @@
   </main>
 
   <script src="/static/hero-bg.js?v=8"></script>
-  <script src="/static/app.js?v=19"></script>
+  <script src="/static/app.js?v=20"></script>
   <script src="/static/ambient.js?v=5"></script>
 </body>
 </html>

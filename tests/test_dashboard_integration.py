@@ -73,3 +73,14 @@ def test_dashboard_styles_remain_responsive_and_reduced_motion_aware():
     assert "@media(max-width:800px)" in styles
     assert "@media(max-width:560px)" in styles
     assert "prefers-reduced-motion:reduce" in styles
+
+
+def test_groq_dashboard_preset_uses_supported_model_and_actionable_recovery():
+    app = (ROOT / "dashboard/app.js").read_text(encoding="utf-8")
+    html = (ROOT / "dashboard/index.html").read_text(encoding="utf-8")
+
+    assert "model: 'openai/gpt-oss-20b'" in app
+    assert "Groq (GPT-OSS 20B)" in html
+    assert "Use GPT-OSS 20B" in app
+    assert "model_not_found" in app
+    assert "Claim extraction failed. Unable to verify response freshness." not in app
