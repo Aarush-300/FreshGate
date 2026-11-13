@@ -31,6 +31,7 @@
       (async function demoLoop() {
         while (true) {
           status.textContent = 'CHECKING\u2026'; status.classList.remove('is-stale'); claim.textContent = '';
+          result.classList.remove('is-visible');
           for (let i = 0; i < sample.length; i++) { claim.textContent = sample.slice(0, i + 1); await pause(38); }
           await pause(520); status.textContent = 'STALE'; status.classList.add('is-stale');
           await pause(220); result.classList.add('is-visible'); await pause(3000); await pause(600);

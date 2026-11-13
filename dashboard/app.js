@@ -29,9 +29,29 @@ function setStatusTone(element, tone) {
 
 // --- Tab Switching ---
 function setupTabs() {
+  const navTabs = document.querySelector('.nav-tabs');
   const tabBtns = document.querySelectorAll('.tab-btn');
   const tabContents = document.querySelectorAll('.tab-content');
   let switching = false;
+
+  function updatePillPosition(activeBtn) {
+    if (!navTabs || !activeBtn) return;
+    const navRect = navTabs.getBoundingClientRect();
+    const btnRect = activeBtn.getBoundingClientRect();
+    const offset = btnRect.left - navRect.left + navTabs.scrollLeft - 4;
+    navTabs.style.setProperty('--tab-offset', `${Math.max(0, Math.round(offset))}px`);
+    navTabs.style.setProperty('--tab-width', `${Math.round(btnRect.width)}px`);
+  }
+
+  const initialActive = document.querySelector('.tab-btn.active') || tabBtns[0];
+  if (initialActive) {
+    window.requestAnimationFrame(() => updatePillPosition(initialActive));
+  }
+
+  window.addEventListener('resize', () => {
+    const curActive = document.querySelector('.tab-btn.active');
+    if (curActive) updatePillPosition(curActive);
+  });
 
   tabBtns.forEach(btn => {
     btn.addEventListener('click', () => {
@@ -42,6 +62,7 @@ function setupTabs() {
       current?.classList.add('is-exiting');
       window.setTimeout(() => {
         tabBtns.forEach(b => b.classList.toggle('active', b === btn));
+        updatePillPosition(btn);
         tabContents.forEach(c => c.classList.remove('active', 'is-exiting', 'view-enter'));
         const targetContent = document.getElementById(targetId);
         if (targetContent) {
@@ -236,10 +257,11 @@ function renderVerificationResults(data, container) {
   const verifiedClaims = claims.filter(c => c.verdict && c.verdict !== 'unverifiable');
   const unverifiableClaims = claims.filter(c => !c.verdict || c.verdict === 'unverifiable');
 
-  function renderClaimCard(c, targetContainer) {
+  function renderClaimCard(c, targetContainer, claimIndex = 0) {
     const card = document.createElement('div');
     card.className = 'claim-card';
     card.classList.add('result-claim-card');
+    card.style.setProperty('--claim-index', String(claimIndex));
 
     const header = document.createElement('div');
     header.className = 'claim-header';
@@ -388,7 +410,7 @@ function renderVerificationResults(data, container) {
     verifiedSectionHeader.textContent = `Verified Claims (${verifiedClaims.length})`;
     container.appendChild(verifiedSectionHeader);
 
-    verifiedClaims.forEach(c => renderClaimCard(c, container));
+    verifiedClaims.forEach((c, idx) => renderClaimCard(c, container, idx));
   }
 
   if (unverifiableClaims.length > 0) {
@@ -398,7 +420,7 @@ function renderVerificationResults(data, container) {
     unverifiedSectionHeader.textContent = `Unverified / Inconclusive Claims (${unverifiableClaims.length})`;
     container.appendChild(unverifiedSectionHeader);
 
-    unverifiableClaims.forEach(c => renderClaimCard(c, container));
+    unverifiableClaims.forEach((c, idx) => renderClaimCard(c, container, verifiedClaims.length + idx));
   }
 }
 
@@ -961,7 +983,7 @@ function setupPolicyStudio() {
 
   const renderPolicyList = () => {
     clearElement(list);
-    listState.textContent = policies.length ? `${policies.length} policy${policies.length === 1 ? '' : 'ies'}` : 'No policies yet. Create one to customize verification.';
+    listState.textContent = policies.length ? `${policies.length} ${policies.length === 1 ? 'policy' : 'policies'}` : 'No policies yet. Create one to customize verification.';
     for (const policy of policies) {
       const card = document.createElement('article');
       card.className = 'policy-list-item';

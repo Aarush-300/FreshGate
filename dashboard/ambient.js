@@ -69,7 +69,7 @@
     if (document.hidden) return;
     if (!force && (reduced.matches || document.documentElement.dataset.motionPaused === 'true')) { raf = 0; return; }
     const blend = changedAt ? clamp((t - changedAt) / 600, 0, 1) : 1;
-    for (const b of banners) if (b.visible && document.getElementById(b.mode === 'verify' ? 'tab-verify' : `tab-${b.mode === 'system' ? 'metrics' : b.mode === 'benchmarks' ? 'benchmark' : 'audits'}`)?.classList.contains('active')) {
+    for (const b of banners) if (b.visible && (!b.canvas.closest('.tab-content') || b.canvas.closest('.tab-content').classList.contains('active'))) {
       b.sx += (b.px - b.sx) * .12; b.sy += (b.py - b.sy) * .12; drawBanner(b, reduced.matches ? started + 8000 : t); b.canvas.style.opacity = `${blend}`;
     }
     if (!force && !reduced.matches && document.documentElement.dataset.motionPaused !== 'true') raf = requestAnimationFrame(draw);
