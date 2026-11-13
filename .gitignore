@@ -34,3 +34,4 @@ verify.png
 vendor/
 
 .agents/
+.agent/
