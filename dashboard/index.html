@@ -78,10 +78,10 @@
         <form id="verify-form">
           <fieldset class="provider-credentials">
             <legend>YOUR PROVIDER KEYS</legend>
-            <p>Used only for this request. They are not saved in browser storage or FreshGate configuration.</p>
+            <p>Used only for this request. Leave blank to use server-configured .env keys.</p>
             <div class="provider-key-fields">
-              <div class="form-group"><label for="openai-api-key">OPENAI API KEY</label><input id="openai-api-key" name="openai-api-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…" required></div>
-              <div class="form-group"><label for="tavily-api-key">TAVILY API KEY</label><input id="tavily-api-key" name="tavily-api-key" type="password" autocomplete="off" spellcheck="false" placeholder="tvly-…" required></div>
+              <div class="form-group"><label for="openai-api-key">OPENAI API KEY</label><input id="openai-api-key" name="openai-api-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-… (or leave blank for server .env)"></div>
+              <div class="form-group"><label for="tavily-api-key">TAVILY API KEY</label><input id="tavily-api-key" name="tavily-api-key" type="password" autocomplete="off" spellcheck="false" placeholder="tvly-… (or leave blank for server .env)"></div>
             </div>
           </fieldset>
           <div class="form-group">
@@ -89,7 +89,7 @@
             <textarea id="verify-input" placeholder="Paste a response here. We will extract time-sensitive claims and check the evidence behind them."></textarea>
           </div>
           <div class="form-group policy-selection"><label for="verify-policy">VERIFICATION POLICY</label><select id="verify-policy"><option value="">Default FreshGate behavior</option></select></div>
-          <div class="form-footer"><span class="input-note">Keys are sent for this request only and cleared when it finishes.</span><div class="form-actions"><button type="submit" id="verify-submit-btn"><span id="verify-button-label">Verify live</span></button></div></div>
+          <div class="form-footer"><span class="input-note">Per-request keys are cleared after completion. Server .env keys are used when blank.</span><div class="form-actions"><button type="submit" id="verify-submit-btn"><span id="verify-button-label">Verify live</span></button></div></div>
         </form>
         <div id="verify-results" class="verification-results"></div>
       </div>

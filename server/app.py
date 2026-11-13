@@ -288,8 +288,8 @@ async def get_recent_audits(limit: int = 50):
 @app.post("/verify", response_model=VerificationResult)
 async def verify_answer(req: VerifyRequest, request: Request):
     """Direct verification endpoint for any answer text."""
-    openai_key = request.headers.get("X-OpenAI-API-Key")
-    tavily_key = request.headers.get("X-Tavily-API-Key")
+    openai_key = request.headers.get("X-OpenAI-API-Key") or request.headers.get("X-OpenAI-Key")
+    tavily_key = request.headers.get("X-Tavily-API-Key") or request.headers.get("X-Tavily-Key")
     if openai_key is not None and not is_valid_credential(openai_key):
         raise HTTPException(status_code=400, detail="The OpenAI API key is invalid or malformed.")
     if tavily_key is not None and not is_valid_credential(tavily_key):

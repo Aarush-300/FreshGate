@@ -92,8 +92,8 @@ function setupVerificationForm() {
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const text = input.value.trim();
-    if (!text || !openaiKey.value.trim() || !tavilyKey.value.trim()) {
-      form.reportValidity();
+    if (!text) {
+      input.focus();
       return;
     }
 
@@ -107,13 +107,15 @@ function setupVerificationForm() {
     resultsContainer.appendChild(loadingP);
 
     try {
+      const headers = { 'Content-Type': 'application/json' };
+      const customOpenAI = openaiKey.value.trim();
+      const customTavily = tavilyKey.value.trim();
+      if (customOpenAI) headers['X-OpenAI-API-Key'] = customOpenAI;
+      if (customTavily) headers['X-Tavily-API-Key'] = customTavily;
+
       const res = await fetch('/verify', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-OpenAI-API-Key': openaiKey.value.trim(),
-          'X-Tavily-API-Key': tavilyKey.value.trim()
-        },
+        headers,
         body: JSON.stringify({
           answer: text,
           ...(policySelect?.value ? { policy_id: policySelect.value } : {})
@@ -191,7 +193,7 @@ function renderVerificationResults(data, container) {
   if (summary.message || data.error) {
     const banner = document.createElement('div');
     const msgText = quotaExhausted
-      ? 'The OpenAI-compatible API key used for this request has no remaining quota or credits. Add API billing/credits to the account that issued the key, or enter another key.'
+      ? 'The OpenAI-compatible API key used for this request has no remaining quota or credits. Add prepaid API credits at platform.openai.com/settings/organization/billing (note: ChatGPT Plus subscriptions do not provide API credits), or leave fields blank to use server .env credentials.'
       : rawMessage;
     banner.className = 'alert-banner';
     if (quotaExhausted) {
@@ -239,7 +241,7 @@ function renderVerificationResults(data, container) {
       p.textContent = 'No volatile factual claims found. Response passed through as stable (conversational, subjective, or general statements).';
     } else if (status === 'extraction_failed') {
       p.textContent = quotaExhausted
-        ? 'No live freshness verdict is available. After updating the key or its provider account, enter both keys again and retry. Keys are cleared after every attempt.'
+        ? 'No live freshness verdict is available. Add prepaid credits to your OpenAI platform account or leave key fields blank to use server .env credentials.'
         : 'Claim extraction failed. Unable to verify response freshness.';
       p.classList.add('is-error');
     } else if (status === 'verification_failed') {
