@@ -9,6 +9,7 @@ services:
     environment:
       - BIFROST_HOST=0.0.0.0
       - BIFROST_PORT=8080
+      - BIFROST_SETUP_TOKEN=${BIFROST_SETUP_TOKEN}
     restart: unless-stopped
 
   freshgate:

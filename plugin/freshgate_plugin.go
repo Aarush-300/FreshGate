@@ -13,6 +13,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"net/http"
 	"os"
 	"strconv"
@@ -157,10 +158,15 @@ func PostLLMHook(
 		return resp, bifrostErr, nil
 	}
 
-	// Extract assistant message content
-	if resp.Choices != nil && len(resp.Choices) > 0 {
-		assistantText, ok := resp.Choices[0].Message.Content.(string)
-		if !ok || assistantText == "" {
+	// Bifrost's current schemas wrap chat completions in ChatResponse and use
+	// ChatMessageContent rather than the legacy OpenAI-shaped response fields.
+	if resp.ChatResponse != nil && len(resp.ChatResponse.Choices) > 0 {
+		choice := resp.ChatResponse.Choices[0].ChatNonStreamResponseChoice
+		if choice == nil || choice.Message == nil || choice.Message.Content == nil || choice.Message.Content.ContentStr == nil {
+			return resp, bifrostErr, nil
+		}
+		assistantText := strings.TrimSpace(*choice.Message.Content.ContentStr)
+		if assistantText == "" {
 			return resp, bifrostErr, nil
 		}
 
@@ -182,11 +188,11 @@ func PostLLMHook(
 			return resp, bifrostErr, err
 		}
 
-		// Attach FreshGate metadata block
-		if resp.ExtraFields == nil {
-			resp.ExtraFields = make(map[string]any)
+		// Bifrost's ExtraFields is a fixed telemetry struct, not an extension
+		// map. Preserve FreshGate's result in RawResponse for the HTTP hook.
+		if fields := resp.GetExtraFields(); fields != nil {
+			fields.RawResponse = map[string]any{"freshgate": verification}
 		}
-		resp.ExtraFields["freshgate"] = verification
 	}
 
 	return resp, bifrostErr, nil

@@ -60,9 +60,9 @@ function display(value: unknown): string {
 
 function tone(value?: string | null): string {
   const normalized = value?.toLowerCase().replaceAll("_", "-") ?? "unknown";
-  if (["confirmed", "ready", "connected", "healthy", "closed", "ok", "completed"].some((word) => normalized.includes(word))) return "good";
-  if (["contradicted", "failed", "unhealthy", "unavailable", "error", "not-ready"].some((word) => normalized.includes(word))) return "bad";
-  if (["partial", "warning", "stale", "degraded", "open"].some((word) => normalized.includes(word))) return "caution";
+  if (["confirmed", "ready", "connected", "healthy", "closed", "ok", "completed", "success", "enabled", "acknowledged", "true"].includes(normalized)) return "good";
+  if (["contradicted", "failed", "unhealthy", "unavailable", "error", "not-ready", "verification-failed", "extraction-failed", "missing-credentials", "quota-exhausted", "false"].includes(normalized)) return "bad";
+  if (["partial", "partially-verified", "completed-with-warnings", "warning", "stale", "degraded", "open", "rate-limited"].includes(normalized)) return "caution";
   return "neutral";
 }
 
