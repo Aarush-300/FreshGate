@@ -26,7 +26,7 @@ To eliminate operational risk during real-world gateway adoption, FreshGate prov
 
 ### Feature database durability
 
-Policies, monitoring state, alerts, and Replay snapshots use `FRESHGATE_FEATURE_DB` (default `freshgate_features.db`). Mount this file on durable storage and include it in backups. The free Render filesystem is ephemeral, so this history is not durable across restarts/redeployments there. Scheduled Watchtower checks also require server-side `OPENAI_API_KEY` and `TAVILY_API_KEY`; dashboard request keys are never reused by background jobs.
+Policies, monitoring state, alerts, and Replay snapshots use FRESHGATE_FEATURE_DB (default freshgate_features.db). Mount this file on durable storage and include it in backups. The checked-in Render Blueprint uses a paid 0.5c-512mb web service with a 1 GB disk mounted at /data; its cache, audit, and feature SQLite files are configured there so their data survives service restarts and redeploys. Render free web services do not support persistent disks. Scheduled Watchtower checks also require server-side OPENAI_API_KEY and TAVILY_API_KEY; dashboard request keys are never reused by background jobs.
 
 The SQLite feature store uses WAL mode with `synchronous=NORMAL` to keep snapshot writes consistent across process crashes while reducing per-write latency. As with SQLite's NORMAL synchronous mode generally, a sudden host or power failure may lose the most recent committed transaction; use managed durable storage and backups for production history.
 

@@ -116,7 +116,8 @@ async def test_dashboard_endpoint():
         response = await ac.get("/")
     assert response.status_code == 200
     assert "FreshGate" in response.text
-    assert "Bifrost" in response.text
+    assert 'id="root"' in response.text
+    assert "/static/assets/" in response.text
 
 
 @pytest.mark.asyncio

@@ -181,7 +181,7 @@ def test_favicon_endpoint_returns_200():
     response = client.get("/favicon.ico")
     assert response.status_code == 200
     assert response.headers.get("content-type") == "image/x-icon"
-    assert len(response.content) > 0
+    assert response.content.startswith(b"\x00\x00\x01\x00")
 
 
 # --- 6. Provider Status Endpoint Diagnostic Data ---

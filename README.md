@@ -1,67 +1,108 @@
 # FreshGate
 
-FreshGate is a FastAPI gateway and dashboard that extracts time-sensitive claims from an answer, checks them against current web evidence, and reports a structured freshness result. It can also proxy OpenAI-compatible chat completions through Bifrost.
+FreshGate is a FastAPI gateway that checks time-sensitive claims in AI responses against current evidence. It includes a React dashboard for verification, service health, benchmarks, audit access, policy management, Watchtower monitoring, and read-only Replay.
 
-**Live demo:** [freshgate-0cid.onrender.com](https://freshgate-0cid.onrender.com/)
+## Features
+
+- Verify answer text with current web evidence through supported OpenAI-compatible providers.
+- Proxy OpenAI-compatible chat completions through the FreshGate gateway.
+- Manage freshness and source policies; monitor claims and review verification history.
+- Inspect health, Prometheus metrics, benchmark data, and protected audit records.
+- Run locally with SQLite or deploy with persistent SQLite storage.
+
+Provider keys entered in the dashboard apply only to the current verification request and are not stored in browser storage. Scheduled Watchtower checks need server-side `OPENAI_API_KEY` and `TAVILY_API_KEY` values.
+
+## Requirements
+
+- Python 3.11 or newer
+- Node.js 22 or newer and npm (needed to build the dashboard)
+- Docker (optional, for container deployment or Docker Compose)
 
 ## Run locally
 
-Requirements: Python 3.11 or newer.
+### Windows PowerShell
+
+The launcher creates a virtual environment and builds the dashboard if needed, then starts the API. It uses port 8127 by default and tries another port if that port is busy.
 
 ```powershell
-py -3.11 -m venv .venv
-.\.venv\Scripts\Activate.ps1
+.\run.ps1
+```
+
+To install and run manually:
+
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+Push-Location dashboard
+npm ci
+npm run build
+Pop-Location
+.\.venv\Scripts\python.exe -m uvicorn server.app:app --reload --host 127.0.0.1 --port 8000
+```
+
+### macOS and Linux
+
+```sh
+python3 -m venv .venv
+. .venv/bin/activate
 python -m pip install -r requirements.txt
+cd dashboard && npm ci && npm run build && cd ..
 python -m uvicorn server.app:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Open `http://127.0.0.1:8000`. For live verification, enter an OpenAI API key and a Tavily API key in the dashboard. The browser sends them only with that verification request, and FreshGate clears the fields when the request finishes. Keys are not saved in browser storage or server configuration. Use HTTPS when accessing a deployed instance.
+Open `http://127.0.0.1:8000`. For dashboard development, start the API and run `npm run dev` inside `dashboard`. The Vite proxy targets `http://127.0.0.1:8000` by default; set `FRESHGATE_API_ORIGIN` to use another API address.
 
-The dashboard's **Policy Studio** tab manages source, freshness, and cache policies. Select a saved policy on the Verify tab to apply it to a verification, or send `policy_id` to `POST /verify`. Policy management and policy simulation are described in [docs/policy-studio.md](docs/policy-studio.md). Feature policies and verification history are stored in the SQLite database configured by `FRESHGATE_FEATURE_DB` (default: `freshgate_features.db`).
+Copy `.env.example` to `.env` to configure local credentials or options. Keep `.env` private. For direct dashboard verification, choose a provider and enter its API key in the dashboard. See [dashboard usage](docs/dashboard.md) for provider behavior and [the API reference](docs/13_api_reference.md) for endpoints.
 
-The **Watchtower** tab monitors a verified claim and checks it again on a schedule. Scheduled checks require server-configured `OPENAI_API_KEY` and `TAVILY_API_KEY`; per-request dashboard keys are never stored for later use. Configure check limits and retry behavior with the `FRESHGATE_WATCHTOWER_*` settings. See [docs/watchtower.md](docs/watchtower.md).
+## Deploy to Render
 
-Every live volatile claim check also writes an immutable snapshot to the feature database. The **Replay** tab opens from a monitored claim or alert and compares its verdict, score, sources, evidence, and policy over time. See [docs/verification-replay.md](docs/verification-replay.md) and [docs/feature-architecture.md](docs/feature-architecture.md).
+The repository includes a Render Blueprint at [`render.yaml`](render.yaml). It builds the dashboard and API from the root [`Dockerfile`](Dockerfile), listens on Render's `PORT`, checks `/health/ready`, and mounts a 1 GB persistent disk at `/data` for the cache, audit, and feature databases.
 
-Install the developer CLI from the source checkout with `python -m pip install -e .`. Then run `freshgate verify --file answer.txt --min-score 70 --format json` to use the HTTP API as a CI check. See [docs/developer-cli.md](docs/developer-cli.md) for configuration, batch mode, output, and exit codes.
+1. Push this repository to GitHub.
+2. In Render, create a new **Blueprint** and connect the GitHub repository.
+3. Review the Blueprint resources and confirm creation. The configured `0.5c-512mb` web compute plan and persistent disk are paid resources; a free web service cannot use this persistent disk.
+4. Wait for the first deploy to finish, then open the `onrender.com` URL shown in the Render dashboard.
+5. Optionally configure `OPENAI_API_KEY` and `TAVILY_API_KEY` in the Render service environment for scheduled Watchtower checks. The Blueprint generates `FRESHGATE_ADMIN_KEY` for protected audit access.
 
-For a deterministic end-to-end feature workflow, start FreshGate with server-side provider keys and run `python scripts/demo_feature_workflow.py`. It creates a demo policy and monitored claim in the configured feature database. Run `python bench/evaluate_features.py` for policy, Watchtower, Replay, and CLI scenario checks without provider calls; `python bench/evaluate.py --suite unit` measures the existing verification dataset.
+The persistent disk keeps SQLite data across service restarts and deploys, but it is attached to one service instance. Back up important data. Review [Render's Blueprint reference](https://render.com/docs/blueprint-spec) and [compute plans](https://render.com/docs/compute-plans) before provisioning because plan availability and pricing can change.
 
-See [the feature delivery report](docs/feature-delivery-report.md) for API, storage, test, benchmark, deployment, and limitation details.
+For direct verification, users can supply provider credentials with each request. If you configure server-side provider keys, protect the public service with an appropriate access and usage policy. Never put secrets in the repository or frontend source.
 
-For API clients, `POST /verify` accepts `X-OpenAI-API-Key` and `X-Tavily-API-Key` request headers. Self-hosters may optionally provide `OPENAI_API_KEY` and `TAVILY_API_KEY` as environment variables for clients that do not send per-request keys. Never commit real credentials or place them in frontend code.
-
-## Deploy a free demo
-
-The included [`render.yaml`](render.yaml) configures a Render free web service. Connect this GitHub repository to Render and create a Blueprint from the repository. The service uses the included Dockerfile, sets the required port and health check, and generates an admin key for the audit view. The app listens on Render's `PORT` value and keeps its cache on local SQLite by default.
-
-Render's free web services sleep after 15 minutes without traffic and can take about a minute to wake. Their filesystem is temporary, so the SQLite cache, audit data, policies, monitoring state, and Replay history can disappear after restart, sleep, or redeploy. Treat the free deployment as a demo, not production storage. Provider calls can incur charges on the API accounts whose keys users enter. Review the provider pricing and apply usage limits before sharing a public instance. To keep data and availability for production, use paid compute with persistent/managed storage and configure an appropriate authentication and usage policy.
-
-## Docker
+## Docker Compose
 
 ```sh
 docker compose up --build
 ```
 
-Open `http://localhost:8000`. The Compose setup runs FreshGate with Redis and Bifrost for the optional OpenAI-compatible gateway proxy. The dashboard's direct live verification accepts user-supplied keys.
+The Compose file also starts Redis and Bifrost for the optional gateway proxy. Local data is stored in Docker volumes. Copy `.env.example` to `.env` and set credentials as needed.
 
-## Operations
+## Checks
 
-- Health: `/health/live` and `/health/ready`
-- Prometheus metrics: `/metrics`
-- API reference: `/docs`
-- Dashboard: `/`
-- Admin audit access: set `FRESHGATE_ADMIN_KEY`; the audit screen sends it per request and does not save it.
+Install the development dependencies and run the Python suite:
 
-Install test-only dependencies with `python -m pip install -r requirements-dev.txt`. Run offline checks with `python -m pytest -m "not live"`. Run the benchmark suite with `python bench/evaluate.py --suite all`.
+```sh
+python -m pip install -r requirements-dev.txt
+python -m pytest -q
+```
 
-## Project map
+Build the dashboard:
 
-- `server/`: FastAPI routes, middleware, and app lifecycle
-- `core/`: verification pipeline, provider clients, cache, audit, security, and metrics
-- `dashboard/`: static browser UI served by FastAPI
-- `bench/`: labelled datasets, runner, and reports
-- `docs/`: architecture, security, operations, API, and deployment guides
+```sh
+cd dashboard
+npm ci
+npm run build
+```
+
+Operational endpoints are `/health/live`, `/health/ready`, `/metrics`, and `/docs`.
+
+## Project layout
+
+- `server/`: FastAPI application and routes
+- `core/`: verification pipeline, providers, cache, audit, security, and metrics
+- `dashboard/`: React, TypeScript, and Vite dashboard
+- `bench/`: benchmark datasets and runners
+- `docs/`: architecture, API, operations, and feature guides
+- `plugin/`: Bifrost plugin source
 
 ## License
 

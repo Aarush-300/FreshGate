@@ -1,4 +1,7 @@
 .git
+.codex
+.gemini
+.impeccable
 .github
 .venv
 venv
@@ -8,6 +11,10 @@ __pycache__
 .coverage
 htmlcov
 tests
+docs
+DESIGN.md
+PRODUCT.md
+FreshGate Antigravity Implementation Plan.md
 node_modules
 .env
 .env.*

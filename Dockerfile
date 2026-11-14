@@ -1,3 +1,11 @@
+FROM node:22-alpine AS dashboard-build
+
+WORKDIR /dashboard
+COPY dashboard/package.json dashboard/package-lock.json ./
+RUN npm ci
+COPY dashboard/ ./
+RUN npm run build
+
 FROM python:3.11.9-slim
 
 # Create non-root system user
@@ -12,7 +20,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application source code (excluding secrets via .dockerignore)
 COPY core/ ./core/
 COPY server/ ./server/
-COPY dashboard/ ./dashboard/
+COPY --from=dashboard-build /dashboard/dist/ ./dashboard/dist/
 COPY bench/ ./bench/
 COPY cli/ ./cli/
 

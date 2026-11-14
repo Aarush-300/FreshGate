@@ -5,8 +5,10 @@ __pycache__/
 *.py[cod]
 *.so
 .pytest_cache/
+.ruff_cache/
 .coverage
 htmlcov/
+*.log
 
 # Local secrets and environment files
 .env
@@ -22,6 +24,8 @@ htmlcov/
 
 # Frontend tooling (vendored dashboard fonts are committed separately)
 node_modules/
+dashboard/dist/
+dashboard/tsconfig.tsbuildinfo
 
 # Local UI proof artifacts
 .ui-proof/
@@ -36,3 +40,7 @@ vendor/
 .agents/
 .agent/
 .taste-skill/
+
+# Local assistant and design-tool state
+.gemini/
+.impeccable/

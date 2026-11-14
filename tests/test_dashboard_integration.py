@@ -1,112 +1,66 @@
 from __future__ import annotations
 
-import re
-from html.parser import HTMLParser
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+APP = (ROOT / "dashboard/src/App.tsx").read_text(encoding="utf-8")
+API = (ROOT / "dashboard/src/api.ts").read_text(encoding="utf-8")
+STYLES = (ROOT / "dashboard/src/styles.css").read_text(encoding="utf-8")
 
 
-class DashboardParser(HTMLParser):
-    def __init__(self):
-        super().__init__()
-        self.ids: set[str] = set()
-        self.tab_targets: list[str] = []
-        self.section_ids: set[str] = set()
-        self.in_section = 0
-
-    def handle_starttag(self, tag, attrs):
-        attributes = dict(attrs)
-        if "id" in attributes:
-            self.ids.add(attributes["id"])
-        if tag == "button" and "data-tab" in attributes:
-            self.tab_targets.append(attributes["data-tab"])
-        if tag == "section" and "tab-content" in attributes.get("class", "").split():
-            self.section_ids.add(attributes.get("id", ""))
-
-
-def test_dashboard_navigation_targets_existing_unique_sections():
-    parser = DashboardParser()
-    parser.feed((ROOT / "dashboard/index.html").read_text(encoding="utf-8"))
-    assert parser.tab_targets == [
-        "tab-verify", "tab-metrics", "tab-benchmark", "tab-audits",
-        "tab-policies", "tab-watchtower", "tab-replay",
-    ]
-    assert len(parser.tab_targets) == len(set(parser.tab_targets))
-    assert set(parser.tab_targets) == parser.section_ids
-
-
-def test_dashboard_feature_controls_exist_and_render_with_safe_dom_apis():
-    parser = DashboardParser()
-    parser.feed((ROOT / "dashboard/index.html").read_text(encoding="utf-8"))
-    app = (ROOT / "dashboard/app.js").read_text(encoding="utf-8")
-    referenced_ids = set(re.findall(r"getElementById\(['\"]([^'\"]+)", app))
-    optional_status_ids = {"stat-mode", "stat-cb", "stat-db"}
-    assert referenced_ids - optional_status_ids <= parser.ids
-    assert ".innerHTML" not in app
-    assert "textContent" in app
-
-
-def test_feature_tabs_cover_expected_api_flows_and_empty_error_states():
-    app = (ROOT / "dashboard/app.js").read_text(encoding="utf-8")
+def test_dashboard_entry_mounts_the_react_application():
     html = (ROOT / "dashboard/index.html").read_text(encoding="utf-8")
+    entry = (ROOT / "dashboard/src/main.tsx").read_text(encoding="utf-8")
+    assert '<div id="root"></div>' in html
+    assert 'src="/src/main.tsx"' in html
+    assert "createRoot(document.getElementById(\"root\")!)" in entry
+
+
+def test_dashboard_keeps_existing_verification_and_feature_api_flows():
     for endpoint in (
-        "/api/policies", "/api/policies/categories", "/api/watchtower/claims",
-        "/api/watchtower/alerts", "/api/replay/",
+        '"/verify"', '"/health"', '"/health/ready"', '"/metrics"',
+        '"/api/provider/status"', '"/api/deployment/status"', '"/api/benchmark"',
+        '"/api/providers"',
+        '"/api/audits/recent"', '"/api/policies"', '"/api/policies/categories"',
+        '"/api/watchtower/claims"', '"/api/watchtower/alerts?unacknowledged_only=true"',
     ):
-        assert endpoint in app
-    assert "window.openFreshGateReplay" in app
-    assert "No policies yet." in app
-    assert "No monitored claims." in app
-    assert "No detected changes." in app
-    assert "No verification history exists for this claim yet." in app
-    assert "Could not load Watchtower:" in app
-    assert "Could not load Replay:" in app
-    assert "confirm(" in app
-    assert "openai-api-key" in html and "tavily-api-key" in html
-    assert "localStorage" not in app and "sessionStorage" not in app
+        assert endpoint in APP
+    assert "/api/replay/" in APP
+    assert '"/api/watchtower/monitor"' in APP
+    assert "/acknowledge" in APP
+    assert "/compare?from=" in APP
 
 
-def test_dashboard_styles_remain_responsive_and_reduced_motion_aware():
-    styles = (ROOT / "dashboard/style.css").read_text(encoding="utf-8")
-    assert "@media(max-width:800px)" in styles
-    assert "@media(max-width:560px)" in styles
-    assert "prefers-reduced-motion:reduce" in styles
+def test_dashboard_has_explicit_empty_error_and_request_scoped_credential_states():
+    assert "No changing claims found" in APP
+    assert "No policies saved" in APP
+    assert "No claims monitored" in APP
+    assert "No detected changes" in APP
+    assert "No verification history exists for this claim yet" in APP
+    assert "X-LLM-API-Key" in APP and "X-Tavily-API-Key" in APP
+    assert 'setLlmKey(""); setSearchKey("")' in APP
+    assert 'localStorage.setItem("llmKey"' not in APP + API
+    assert 'localStorage.setItem("searchKey"' not in APP + API
+    assert "sessionStorage" not in APP + API
+    assert 'role="switch"' in APP
+    assert ">API key<" in APP and ">Base URL<" in APP and ">Model<" in APP
+    assert '"/api/providers"' in APP
+    assert "window.confirm" in APP
 
 
-def test_groq_dashboard_preset_uses_supported_model_and_actionable_recovery():
-    app = (ROOT / "dashboard/app.js").read_text(encoding="utf-8")
-    html = (ROOT / "dashboard/index.html").read_text(encoding="utf-8")
-
-    assert "model: 'openai/gpt-oss-20b'" in app
-    assert "Groq (GPT-OSS 20B)" in html
-    assert "Use GPT-OSS 20B" in app
-    assert "model_not_found" in app
-    assert "Claim extraction failed. Unable to verify response freshness." not in app
+def test_dashboard_is_responsive_and_respects_reduced_motion():
+    assert "@media (max-width: 900px)" in STYLES
+    assert "@media (max-width: 700px)" in STYLES
+    assert "@media (max-width: 420px)" in STYLES
+    assert "prefers-reduced-motion: reduce" in STYLES
 
 
-def test_provider_keys_remain_available_for_retries_without_browser_persistence():
-    app = (ROOT / "dashboard/app.js").read_text(encoding="utf-8")
-    html = (ROOT / "dashboard/index.html").read_text(encoding="utf-8")
-    verify_cleanup = re.search(r"} finally \{(?P<body>.*?)\n    }", app, re.DOTALL)
-
-    assert verify_cleanup is not None
-    assert "openaiKey.value = ''" not in verify_cleanup.group("body")
-    assert "tavilyKey.value = ''" not in verify_cleanup.group("body")
-    assert "clear-provider-keys" in app and "clear-provider-keys" in html
-    assert "X-LLM-API-Key" in app
-    assert "other providers use only their own key" in html
-    assert "never saved in browser storage" in html
-    assert "localStorage" not in app and "sessionStorage" not in app
-
-
-def test_provider_presets_use_current_documented_model_routes():
-    app = (ROOT / "dashboard/app.js").read_text(encoding="utf-8")
-    html = (ROOT / "dashboard/index.html").read_text(encoding="utf-8")
-
-    assert "model: 'gemini-3.8-flash'" in app
-    assert "Google Gemini (Gemini 3.8 Flash)" in html
-    assert "model: 'openrouter/free'" in app
-    assert "model: 'openai/gpt-oss-20b'" in app
-    assert "'ollama-local'" in app
+def test_production_asset_base_matches_fastapi_static_mount():
+    vite = (ROOT / "dashboard/vite.config.ts").read_text(encoding="utf-8")
+    server = (ROOT / "server/app.py").read_text(encoding="utf-8")
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert '"/static/"' in vite
+    assert '"dashboard" / "dist"' in server
+    assert "npm run build" in dockerfile
+    assert "dashboard/dist/" in dockerfile

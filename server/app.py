@@ -37,6 +37,7 @@ from core.metrics import metrics
 from server.routes.policies import router as policies_router
 from server.routes.watchtower import router as watchtower_router, watchtower_service
 from server.routes.replay import history_router, replay_router
+from server.routes.providers import router as providers_router, SUPPORTED_PROVIDER_IDS
 from core.logging_config import CorrelationIdMiddleware, get_correlation_id
 from core.audit import audit_store
 from core.circuit_breaker import circuit_breaker
@@ -100,6 +101,7 @@ app.include_router(policies_router)
 app.include_router(watchtower_router)
 app.include_router(history_router)
 app.include_router(replay_router)
+app.include_router(providers_router)
 
 pipeline = FreshGatePipeline()
 
@@ -309,6 +311,15 @@ async def get_recent_audits(limit: int = 50):
 @app.post("/verify", response_model=VerificationResult)
 async def verify_answer(req: VerifyRequest, request: Request):
     """Direct verification endpoint for any answer text."""
+    if req.provider is not None:
+        if req.provider not in SUPPORTED_PROVIDER_IDS:
+            raise HTTPException(status_code=400, detail="Choose a supported AI provider.")
+        if not req.model or not req.model.strip():
+            raise HTTPException(status_code=400, detail="A model is required for the selected provider.")
+        if not req.base_url or not req.base_url.strip():
+            raise HTTPException(status_code=400, detail="A base URL is required for the selected provider.")
+        if not is_valid_credential(request.headers.get("X-LLM-API-Key")):
+            raise HTTPException(status_code=400, detail="The selected AI provider API key is invalid or missing.")
     if "X-LLM-API-Key" in request.headers:
         # Explicit provider-scoped credentials must never fall back to the server's
         # OpenAI key when blank or invalid.
@@ -318,6 +329,11 @@ async def verify_answer(req: VerifyRequest, request: Request):
     tavily_key = request.headers.get("X-Tavily-API-Key") or request.headers.get("X-Tavily-Key")
     llm_base_url = request.headers.get("X-LLM-Base-URL") or req.base_url
     llm_model = request.headers.get("X-LLM-Model") or req.model
+    if llm_base_url:
+        from urllib.parse import urlparse
+        parsed_base_url = urlparse(llm_base_url)
+        if parsed_base_url.scheme not in {"http", "https"} or not parsed_base_url.netloc or parsed_base_url.username or parsed_base_url.password:
+            raise HTTPException(status_code=400, detail="Enter a valid HTTP or HTTPS provider base URL without embedded credentials.")
     if openai_key is not None and not is_valid_credential(openai_key):
         raise HTTPException(status_code=400, detail="The selected AI provider API key is invalid or missing.")
     if tavily_key is not None and not is_valid_credential(tavily_key):
@@ -633,7 +649,7 @@ async def clear_cache():
 
 
 # Mount dashboard directory for static UI serving
-dashboard_dir = Path(__file__).resolve().parent.parent / "dashboard"
+dashboard_dir = Path(__file__).resolve().parent.parent / "dashboard" / "dist"
 if dashboard_dir.exists():
     app.mount("/static", StaticFiles(directory=str(dashboard_dir)), name="static")
 

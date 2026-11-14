@@ -2,8 +2,12 @@ services:
   - type: web
     name: freshgate
     runtime: docker
-    plan: free
+    plan: 0.5c-512mb
     healthCheckPath: /health/ready
+    disk:
+      name: freshgate-data
+      mountPath: /data
+      sizeGB: 1
     envVars:
       - key: FRESHGATE_ADMIN_KEY
         generateValue: true
@@ -11,3 +15,9 @@ services:
         value: shadow
       - key: FRESHGATE_FAIL_OPEN
         value: "true"
+      - key: FRESHGATE_CACHE_DB
+        value: /data/freshgate_cache.db
+      - key: FRESHGATE_AUDIT_DB
+        value: /data/freshgate_audit.db
+      - key: FRESHGATE_FEATURE_DB
+        value: /data/freshgate_features.db
