@@ -3,6 +3,7 @@ import time
 import json
 import asyncio
 import logging
+import uuid
 from typing import Optional, Dict, Any, Tuple
 from pathlib import Path
 from contextlib import asynccontextmanager
@@ -10,8 +11,10 @@ from fastapi import FastAPI, HTTPException, Request, Response, BackgroundTasks, 
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from pymongo.errors import DuplicateKeyError
 import httpx
 from dotenv import load_dotenv
+from server.users import users_collection, serializer, password_hash, check_password, current_user, public_settings, encrypt_secret, decrypt_secret
 
 # Ensure environment configuration is loaded before constructing services
 load_dotenv()
@@ -92,6 +95,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+@app.middleware("http")
+async def protect_api(request: Request, call_next):
+    if (request.url.path.startswith("/api/") and request.url.path not in {"/api/auth/register", "/api/auth/login", "/api/auth/logout"}) or request.url.path == "/verify":
+        try: current_user(request)
+        except HTTPException as exc: return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    return await call_next(request)
+
 # Register Security & Observability Middlewares
 app.add_middleware(CorrelationIdMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
@@ -102,6 +112,50 @@ app.include_router(watchtower_router)
 app.include_router(history_router)
 app.include_router(replay_router)
 app.include_router(providers_router)
+
+class AuthBody(BaseModel):
+    email: str = Field(min_length=5, max_length=254)
+    password: str = Field(min_length=10, max_length=200)
+
+class ProfileSettings(BaseModel):
+    provider: str = "openai"
+    api_key: str = ""
+    model: str = ""
+    base_url: str = ""
+    tavily_key: str = ""
+
+@app.post("/api/auth/register", status_code=201)
+async def register(body: AuthBody, response: Response):
+    signer = serializer(); email = body.email.strip().lower(); uid = uuid.uuid4().hex
+    try:
+        users_collection().create_index("email", unique=True)
+        users_collection().insert_one({"_id":uid,"email":email,"password_hash":password_hash(body.password),"settings":{},"claims":[],"alerts":[]})
+    except DuplicateKeyError: raise HTTPException(409,"Email already registered")
+    response.set_cookie("freshgate_session",signer.dumps(uid),httponly=True,samesite="lax",secure=os.getenv("COOKIE_SECURE","false").lower()=="true",max_age=2592000,path="/")
+    return {"email":email}
+
+@app.post("/api/auth/login")
+async def login(body: AuthBody, response: Response):
+    user=users_collection().find_one({"email":body.email.strip().lower()})
+    if not user or not check_password(body.password,user.get("password_hash","")): raise HTTPException(401,"Email or password is incorrect")
+    response.set_cookie("freshgate_session",serializer().dumps(user["_id"]),httponly=True,samesite="lax",secure=os.getenv("COOKIE_SECURE","false").lower()=="true",max_age=2592000,path="/")
+    return {"email":user["email"]}
+
+@app.post("/api/auth/logout")
+async def logout(response: Response):
+    response.delete_cookie("freshgate_session",path="/"); return {"ok":True}
+
+@app.get("/api/auth/me")
+async def me(request: Request):
+    user=current_user(request); return {"email":user["email"],"settings":public_settings(user)}
+
+@app.put("/api/profile/settings")
+async def profile_settings(body: ProfileSettings, request: Request):
+    user=current_user(request); old=user.get("settings",{}); data=body.model_dump()
+    if body.provider not in SUPPORTED_PROVIDER_IDS: raise HTTPException(422,"Unsupported provider")
+    for key in ("api_key","tavily_key"): data[key]=encrypt_secret(data[key]) if data[key] else old.get(key,"")
+    users_collection().update_one({"_id":user["_id"]},{"$set":{"settings":data}})
+    return public_settings({"settings":data})
 
 pipeline = FreshGatePipeline()
 
@@ -310,6 +364,13 @@ async def get_recent_audits(limit: int = 50):
 
 @app.post("/verify", response_model=VerificationResult)
 async def verify_answer(req: VerifyRequest, request: Request):
+    user = current_user(request)
+    settings = user.get("settings", {})
+    openai_key = decrypt_secret(settings.get("api_key", ""))
+    tavily_key = decrypt_secret(settings.get("tavily_key", ""))
+    if settings.get("provider") != "ollama" and not is_valid_credential(openai_key):
+        raise HTTPException(status_code=400, detail="Add your provider API key under Profile & settings.")
+    if not is_valid_credential(tavily_key): raise HTTPException(status_code=400, detail="Add your Tavily key under Profile & settings.")
     """Direct verification endpoint for any answer text."""
     if req.provider is not None:
         if req.provider not in SUPPORTED_PROVIDER_IDS:
@@ -327,11 +388,12 @@ async def verify_answer(req: VerifyRequest, request: Request):
         openai_key = request.headers.get("X-LLM-API-Key")
     else:
         openai_key = request.headers.get("X-OpenAI-API-Key") or request.headers.get("X-OpenAI-Key")
-    tavily_key = request.headers.get("X-Tavily-API-Key") or request.headers.get("X-Tavily-Key")
+    tavily_key = decrypt_secret(settings.get("tavily_key", ""))
+    openai_key = decrypt_secret(settings.get("api_key", ""))
     if not is_valid_credential(tavily_key):
         raise HTTPException(status_code=400, detail="A valid Tavily API key is required for web search.")
-    llm_base_url = request.headers.get("X-LLM-Base-URL") or req.base_url
-    llm_model = request.headers.get("X-LLM-Model") or req.model
+    llm_base_url = settings.get("base_url") or req.base_url
+    llm_model = settings.get("model") or req.model
     if llm_base_url:
         from urllib.parse import urlparse
         parsed_base_url = urlparse(llm_base_url)

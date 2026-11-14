@@ -80,7 +80,7 @@ if (-not (Test-Path $DashboardDir)) {
     throw "Dashboard folder was not found: $DashboardDir"
 }
 
-if ((Invoke-PythonProbe -Code 'import uvicorn') -ne 0) {
+if ((Invoke-PythonProbe -Code 'import uvicorn, pymongo, itsdangerous, cryptography') -ne 0) {
     Write-Host 'Installing Python requirements...'
     Invoke-Checked -File $VenvPython -Arguments @('-m', 'pip', 'install', '-r', $Requirements)
 }

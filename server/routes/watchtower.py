@@ -15,6 +15,9 @@ from core.persistence import get_feature_store
 from core.policies import get_policy
 from core.watchtower import WatchtowerService
 from core.models import Source
+from server.users import current_user, users_collection
+from fastapi import Depends
+import uuid
 
 router = APIRouter(prefix="/api/watchtower", tags=["watchtower"])
 watchtower_service = WatchtowerService()
@@ -64,7 +67,7 @@ class MonitorPatch(BaseModel):
 
 
 @router.post("/monitor", status_code=status.HTTP_201_CREATED)
-async def monitor_claim(request: MonitorRequest):
+async def monitor_claim(request: MonitorRequest, user: dict = Depends(current_user)):
     store = get_feature_store()
     policy = None
     if request.policy_id:
@@ -83,13 +86,15 @@ async def monitor_claim(request: MonitorRequest):
         "alert_score_threshold": request.alert_score_threshold,
         "last_evidence": [source.model_dump() for source in baseline.sources] if baseline else [],
     }
-    try:
-        row = await asyncio.to_thread(store.save_monitored_claim, {
+    row = {
+            "id": uuid.uuid4().hex,
             "claim_text": request.claim_text,
             "category": request.category,
             "monitoring_interval": request.monitoring_interval,
             "policy_id": request.policy_id,
             "enabled": request.enabled,
+            "claim_fingerprint": __import__("hashlib").sha256(request.claim_text.strip().lower().encode()).hexdigest(),
+            "last_error": None,
             "last_verdict": baseline.verdict if baseline else None,
             "last_score": baseline.score if baseline else None,
             "last_checked_at": now if baseline else None,
@@ -98,29 +103,25 @@ async def monitor_claim(request: MonitorRequest):
             "metadata": metadata,
             "entities": request.entities,
             "jurisdiction": jurisdiction,
-        }, watchtower_service.config.watchtower_max_monitored_claims)
-    except OverflowError as exc:
-        raise HTTPException(status_code=429, detail=str(exc)) from exc
-    except sqlite3.IntegrityError as exc:
-        raise HTTPException(status_code=409, detail="Could not register monitored claim") from exc
+        }
+    users_collection().update_one({"_id": user["_id"]}, {"$push": {"claims": row}})
     return row
 
 
 @router.get("/claims")
-async def list_claims(limit: int = Query(default=100, ge=1, le=1000), offset: int = Query(default=0, ge=0)):
-    store = get_feature_store()
-    rows = await asyncio.to_thread(store.list_monitored_claims, limit, offset)
-    alerts = await asyncio.to_thread(store.list_alerts, 1000, 0, True)
+async def list_claims(user: dict = Depends(current_user), limit: int = Query(default=100, ge=1, le=1000), offset: int = Query(default=0, ge=0)):
+    rows = user.get("claims", [])[offset:offset+limit]
+    alerts = user.get("alerts", [])
     return {
         "claims": rows,
         "limit": limit,
         "offset": offset,
         "overview": {
-            "total": await asyncio.to_thread(store.count_monitored_claims),
-            "healthy": sum(1 for row in rows if row["enabled"] and row["last_error"] is None),
-            "changed": sum(1 for alert in alerts if alert["monitored_claim_id"]),
-            "pending": sum(1 for row in rows if row["enabled"] and row["next_check_at"] <= time.time()),
-            "failed": sum(1 for row in rows if row["last_error"] is not None),
+            "total": len(user.get("claims", [])),
+            "healthy": sum(1 for row in rows if row.get("enabled") and row.get("last_error") is None),
+            "changed": sum(1 for alert in alerts if alert.get("monitored_claim_id")),
+            "pending": sum(1 for row in rows if row.get("enabled") and row.get("next_check_at", 0) <= time.time()),
+            "failed": sum(1 for row in rows if row.get("last_error") is not None),
         },
     }
 

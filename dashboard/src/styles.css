@@ -1,4 +1,7 @@
 @import "tailwindcss";
+.auth-screen { display:grid; min-height:100vh; place-items:center; padding:24px; }
+.auth-card,.profile-form { display:grid; gap:16px; padding:28px; width:min(100%,520px); }
+.provider-config,.request-options { display:none !important; }
 
 :root {
   color-scheme: light;
