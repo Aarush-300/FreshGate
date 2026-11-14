@@ -349,7 +349,9 @@ class LLMProviderManager:
             effective_key = get_config().openai_api_key
         effective_key = (effective_key or "").strip()
 
-        if not is_valid_credential(effective_key):
+        effective_base_url = (base_url or self.base_url).rstrip("/")
+        is_local_ollama = effective_base_url.startswith(("http://localhost:", "http://127.0.0.1:", "http://[::1]:"))
+        if not is_valid_credential(effective_key) and not is_local_ollama:
             self.stats.status = "missing_credentials"
             self.stats.last_error_message = "OpenAI API key is missing, empty, or placeholder. Request aborted."
             raise LLMProviderException(
@@ -365,10 +367,9 @@ class LLMProviderManager:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {effective_key}",
-        }
+        headers = {"Content-Type": "application/json"}
+        if effective_key:
+            headers["Authorization"] = f"Bearer {effective_key}"
 
         effective_model = (model or self.model).strip()
         effective_base_url = (base_url or self.base_url).rstrip("/")
@@ -376,8 +377,12 @@ class LLMProviderManager:
         payload: Dict[str, Any] = {
             "model": effective_model,
             "messages": messages,
-            "temperature": temperature,
         }
+        # Gemini 3 models only accept the default temperature; sending the
+        # generic extraction temperature (0) makes their OpenAI-compatible API
+        # reject the request with HTTP 400.
+        if not ("generativelanguage.googleapis.com" in effective_base_url and effective_model.lower().startswith("gemini-3")):
+            payload["temperature"] = temperature
         if max_tokens:
             payload["max_tokens"] = max_tokens
 

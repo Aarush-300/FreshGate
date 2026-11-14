@@ -318,7 +318,8 @@ async def verify_answer(req: VerifyRequest, request: Request):
             raise HTTPException(status_code=400, detail="A model is required for the selected provider.")
         if not req.base_url or not req.base_url.strip():
             raise HTTPException(status_code=400, detail="A base URL is required for the selected provider.")
-        if not is_valid_credential(request.headers.get("X-LLM-API-Key")):
+        provider_key = request.headers.get("X-LLM-API-Key")
+        if req.provider != "ollama" and not is_valid_credential(provider_key):
             raise HTTPException(status_code=400, detail="The selected AI provider API key is invalid or missing.")
     if "X-LLM-API-Key" in request.headers:
         # Explicit provider-scoped credentials must never fall back to the server's
@@ -327,6 +328,8 @@ async def verify_answer(req: VerifyRequest, request: Request):
     else:
         openai_key = request.headers.get("X-OpenAI-API-Key") or request.headers.get("X-OpenAI-Key")
     tavily_key = request.headers.get("X-Tavily-API-Key") or request.headers.get("X-Tavily-Key")
+    if not is_valid_credential(tavily_key):
+        raise HTTPException(status_code=400, detail="A valid Tavily API key is required for web search.")
     llm_base_url = request.headers.get("X-LLM-Base-URL") or req.base_url
     llm_model = request.headers.get("X-LLM-Model") or req.model
     if llm_base_url:
@@ -334,7 +337,7 @@ async def verify_answer(req: VerifyRequest, request: Request):
         parsed_base_url = urlparse(llm_base_url)
         if parsed_base_url.scheme not in {"http", "https"} or not parsed_base_url.netloc or parsed_base_url.username or parsed_base_url.password:
             raise HTTPException(status_code=400, detail="Enter a valid HTTP or HTTPS provider base URL without embedded credentials.")
-    if openai_key is not None and not is_valid_credential(openai_key):
+    if openai_key is not None and not is_valid_credential(openai_key) and req.provider != "ollama":
         raise HTTPException(status_code=400, detail="The selected AI provider API key is invalid or missing.")
     if tavily_key is not None and not is_valid_credential(tavily_key):
         raise HTTPException(status_code=400, detail="The Tavily API key is invalid or malformed.")

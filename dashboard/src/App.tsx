@@ -214,7 +214,7 @@ export function App() {
         {section === "benchmarks" && <BenchmarkView data={benchmark} setData={setBenchmark} />}
         {section === "audits" && <AuditView />}
         {section === "policies" && <PolicyView policies={policies} categories={categories} onChanged={refreshWorkspace} />}
-        {section === "watchtower" && <WatchtowerView claims={claims} alerts={alerts} onRefresh={refreshWorkspace} onError={setGlobalError} />}
+        {section === "watchtower" && <WatchtowerView claims={claims} alerts={alerts} categories={categories} policies={policies} onRefresh={refreshWorkspace} onError={setGlobalError} />}
         {section === "replay" && <ReplayView claims={claims} />}
       </main>
       <footer className="app-footer"><span>FreshGate</span><span>Verification decisions stay attached to their evidence.</span></footer>
@@ -228,6 +228,10 @@ function VerifyView({ policies, onMonitor }: { policies: Policy[]; onMonitor: (c
   const [providers, setProviders] = useState<ProviderOption[]>([]);
   const [providerId, setProviderId] = useState("");
   const [model, setModel] = useState("");
+  const [customModel, setCustomModel] = useState("");
+  const [providerModels, setProviderModels] = useState<string[]>([]);
+  const [loadingModels, setLoadingModels] = useState(false);
+  const [modelNotice, setModelNotice] = useState<string | null>(null);
   const [baseUrl, setBaseUrl] = useState("");
   const [llmKey, setLlmKey] = useState("");
   const [showLlmKey, setShowLlmKey] = useState(false);
@@ -264,15 +268,32 @@ function VerifyView({ policies, onMonitor }: { policies: Policy[]; onMonitor: (c
     setProviderId(nextProviderId);
     setBaseUrl(nextProvider?.base_url ?? "");
     setModel(nextProvider?.default_model ?? "");
+    setCustomModel(""); setProviderModels([]); setModelNotice(null);
     setLlmKey("");
     setShowLlmKey(false);
+  };
+
+  const loadModels = async () => {
+    if (!activeProvider || activeProvider.id === "custom") { setModelNotice("Enter a model ID for custom providers."); return; }
+    setLoadingModels(true); setModelNotice(null);
+    try {
+      const headers: Record<string, string> = {};
+      if (llmKey.trim()) headers["X-LLM-API-Key"] = llmKey.trim();
+      const data = await api<{ models: string[] }>(`/api/providers/${encodeURIComponent(providerId)}/models`, {
+        ...jsonBody({ base_url: baseUrl.trim() || activeProvider.base_url }), headers,
+      });
+      setProviderModels(data.models);
+      if (model && !data.models.includes(model)) setCustomModel(model);
+      setModelNotice(`${data.models.length} models loaded from ${activeProvider.name}.`);
+    } catch (cause) { setModelNotice(cause instanceof Error ? cause.message : "Could not load provider models."); }
+    finally { setLoadingModels(false); }
   };
 
   const verify = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!answer.trim()) { setError("Paste a response before starting a check."); return; }
-    if (!providerId || !llmKey.trim() || !baseUrl.trim() || !model.trim()) {
-      setError("Choose a provider and enter its API key, base URL, and model before verifying.");
+    if (!providerId || (providerId !== "ollama" && !llmKey.trim()) || !searchKey.trim() || !baseUrl.trim() || !model.trim()) {
+      setError("Choose a provider, enter its required API key and Tavily key, base URL, and model before verifying.");
       return;
     }
     try {
@@ -287,8 +308,7 @@ function VerifyView({ policies, onMonitor }: { policies: Policy[]; onMonitor: (c
     }
     setBusy(true); setError(null); setMessage(null); setResult(null); setSelectedClaimId(null);
     try {
-      const headers: Record<string, string> = { "X-LLM-API-Key": llmKey.trim() };
-      if (searchKey.trim()) headers["X-Tavily-API-Key"] = searchKey.trim();
+      const headers: Record<string, string> = { "X-LLM-API-Key": llmKey.trim(), "X-Tavily-API-Key": searchKey.trim() };
       const body = {
         answer,
         provider: providerId,
@@ -304,7 +324,6 @@ function VerifyView({ policies, onMonitor }: { policies: Policy[]; onMonitor: (c
       setError(cause instanceof Error ? cause.message : "Verification did not complete. Check your connection and try again.");
     } finally {
       setBusy(false);
-      setLlmKey(""); setSearchKey("");
     }
   };
 
@@ -317,12 +336,12 @@ function VerifyView({ policies, onMonitor }: { policies: Policy[]; onMonitor: (c
   return <>
     <SectionHeading title="Verify a response" detail="Find time-sensitive claims and inspect the evidence behind each one." />
     <div className="verify-layout">
-      <form className="folio-panel verify-form" onSubmit={(event) => void verify(event)}>
+      <form className="folio-panel verify-form" noValidate onSubmit={(event) => void verify(event)}>
         <div className="panel-heading"><h2>Response to verify</h2><span className="panel-index">INPUT</span></div>
         <p className="panel-copy">Paste an AI response. FreshGate extracts factual claims, checks current sources, and reports what it found.</p>
         <label className="field-label" htmlFor="answer">AI response</label>
         <textarea id="answer" className="response-input" value={answer} onChange={(event) => setAnswer(event.target.value)} maxLength={50000} placeholder="Paste a response to begin verification…" aria-describedby="response-help" />
-        <div id="response-help" className="field-hint"><span>The provider key is sent with this request only and cleared when it finishes.</span><span className="tabular">{new Intl.NumberFormat().format(answer.length)} / 50,000</span></div>
+        <div id="response-help" className="field-hint"><span>Keys are sent with this request. Clear them manually when you are done.</span><span className="tabular">{new Intl.NumberFormat().format(answer.length)} / 50,000</span></div>
         <fieldset className="provider-config" disabled={busy}>
           <legend>Provider connection</legend>
           <div className="provider-grid">
@@ -334,19 +353,26 @@ function VerifyView({ policies, onMonitor }: { policies: Policy[]; onMonitor: (c
             </label>
             <label className="field-group"><span className="field-label">API key</span>
               <span className="secret-field">
-                <input autoComplete="new-password" type={showLlmKey ? "text" : "password"} value={llmKey} onChange={(event) => setLlmKey(event.target.value)} placeholder={providerId === "ollama" ? "Required by this form" : "Paste the selected provider key"} required />
+                <input autoComplete="new-password" type={showLlmKey ? "text" : "password"} value={llmKey} onChange={(event) => setLlmKey(event.target.value)} placeholder={providerId === "ollama" ? "Optional for local Ollama" : "Paste the selected provider key"} required={providerId !== "ollama"} />
                 <button type="button" className="icon-button" onClick={() => setShowLlmKey((shown) => !shown)} aria-label={showLlmKey ? "Hide API key" : "Show API key"} title={showLlmKey ? "Hide API key" : "Show API key"}>{showLlmKey ? <EyeOff size={15} /> : <Eye size={15} />}</button>
               </span>
             </label>
             <label className="field-group"><span className="field-label">Base URL</span>
               <input type="url" value={baseUrl} onChange={(event) => { setBaseUrl(event.target.value); if (llmKey) setLlmKey(""); }} placeholder="https://api.provider.com/v1" required />
             </label>
-            <label className="field-group"><span className="field-label">Model</span>
-              <input list="provider-model-options" value={model} onChange={(event) => setModel(event.target.value)} placeholder="Choose or enter a model ID" autoComplete="off" required />
-              <datalist id="provider-model-options">{activeProvider?.models.map((modelId) => <option key={modelId} value={modelId} />)}</datalist>
-            </label>
+            <div className="field-group model-group"><span className="field-label">Model</span>
+              <div className="model-controls"><select aria-label="Choose a model" value={model && [...(providerModels.length ? providerModels : activeProvider?.models ?? [])].includes(model) ? model : "__other__"} onChange={(event) => { if (event.target.value === "__other__") { setModel(""); setCustomModel(""); } else { setModel(event.target.value); setCustomModel(""); } }} required>
+                <option value="" disabled>Select a model</option>
+                {(providerModels.length ? providerModels : activeProvider?.models ?? []).map((modelId) => <option key={modelId} value={modelId}>{modelId}</option>)}
+                <option value="__other__">Other…</option>
+              </select>
+              <button className="secondary-button model-load" type="button" onClick={() => void loadModels()} disabled={busy || loadingModels || providerId === "custom"}>{loadingModels ? <LoaderCircle size={14} className="spin" /> : <RefreshCw size={14} />} Load models</button></div>
+              {(!model || ![...(providerModels.length ? providerModels : activeProvider?.models ?? [])].includes(model)) && <input value={customModel} onChange={(event) => { setCustomModel(event.target.value); setModel(event.target.value); }} placeholder="Type a model ID" autoComplete="off" required />}
+              {modelNotice && <small className="model-notice" role="status">{modelNotice}</small>}
+            </div>
           </div>
           <p className="provider-hint">{activeProvider?.credential_hint ?? "Provider defaults include a base URL and model; you can edit both. Only use an endpoint you trust."}</p>
+          <div className="search-key-field"><label className="field-group"><span className="field-label">Tavily search API key <span>REQUIRED</span></span><input autoComplete="new-password" type="password" value={searchKey} onChange={(event) => setSearchKey(event.target.value)} placeholder="Paste your Tavily API key" required /></label><p>Used to find current web evidence. The key remains in this form until you clear it.</p></div>
         </fieldset>
         <div className="form-row">
           <label className="field-group"><span className="field-label">Policy <span>OPTIONAL</span></span>
@@ -356,10 +382,6 @@ function VerifyView({ policies, onMonitor }: { policies: Policy[]; onMonitor: (c
           </label>
           <button className="primary-button" type="submit" disabled={busy || !answer.trim()}>{busy ? <><LoaderCircle size={16} className="spin" />Checking</> : <>Check response <ArrowUpRight size={16} /></>}</button>
         </div>
-        <details className="request-options"><summary><Settings2 size={15} /> Search provider settings <ChevronDown size={15} /></summary>
-          <p>Use this only when the server has no search provider key. The key is sent with this request and cleared afterward.</p>
-          <label className="field-group"><span className="field-label">Tavily search API key <span>OPTIONAL IF CONFIGURED ON SERVER</span></span><input autoComplete="new-password" type="password" value={searchKey} onChange={(event) => setSearchKey(event.target.value)} placeholder="Use the server's Tavily configuration" /></label>
-        </details>
         {busy && <div className="checking-track" aria-live="polite"><span className="track-dot" /><span>Extracting claims and checking current evidence</span><span className="track-line" /></div>}
         {error && <InlineNotice>{error}</InlineNotice>}{message && <InlineNotice variant="success">{message}</InlineNotice>}
       </form>
@@ -663,9 +685,26 @@ function PolicyEditor({ policy, categories, busy, onCancel, onSubmit }: {
   </form>;
 }
 
-function WatchtowerView({ claims, alerts, onRefresh, onError }: { claims: WatchClaim[]; alerts: WatchAlert[]; onRefresh: () => Promise<void>; onError: (message: string | null) => void }) {
+function WatchtowerView({ claims, alerts, categories, policies, onRefresh, onError }: { claims: WatchClaim[]; alerts: WatchAlert[]; categories: Category[]; policies: Policy[]; onRefresh: () => Promise<void>; onError: (message: string | null) => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [claimText, setClaimText] = useState("");
+  const [category, setCategory] = useState(() => categories.find((item) => item.volatile)?.name ?? "");
+  const [interval, setInterval] = useState("86400");
+  const [policyId, setPolicyId] = useState("");
+  const volatileCategories = useMemo(() => categories.filter((item) => item.volatile), [categories]);
+  useEffect(() => {
+    if (!category && volatileCategories.length) setCategory(volatileCategories[0].name);
+  }, [category, volatileCategories]);
+  const addClaim = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault(); setBusy("adding"); onError(null); setNotice(null);
+    try {
+      await api("/api/watchtower/monitor", jsonBody({ claim_text: claimText, category, monitoring_interval: Number(interval), ...(policyId ? { policy_id: policyId } : {}) }));
+      await onRefresh(); setClaimText(""); setShowAddForm(false); setNotice("Claim added to Watchtower.");
+    } catch (cause) { onError(cause instanceof Error ? cause.message : "This claim could not be added to Watchtower."); }
+    finally { setBusy(null); }
+  };
   const check = async (claim: WatchClaim) => {
     setBusy(claim.id); onError(null); setNotice(null);
     try { await api(`/api/watchtower/claims/${encodeURIComponent(claim.id)}/check`, { method: "POST" }); await onRefresh(); setNotice("Claim checked. The latest result is now shown."); }
@@ -687,8 +726,17 @@ function WatchtowerView({ claims, alerts, onRefresh, onError }: { claims: WatchC
   return <>
     <SectionHeading title="Watchtower" detail="Scheduled rechecks surface changes in claims you choose to monitor." action={<button className="secondary-button" disabled={busy !== null} onClick={() => void onRefresh()}><RefreshCw size={15} /> Refresh</button>} />
     {notice && <InlineNotice variant="success" onDismiss={() => setNotice(null)}>{notice}</InlineNotice>}
-    <section className="folio-panel watch-panel"><div className="list-heading"><h2>Claims under watch</h2><span className="table-count">{claims.length} saved</span></div>
-      {!claims.length ? <EmptyState title="No claims monitored" detail="After verifying a response, choose Monitor claim to schedule repeat checks." /> : <div className="watch-list">{claims.map((claim) => <article className="watch-row" key={claim.id}>
+    <section className="folio-panel watch-panel"><div className="list-heading"><h2>Claims under watch</h2><div className="watch-heading-actions"><span className="table-count">{claims.length} saved</span><button className="primary-button" type="button" onClick={() => setShowAddForm((open) => !open)}><Plus size={15} />{showAddForm ? "Close form" : "Add claim"}</button></div></div>
+      {showAddForm && <form className="watch-add-form" onSubmit={(event) => void addClaim(event)}>
+        <label className="field-group"><span className="field-label">Claim to monitor</span><textarea value={claimText} onChange={(event) => setClaimText(event.target.value)} maxLength={5000} placeholder="Enter a factual claim to check over time" required /></label>
+        <div className="watch-add-fields">
+          <label className="field-group"><span className="field-label">Category</span><select value={category} onChange={(event) => setCategory(event.target.value)} required><option value="" disabled>Select a volatile category</option>{volatileCategories.map((item) => <option key={item.name} value={item.name}>{display(item.name)}</option>)}</select></label>
+          <label className="field-group"><span className="field-label">Check interval</span><select value={interval} onChange={(event) => setInterval(event.target.value)}><option value="86400">Daily</option><option value="604800">Weekly</option><option value="2592000">Monthly</option></select></label>
+          <label className="field-group"><span className="field-label">Policy <span>OPTIONAL</span></span><select value={policyId} onChange={(event) => setPolicyId(event.target.value)}><option value="">No policy</option>{policies.filter((item) => item.enabled && (!category || item.categories.includes(category))).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+          <button className="primary-button" type="submit" disabled={busy !== null || !claimText.trim() || !category}>{busy === "adding" ? <LoaderCircle size={15} className="spin" /> : <Plus size={15} />} Add to Watchtower</button>
+        </div>
+      </form>}
+      {!claims.length ? <EmptyState title="No claims monitored" detail="Add a claim above, or choose Monitor claim after verifying a response." /> : <div className="watch-list">{claims.map((claim) => <article className="watch-row" key={claim.id}>
         <div className="watch-claim"><span className={`watch-pulse ${claim.enabled ? "enabled" : "disabled"}`} /><div><h3>{claim.claim_text}</h3><span>{display(claim.category)} · Next check {dateTime(claim.next_check_at)}</span></div></div>
         <div className="watch-state"><StatusMark value={claim.last_error ? "failed" : claim.last_verdict ?? (claim.enabled ? "pending" : "paused")} /><span>Score {claim.last_score ?? "—"}</span></div>
         {claim.last_error && <p className="watch-error">{claim.last_error}</p>}

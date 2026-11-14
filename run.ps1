@@ -18,7 +18,32 @@ function Invoke-Checked {
     }
 }
 
-if (-not (Test-Path $VenvPython)) {
+function Invoke-PythonProbe {
+    param([Parameter(Mandatory = $true)][string]$Code)
+
+    # Start-Process captures native stderr as a file, avoiding PowerShell 5.1's
+    # conversion of Python stderr into a terminating NativeCommandError.
+    $StdoutFile = [System.IO.Path]::GetTempFileName()
+    $StderrFile = [System.IO.Path]::GetTempFileName()
+    try {
+        $QuotedCode = '"' + $Code.Replace('"', '\"') + '"'
+        $Probe = Start-Process -FilePath $VenvPython -ArgumentList @('-c', $QuotedCode) -Wait -PassThru -NoNewWindow -RedirectStandardOutput $StdoutFile -RedirectStandardError $StderrFile
+        return $Probe.ExitCode
+    } finally {
+        Remove-Item -LiteralPath $StdoutFile, $StderrFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Test-VenvPython {
+    if (-not (Test-Path $VenvPython)) { return $false }
+    try {
+        return (Invoke-PythonProbe -Code 'import sys; print(sys.executable)') -eq 0
+    } catch {
+        return $false
+    }
+}
+
+function New-ProjectVenv {
     Write-Host 'Creating the Python virtual environment...'
     $PyLauncher = Get-Command py -ErrorAction SilentlyContinue
     $AnacondaPython = Join-Path $env:USERPROFILE 'anaconda3\python.exe'
@@ -35,12 +60,27 @@ if (-not (Test-Path $VenvPython)) {
     }
 }
 
+# A copied or moved .venv can contain a python.exe launcher that points to the
+# interpreter used when that environment was first created. Rebuild that stale
+# environment instead of letting the first package check fail the script.
+if (-not (Test-VenvPython)) {
+    if (Test-Path $VenvDir) {
+        $ResolvedProjectRoot = [System.IO.Path]::GetFullPath($ProjectRoot).TrimEnd('\') + '\'
+        $ResolvedVenvDir = [System.IO.Path]::GetFullPath($VenvDir)
+        if (-not $ResolvedVenvDir.StartsWith($ResolvedProjectRoot, [System.StringComparison]::OrdinalIgnoreCase) -or (Split-Path $ResolvedVenvDir -Leaf) -ne '.venv') {
+            throw "Refusing to replace an unexpected Python environment path: $ResolvedVenvDir"
+        }
+        Write-Host 'The existing Python environment is broken or points to a missing interpreter. Recreating it...'
+        Remove-Item -LiteralPath $ResolvedVenvDir -Recurse -Force
+    }
+    New-ProjectVenv
+}
+
 if (-not (Test-Path $DashboardDir)) {
     throw "Dashboard folder was not found: $DashboardDir"
 }
 
-& $VenvPython -c 'import uvicorn' 2>$null
-if ($LASTEXITCODE -ne 0) {
+if ((Invoke-PythonProbe -Code 'import uvicorn') -ne 0) {
     Write-Host 'Installing Python requirements...'
     Invoke-Checked -File $VenvPython -Arguments @('-m', 'pip', 'install', '-r', $Requirements)
 }
