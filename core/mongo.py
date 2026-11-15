@@ -13,7 +13,7 @@ def get_client() -> MongoClient:
     if _client is None:
         with _lock:
             if _client is None:
-                uri = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
+                uri = (os.getenv("MONGODB_URI") or "").strip() or "mongodb://localhost:27017"
                 _client = MongoClient(uri, serverSelectionTimeoutMS=4000, appname="freshgate")
     return _client
 
