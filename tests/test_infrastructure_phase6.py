@@ -45,8 +45,9 @@ async def test_prometheus_metrics_endpoint():
     metrics.inc_claims_extracted(5)
     metrics.observe_latency(0.025)
 
+    admin_key = os.environ.get("FRESHGATE_ADMIN_KEY", "test-admin-secret-key-at-least-24-chars-long")
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-        resp = await ac.get("/metrics")
+        resp = await ac.get("/metrics", headers={"X-Admin-Key": admin_key})
         assert resp.status_code == 200
         assert "text/plain" in resp.headers["content-type"]
         text = resp.text

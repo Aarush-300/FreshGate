@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import logging
 import time
-from typing import Any, Optional
+from typing import Any, Callable, Awaitable, Optional
 
 from core.config import FreshGateConfig, get_config
 from core.models import Claim, VerificationResult
@@ -24,10 +24,12 @@ class WatchtowerService:
         store: Optional[SQLiteFeatureStore] = None,
         pipeline: Optional[FreshGatePipeline] = None,
         config: Optional[FreshGateConfig] = None,
+        pipeline_resolver: Optional[Callable[[Optional[str]], Awaitable[FreshGatePipeline]]] = None,
     ):
         self._store = store
         self.pipeline = pipeline
         self._owns_pipeline = pipeline is None
+        self._resolver = pipeline_resolver
         self.config = config or get_config()
         self._semaphore = asyncio.Semaphore(self.config.watchtower_max_concurrency)
         self._run_lock = asyncio.Lock()
@@ -89,29 +91,35 @@ class WatchtowerService:
                 return []
             return list(await asyncio.gather(*(self._check_leased(row) for row in rows)))
 
-    async def check_now(self, claim_id: str) -> Optional[dict[str, Any]]:
+    async def check_now(self, claim_id: str, owner_id: Optional[str] = None) -> Optional[dict[str, Any]]:
+        target_store = (
+            self.store.for_owner(owner_id)
+            if (owner_id and hasattr(self.store, "for_owner"))
+            else self.store
+        )
         row = await asyncio.to_thread(
-            self.store.claim_monitored_claim,
+            target_store.claim_monitored_claim,
             claim_id,
             self.config.watchtower_lease_seconds,
             None,
             True,
         )
         if row is None:
-            current = await asyncio.to_thread(self.store.get_monitored_claim, claim_id)
+            current = await asyncio.to_thread(target_store.get_monitored_claim, claim_id)
             if current is None:
                 return None
             raise RuntimeError("A check is already running or monitoring is disabled")
         return await self._check_leased(row)
 
-    async def _get_pipeline(self) -> FreshGatePipeline:
+    async def _get_pipeline(self, owner_id: Optional[str] = None) -> tuple[FreshGatePipeline, bool]:
         if self.pipeline is not None:
-            return self.pipeline
-        if not self.config.is_openai_configured or not self.config.is_tavily_configured:
+            return self.pipeline, False
+        if self._resolver is not None:
+            return await self._resolver(owner_id), True
+        if not (self.config.is_openai_configured and self.config.is_tavily_configured):
             raise RuntimeError("Scheduled checks require server-configured OPENAI_API_KEY and TAVILY_API_KEY")
-        if self.pipeline is None:
-            self.pipeline = FreshGatePipeline()
-        return self.pipeline
+        self.pipeline = FreshGatePipeline()
+        return self.pipeline, False
 
     @staticmethod
     def _transient_failure(result: VerificationResult) -> Optional[str]:
@@ -156,12 +164,24 @@ class WatchtowerService:
         checked_at = time.time()
         retry_count = int(row.get("retry_count", 0))
         metadata = dict(row.get("metadata") or {})
+        owner_id = row.get("owner_id")
+        store = (
+            self.store.for_owner(owner_id)
+            if hasattr(self.store, "for_owner")
+            else self.store
+        )
+        active_pipeline = None
+        is_ephemeral = False
         try:
             async with self._semaphore:
-                policy = await asyncio.to_thread(get_policy, row["policy_id"], store=self.store) if row.get("policy_id") else None
+                policy = (
+                    await asyncio.to_thread(get_policy, row["policy_id"], store=store)
+                    if row.get("policy_id")
+                    else None
+                )
                 if row.get("policy_id") and (policy is None or not policy.enabled):
                     raise RuntimeError("The associated policy no longer exists or is disabled")
-                active_pipeline = await self._get_pipeline()
+                active_pipeline, is_ephemeral = await self._get_pipeline(owner_id)
                 result = await active_pipeline.verify(row["claim_text"], policy=policy)
             failure = self._transient_failure(result)
             target = next((claim for claim in result.claims if claim.type == row["category"]), None)
@@ -186,10 +206,13 @@ class WatchtowerService:
             reason = self._transition_reason(
                 previous_verdict, current_verdict, previous_score, target.score, threshold, old_evidence, new_evidence
             )
-            if previous_verdict and current_verdict == "unverifiable":
+            if previous_verdict and previous_verdict != "unverifiable" and current_verdict == "unverifiable":
                 reason = "Repeated checks could not find sufficient evidence"
+            elif previous_verdict == "unverifiable" and current_verdict == "unverifiable":
+                reason = None
+
             snapshot = await asyncio.to_thread(
-                self.store.get_snapshot_by_verification_id, target.verification_id
+                store.get_snapshot_by_verification_id, target.verification_id
             ) if target.verification_id else None
             if snapshot is None:
                 snapshot = await asyncio.to_thread(
@@ -199,14 +222,15 @@ class WatchtowerService:
                     duration_seconds=time.perf_counter() - started,
                     fingerprint=row["claim_fingerprint"],
                     metadata={"watchtower_claim_id": row["id"]},
-                    store=self.store,
+                    store=store,
                 )
             verification_id = snapshot["verification_id"]
             if reason:
                 transition_key = hashlib.sha256(
                     f"{previous_verdict}:{current_verdict}:{reason}".encode("utf-8")
                 ).hexdigest()
-                await asyncio.to_thread(self.store.save_alert, {
+                alert_store = store
+                await asyncio.to_thread(alert_store.save_alert, {
                     "monitored_claim_id": row["id"],
                     "previous_verdict": previous_verdict,
                     "current_verdict": current_verdict,
@@ -238,15 +262,22 @@ class WatchtowerService:
             )
             return {"claim_id": row["id"], "status": "retrying", "error": str(exc), "retry_count": exc.retry_count}
         except Exception as exc:
-            retry_count += 1
-            delay = self._retry_delay(retry_count, int(row["monitoring_interval"]))
+            msg = str(exc)
+            if msg.startswith("Add your AI provider"):
+                delay = int(row["monitoring_interval"])
+            else:
+                retry_count += 1
+                delay = self._retry_delay(retry_count, int(row["monitoring_interval"]))
             await asyncio.to_thread(
                 self.store.finish_monitored_claim,
                 row["id"], token, checked_at=checked_at, next_check_at=checked_at + delay,
-                error=str(exc), retry_count=retry_count,
+                error=msg, retry_count=retry_count,
             )
             logger.warning("Watchtower check failed for %s: %s", row["id"], exc)
-            return {"claim_id": row["id"], "status": "failed", "error": str(exc), "retry_count": retry_count}
+            return {"claim_id": row["id"], "status": "failed", "error": msg, "retry_count": retry_count}
+        finally:
+            if is_ephemeral and active_pipeline and hasattr(active_pipeline, "verifier") and hasattr(active_pipeline.verifier, "tavily_client"):
+                await active_pipeline.verifier.tavily_client.aclose()
 
 
 class _InsufficientEvidence(Exception):

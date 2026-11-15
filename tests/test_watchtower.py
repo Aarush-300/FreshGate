@@ -71,7 +71,7 @@ def make_service(store, pipeline):
 
 
 @pytest.mark.asyncio
-async def test_register_reverify_contradiction_creates_persistent_alert_and_acknowledges(watch_store, monkeypatch):
+async def test_register_reverify_contradiction_creates_persistent_alert_and_acknowledges(watch_store, monkeypatch, auth_cookie):
     policy = create_policy({
         "name": "Official versions", "categories": ["version"], "verification_mode": "warn"
     }, store=watch_store)
@@ -79,7 +79,7 @@ async def test_register_reverify_contradiction_creates_persistent_alert_and_ackn
     service = make_service(watch_store, pipeline)
     monkeypatch.setattr("server.routes.watchtower.watchtower_service", service)
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", cookies=auth_cookie) as client:
         registered = await client.post("/api/watchtower/monitor", json={
             "claim_text": "Python 3.13 is the current stable release",
             "category": "version",

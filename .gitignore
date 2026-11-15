@@ -44,3 +44,12 @@ vendor/
 # Local assistant and design-tool state
 .gemini/
 .impeccable/
+
+# Render / editors
+.render/
+.vscode/
+.idea/
+.DS_Store
+# Generated bench caches
+bench/eval_cache_*.db
+

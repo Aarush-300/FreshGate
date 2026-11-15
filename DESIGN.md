@@ -116,6 +116,36 @@ The palette pairs archival cream and ink with olive green, specimen brick, and b
 
 **The Evidence Color Rule.** Color supports the written status; meaning is never communicated by color alone.
 
+### Dark theme: Graphite Moss
+
+Dark theme tokens (all contrast ratios computed against the surface they sit on; body text ≥ 7:1, secondary text ≥ 4.5:1):
+
+| Token | Dark value | Used for |
+|---|---|---|
+| `--paper` | `#0E1311` | page background |
+| `--paper-deep` | `#0A0E0C` | sidebar, top bar, footer |
+| `--paper-light` | `#151B18` | cards / panels |
+| `--paper-raised` | `#1B2320` | inputs, selects, textarea, table row hover base |
+| `--paper-hover` | `#222C28` | hover states, nav hover |
+| `--rule` | `#2B3631` | borders |
+| `--rule-light` | `#212A26` | dividers inside panels |
+| `--ink` | `#E7ECE8` | primary text |
+| `--ink-soft` | `#B2BDB6` | secondary text |
+| `--ink-faint` | `#8A968F` | hints, placeholders, timestamps |
+| `--green` | `#6CCB95` | accent text, links, active nav, focus ring |
+| `--green-strong` | `#3E9B6B` | primary button background (text on it: `#06120B`) |
+| `--green-strong-hover` | `#4DB17D` | primary button hover |
+| `--green-wash` | `#163024` | success / "Saved" pill background |
+| `--rust` | `#F2907F` | errors, danger text |
+| `--rust-wash` | `#34201D` | error background |
+| `--gold` | `#E2B75A` | warnings, "partially supported", theme icon |
+| `--gold-wash` | `#2E2711` | warning background |
+| `--info` | `#8AA4C4` | "unverifiable" / neutral status |
+| `--info-wash` | `#1B2531` | neutral background |
+| `--scroll-thumb` | `#33403A` | scrollbar |
+| `--selection` | `#2C5A43` | `::selection` background |
+| `--shadow` | `0 1px 0 rgb(0 0 0 / 40%), 0 8px 24px rgb(0 0 0 / 25%)` | elevated panels |
+
 ## Typography
 
 **Display Font:** Source Serif 4 Variable (with Georgia, serif)  

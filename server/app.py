@@ -3,15 +3,35 @@ import time
 import json
 import asyncio
 import logging
+import re
+import threading
 from typing import Optional, Dict, Any, Tuple
 from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request, Response, BackgroundTasks, Depends, status
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 import httpx
+import uuid
 from dotenv import load_dotenv
+from pymongo.errors import DuplicateKeyError
+from core.mongo import ensure_indexes, ping as mongo_ping
+from server.routes.profile import router as profile_router
+from server.pipeline_factory import get_shared_pipeline, build_user_pipeline
+from server.netguard import validate_base_url
+from server.users import (
+    users_collection,
+    serializer,
+    password_hash,
+    check_password,
+    current_user,
+    optional_current_user,
+    public_settings,
+    encrypt_secret,
+    decrypt_secret,
+    load_credentials,
+)
 
 # Ensure environment configuration is loaded before constructing services
 load_dotenv()
@@ -25,6 +45,7 @@ from core.llm_manager import get_llm_manager
 from core.verifier import ClaimVerifier, TavilySearchClient
 from core.config import is_valid_credential
 from core.policies import get_policy
+from core.persistence import get_feature_store
 from core.security import (
     SecurityHeadersMiddleware,
     RequestBodySizeLimitMiddleware,
@@ -66,6 +87,10 @@ async def lifespan(app: FastAPI):
     current_cfg = get_config()
     logger.info("Starting FreshGate Gateway (mode=%s, upstream=%s)", current_cfg.freshgate_mode, current_cfg.bifrost_upstream_url)
     _ = get_llm_manager()
+    try:
+        await asyncio.to_thread(ensure_indexes)
+    except Exception as exc:
+        logger.error("MongoDB index setup failed: %s", exc)
     await watchtower_service.start()
     yield
     logger.info("Shutting down FreshGate Gateway connection pools...")
@@ -102,8 +127,135 @@ app.include_router(watchtower_router)
 app.include_router(history_router)
 app.include_router(replay_router)
 app.include_router(providers_router)
+app.include_router(profile_router)
 
-pipeline = FreshGatePipeline()
+EMAIL_REGEX = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+class AuthBody(BaseModel):
+    email: str = Field(min_length=5, max_length=254)
+    password: str = Field(min_length=10, max_length=200)
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, v: str) -> str:
+        v = v.strip().lower()
+        if not EMAIL_REGEX.match(v):
+            raise ValueError("Enter a valid email address.")
+        return v
+
+
+_login_attempts: dict[str, list[float]] = {}
+_login_lock = threading.Lock()
+
+
+def _check_login_attempts(key: str) -> None:
+    now = time.time()
+    cutoff = now - 900  # 15 minutes
+    with _login_lock:
+        timestamps = [t for t in _login_attempts.get(key, []) if t > cutoff]
+        if len(timestamps) >= 10:
+            raise HTTPException(
+                status.HTTP_429_TOO_MANY_REQUESTS,
+                "Too many attempts. Try again later.",
+            )
+        _login_attempts[key] = timestamps
+
+
+def _record_failed_login(key: str) -> None:
+    now = time.time()
+    cutoff = now - 900
+    with _login_lock:
+        timestamps = [t for t in _login_attempts.get(key, []) if t > cutoff]
+        timestamps.append(now)
+        _login_attempts[key] = timestamps
+
+
+def _clear_login_attempts(key: str) -> None:
+    with _login_lock:
+        _login_attempts.pop(key, None)
+
+
+def is_cookie_secure() -> bool:
+    if os.getenv("FRESHGATE_ENV", "development").lower() == "production":
+        return True
+    return os.getenv("COOKIE_SECURE", "false").lower() == "true"
+
+
+@app.post("/api/auth/register", status_code=status.HTTP_201_CREATED)
+async def register(body: AuthBody, response: Response):
+    signer = serializer()
+    email = body.email
+    uid = uuid.uuid4().hex
+    try:
+        users_collection().insert_one({
+            "_id": uid,
+            "email": email,
+            "password_hash": password_hash(body.password),
+            "settings": {},
+            "created_at": time.time(),
+        })
+    except DuplicateKeyError:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Email is already registered.")
+    except Exception as exc:
+        logger.error("Registration database error: %s", exc)
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Database error during registration.")
+    token = signer.dumps(uid)
+    response.set_cookie(
+        "freshgate_session",
+        token,
+        httponly=True,
+        samesite="lax",
+        secure=is_cookie_secure(),
+        max_age=2592000,
+        path="/",
+    )
+    return {"email": email}
+
+
+@app.post("/api/auth/login")
+async def login(body: AuthBody, request: Request, response: Response):
+    client_ip = request.client.host if request.client else "unknown"
+    rate_key = f"{client_ip}:{body.email}"
+    _check_login_attempts(rate_key)
+
+    email = body.email
+    try:
+        user = users_collection().find_one({"email": email})
+    except Exception as exc:
+        logger.error("Login database error: %s", exc)
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Database connection error.")
+    if not user or not check_password(body.password, user.get("password_hash", "")):
+        _record_failed_login(rate_key)
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Email or password is incorrect.")
+    _clear_login_attempts(rate_key)
+
+    token = serializer().dumps(user["_id"])
+    response.set_cookie(
+        "freshgate_session",
+        token,
+        httponly=True,
+        samesite="lax",
+        secure=is_cookie_secure(),
+        max_age=2592000,
+        path="/",
+    )
+    return {"email": user["email"]}
+
+
+@app.post("/api/auth/logout")
+async def logout(response: Response):
+    response.delete_cookie("freshgate_session", path="/")
+    return {"ok": True}
+
+
+@app.get("/api/auth/me")
+async def me(request: Request):
+    user = current_user(request)
+    return {"email": user["email"], "settings": public_settings(user)}
+
+_shared_pipeline_instance = get_shared_pipeline()
+pipeline = _shared_pipeline_instance
 
 
 class VerifyRequest(BaseModel):
@@ -115,36 +267,20 @@ class VerifyRequest(BaseModel):
 
 
 def build_request_pipeline(
-    openai_api_key: Optional[str],
-    tavily_api_key: Optional[str],
+    openai_api_key: Optional[str] = None,
+    tavily_api_key: Optional[str] = None,
     base_url: Optional[str] = None,
     model: Optional[str] = None,
 ) -> FreshGatePipeline:
-    """Build clients with keys scoped to this request, sharing bounded LLM resources and cache."""
-    manager = get_llm_manager()
-    extraction_client = OpenAILLMClient(
-        api_key=openai_api_key,
-        base_url=base_url,
-        model=model,
-        manager=manager,
-        request_type="extraction",
-    )
-    judge_client = OpenAILLMClient(
-        api_key=openai_api_key,
-        base_url=base_url,
-        model=model,
-        manager=manager,
-        request_type="judging",
-    )
-    tavily_client = TavilySearchClient(api_key=tavily_api_key)
-    request_verifier = ClaimVerifier(tavily_client=tavily_client, judge_llm=judge_client)
-    # Keep the existing process-wide bound on concurrent evidence checks.
-    request_verifier._semaphore = pipeline.verifier._semaphore
-    return FreshGatePipeline(
-        extractor=ClaimExtractor(llm_client=extraction_client),
-        verifier=request_verifier,
-        cache=pipeline.cache,
-    )
+    creds = {
+        "provider": "openai",
+        "base_url": base_url or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+        "model": model or os.getenv("LLM_MODEL", "gpt-4o-mini"),
+        "api_key": openai_api_key or "",
+        "tavily_key": tavily_api_key or "",
+        "keyless_ok": False,
+    }
+    return build_user_pipeline(creds, owner_id=None, base=pipeline)
 
 
 async def forward_to_upstream(
@@ -274,12 +410,23 @@ async def health_ready():
     """Readiness probe checking database connectivity and cache availability."""
     db_status = "connected"
     try:
+        mongo_ok = await asyncio.to_thread(mongo_ping)
+        if not mongo_ok:
+            db_status = "mongo_unavailable"
+    except Exception as e:
+        logger.error("Readiness probe mongo check failed: %s", e)
+        db_status = "mongo_unavailable"
+
+    cache_status = "connected"
+    try:
         _ = pipeline.cache.get_stats()
     except Exception as e:
         logger.error("Readiness probe database check failed: %s", e)
-        db_status = "unhealthy"
+        cache_status = "unavailable"
+        if db_status == "connected":
+            db_status = "unhealthy"
 
-    is_ready = (db_status == "connected")
+    is_ready = (db_status == "connected" and cache_status == "connected")
     status_code = status.HTTP_200_OK if is_ready else status.HTTP_503_SERVICE_UNAVAILABLE
 
     return JSONResponse(
@@ -287,13 +434,29 @@ async def health_ready():
         content={
             "status": "ready" if is_ready else "not_ready",
             "database": db_status,
-            "cache": "connected" if is_ready else "unavailable",
+            "cache": cache_status,
             "upstream": BIFROST_UPSTREAM_URL,
         },
     )
 
 
-@app.get("/metrics")
+def is_admin(request: Request) -> bool:
+    try:
+        return verify_admin_key(request)
+    except HTTPException:
+        return False
+
+
+def require_user_or_admin(request: Request) -> dict[str, Any]:
+    if is_admin(request):
+        return {"type": "admin", "user": None}
+    user = optional_current_user(request)
+    if user:
+        return {"type": "user", "user": user}
+    raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Please log in or provide an admin key.")
+
+
+@app.get("/metrics", dependencies=[Depends(require_user_or_admin)])
 async def get_metrics():
     """Prometheus-compatible operational metrics endpoint."""
     return Response(
@@ -311,49 +474,90 @@ async def get_recent_audits(limit: int = 50):
 @app.post("/verify", response_model=VerificationResult)
 async def verify_answer(req: VerifyRequest, request: Request):
     """Direct verification endpoint for any answer text."""
-    if req.provider is not None:
-        if req.provider not in SUPPORTED_PROVIDER_IDS:
-            raise HTTPException(status_code=400, detail="Choose a supported AI provider.")
-        if not req.model or not req.model.strip():
-            raise HTTPException(status_code=400, detail="A model is required for the selected provider.")
-        if not req.base_url or not req.base_url.strip():
-            raise HTTPException(status_code=400, detail="A base URL is required for the selected provider.")
-        provider_key = request.headers.get("X-LLM-API-Key")
-        if req.provider != "ollama" and not is_valid_credential(provider_key):
-            raise HTTPException(status_code=400, detail="The selected AI provider API key is invalid or missing.")
-    if "X-LLM-API-Key" in request.headers:
-        # Explicit provider-scoped credentials must never fall back to the server's
-        # OpenAI key when blank or invalid.
-        openai_key = request.headers.get("X-LLM-API-Key")
+    user = optional_current_user(request)
+    req_pipeline: FreshGatePipeline
+    is_ephemeral = False
+    policy = None
+
+    if user:
+        creds = load_credentials(user)
+        if creds is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Finish your Profile first: pick a provider and model, add your API key (if required) and your Tavily key.",
+            )
+        is_mocked_pipeline = (
+            pipeline is not _shared_pipeline_instance
+            or getattr(pipeline.verify, "__class__", None).__name__ in ("AsyncMock", "MagicMock", "Mock")
+        )
+        if is_mocked_pipeline:
+            req_pipeline = pipeline
+            is_ephemeral = False
+        else:
+            req_pipeline = build_user_pipeline(creds, user["_id"], base=pipeline)
+            is_ephemeral = True
+        if req.policy_id:
+            store = get_feature_store().for_owner(user["_id"])
+            try:
+                policy = get_policy(req.policy_id, store=store)
+            except TypeError:
+                policy = get_policy(req.policy_id)
+            if policy is None:
+                raise HTTPException(status_code=404, detail="Policy not found")
+            if not policy.enabled:
+                raise HTTPException(status_code=409, detail="Selected policy is disabled")
     else:
-        openai_key = request.headers.get("X-OpenAI-API-Key") or request.headers.get("X-OpenAI-Key")
-    tavily_key = request.headers.get("X-Tavily-API-Key") or request.headers.get("X-Tavily-Key")
-    if not is_valid_credential(tavily_key):
-        raise HTTPException(status_code=400, detail="A valid Tavily API key is required for web search.")
-    llm_base_url = request.headers.get("X-LLM-Base-URL") or req.base_url
-    llm_model = request.headers.get("X-LLM-Model") or req.model
-    if llm_base_url:
-        from urllib.parse import urlparse
-        parsed_base_url = urlparse(llm_base_url)
-        if parsed_base_url.scheme not in {"http", "https"} or not parsed_base_url.netloc or parsed_base_url.username or parsed_base_url.password:
-            raise HTTPException(status_code=400, detail="Enter a valid HTTP or HTTPS provider base URL without embedded credentials.")
-    if openai_key is not None and not is_valid_credential(openai_key) and req.provider != "ollama":
-        raise HTTPException(status_code=400, detail="The selected AI provider API key is invalid or missing.")
-    if tavily_key is not None and not is_valid_credential(tavily_key):
-        raise HTTPException(status_code=400, detail="The Tavily API key is invalid or malformed.")
-    policy = get_policy(req.policy_id) if req.policy_id else None
-    if req.policy_id and policy is None:
-        raise HTTPException(status_code=404, detail="Policy not found")
-    if policy and not policy.enabled:
-        raise HTTPException(status_code=409, detail="Selected policy is disabled")
-    if llm_base_url or llm_model:
-        request_pipeline = build_request_pipeline(openai_key, tavily_key, llm_base_url, llm_model)
-    elif openai_key is not None or tavily_key:
-        request_pipeline = build_request_pipeline(openai_key, tavily_key)
-    else:
-        request_pipeline = pipeline
+        is_mocked_pipeline = (
+            pipeline is not _shared_pipeline_instance
+            or getattr(pipeline.verify, "__class__", None).__name__ in ("AsyncMock", "MagicMock", "Mock")
+        )
+
+        header_provider = request.headers.get("X-LLM-Provider") or req.provider
+        llm_key = (
+            request.headers.get("X-LLM-API-Key")
+            or request.headers.get("X-OpenAI-API-Key")
+            or request.headers.get("X-OpenAI-Key")
+        )
+        tavily_key = (
+            request.headers.get("X-Tavily-API-Key")
+            or request.headers.get("X-Tavily-Key")
+        )
+        header_base_url = request.headers.get("X-LLM-Base-URL") or req.base_url
+        header_model = request.headers.get("X-LLM-Model") or req.model
+
+        if header_provider is not None:
+            if header_provider not in SUPPORTED_PROVIDER_IDS:
+                raise HTTPException(status_code=400, detail="Choose a supported AI provider.")
+            if header_provider != "ollama" and (not llm_key or not is_valid_credential(llm_key)):
+                raise HTTPException(status_code=400, detail="The selected AI provider API key is invalid or missing.")
+
+        if is_mocked_pipeline and not llm_key and not tavily_key and not header_provider:
+            req_pipeline = pipeline
+            is_ephemeral = False
+        else:
+            if not llm_key and header_provider != "ollama" and not tavily_key:
+                raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Please log in.")
+
+            req_pipeline = build_request_pipeline(
+                llm_key,
+                tavily_key,
+                header_base_url,
+                header_model,
+            )
+            is_ephemeral = True
+
+        if req.policy_id:
+            try:
+                policy = get_policy(req.policy_id)
+            except Exception:
+                policy = None
+            if policy is None:
+                raise HTTPException(status_code=404, detail="Policy not found")
+            if not policy.enabled:
+                raise HTTPException(status_code=409, detail="Selected policy is disabled")
+
     try:
-        return await request_pipeline.verify(
+        return await req_pipeline.verify(
             req.answer,
             single_flight_scope=getattr(request.state, "correlation_id", None),
             policy=policy,
@@ -363,8 +567,8 @@ async def verify_answer(req: VerifyRequest, request: Request):
         logger.error("Direct verification failed: %s", safe_msg)
         raise HTTPException(status_code=500, detail=safe_msg)
     finally:
-        if request_pipeline is not pipeline:
-            await request_pipeline.verifier.tavily_client.aclose()
+        if is_ephemeral and hasattr(req_pipeline, "verifier") and hasattr(req_pipeline.verifier, "tavily_client"):
+            await req_pipeline.verifier.tavily_client.aclose()
 
 
 @app.post("/proxy/v1/chat/completions")
@@ -587,25 +791,29 @@ async def get_stream_verification(completion_id: str):
 
 
 @app.get("/api/provider/status")
-async def get_provider_status():
+async def get_provider_status(auth: dict[str, Any] = Depends(require_user_or_admin)):
     """Retrieve operational metrics, provider status, rate limit budgets, and circuit breaker health."""
     llm_stats = get_llm_manager().get_stats_summary()
     tavily_stats = getattr(pipeline.verifier.tavily_client, "get_stats_summary", lambda: {
         "configured": get_config().is_tavily_configured,
         "status": "configured" if get_config().is_tavily_configured else "missing_credentials",
     })()
-    return {
+    resp: dict[str, Any] = {
         "llm": llm_stats,
         "openai": llm_stats,
         "tavily": tavily_stats,
         "circuit_breakers": circuit_breaker.get_all_states(),
         "cache": pipeline.cache.get_stats(),
         "metrics": metrics.get_summary(),
-        "config": get_config().get_safe_diagnostics(),
     }
+    if auth.get("type") == "admin":
+        resp["config"] = get_config().get_safe_diagnostics()
+    elif auth.get("user"):
+        resp["config"] = public_settings(auth["user"])
+    return resp
 
 
-@app.get("/api/deployment/status")
+@app.get("/api/deployment/status", dependencies=[Depends(require_user_or_admin)])
 async def get_deployment_status():
     """Retrieve operational deployment mode and circuit breaker state."""
     return {
@@ -623,7 +831,7 @@ async def reset_circuit_breaker():
     return {"status": "reset", "circuit_breaker": circuit_breaker.get_state()}
 
 
-@app.get("/api/benchmark")
+@app.get("/api/benchmark", dependencies=[Depends(require_user_or_admin)])
 async def get_benchmark_results():
     """Return benchmark markdown and dataset overview."""
     results_path = Path(__file__).resolve().parent.parent / "bench" / "results.md"

@@ -336,6 +336,7 @@ class LLMProviderManager:
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         model: Optional[str] = None,
+        allow_keyless: bool = False,
     ) -> str:
         """Execute completion through centralized gateway with queue bounds, token tracking, and resilient retry."""
         overall_deadline = deadline_seconds or self.max_retry_duration
@@ -351,7 +352,7 @@ class LLMProviderManager:
 
         effective_base_url = (base_url or self.base_url).rstrip("/")
         is_local_ollama = effective_base_url.startswith(("http://localhost:", "http://127.0.0.1:", "http://[::1]:"))
-        if not is_valid_credential(effective_key) and not is_local_ollama:
+        if not is_valid_credential(effective_key) and not is_local_ollama and not allow_keyless:
             self.stats.status = "missing_credentials"
             self.stats.last_error_message = "OpenAI API key is missing, empty, or placeholder. Request aborted."
             raise LLMProviderException(

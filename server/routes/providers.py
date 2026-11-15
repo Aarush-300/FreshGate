@@ -1,63 +1,104 @@
 """Metadata for OpenAI-compatible provider choices in the dashboard."""
+from __future__ import annotations
 
-from fastapi import APIRouter, Header, HTTPException
-import httpx
+from typing import Any, Optional
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 
 router = APIRouter(prefix="/api/providers", tags=["providers"])
 
+
+def _p(
+    id: str,
+    name: str,
+    base_url: str,
+    *,
+    editable: bool = False,
+    offline: bool = False,
+    key_required: bool = True,
+    default_model: str = "",
+    models: Optional[list[str]] = None,
+    hint: str = "",
+) -> dict[str, Any]:
+    return {
+        "id": id,
+        "name": name,
+        "base_url": base_url,
+        "editable_base_url": editable,
+        "offline": offline,
+        "key_required": key_required,
+        "default_model": default_model,
+        "models": models or [],
+        "credential_hint": hint,
+    }
+
+
 PROVIDER_CATALOG = [
-    {
-        "id": "openai",
-        "name": "OpenAI",
-        "base_url": "https://api.openai.com/v1",
-        "default_model": "",
-        "models": [],
-        "credential_hint": "Use an OpenAI API key. OpenAI API usage is billed; load your account's available models or enter a model ID.",
-    },
-    {
-        "id": "groq",
-        "name": "Groq",
-        "base_url": "https://api.groq.com/openai/v1",
-        "default_model": "",
-        "models": [],
-        "credential_hint": "Use a Groq API key. Load the models available to your account to choose one within its current plan limits.",
-    },
-    {
-        "id": "gemini",
-        "name": "Google Gemini",
-        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
-        "default_model": "gemini-3.6-flash",
-        "models": ["gemini-3.6-flash"],
-        "credential_hint": "Use a Gemini API key. Gemini 3.6 Flash has a free API tier, subject to Google's rate limits.",
-    },
-    {
-        "id": "ollama",
-        "name": "Ollama",
-        "base_url": "http://localhost:11434/v1",
-        "default_model": "",
-        "models": [],
-        "credential_hint": "API key is optional for local Ollama. Remote Ollama endpoints may require authentication.",
-    },
-    {
-        "id": "openrouter",
-        "name": "OpenRouter",
-        "base_url": "https://openrouter.ai/api/v1",
-        "default_model": "openrouter/free",
-        "models": ["openrouter/free"],
-        "credential_hint": "Use an OpenRouter API key.",
-    },
-    {
-        "id": "custom",
-        "name": "Custom OpenAI-compatible",
-        "base_url": "",
-        "default_model": "",
-        "models": [],
-        "credential_hint": "Only send a key to an endpoint you trust. This must implement OpenAI-compatible chat completions.",
-    },
+    _p(
+        "openai",
+        "OpenAI",
+        "https://api.openai.com/v1",
+        hint="OpenAI API usage is billed. Click Load models to pick one your key can use.",
+    ),
+    _p(
+        "groq",
+        "Groq",
+        "https://api.groq.com/openai/v1",
+        hint="Free tier available. Click Load models to see current models.",
+    ),
+    _p(
+        "gemini",
+        "Google Gemini",
+        "https://generativelanguage.googleapis.com/v1beta/openai",
+        default_model="gemini-3.6-flash",
+        models=["gemini-3.6-flash"],
+        hint="Gemini API key from Google AI Studio (free tier available).",
+    ),
+    _p(
+        "openrouter",
+        "OpenRouter",
+        "https://openrouter.ai/api/v1",
+        default_model="openrouter/free",
+        models=["openrouter/free"],
+        hint="OpenRouter API key.",
+    ),
+    _p("mistral", "Mistral", "https://api.mistral.ai/v1", hint="Mistral API key."),
+    _p("deepseek", "DeepSeek", "https://api.deepseek.com/v1", hint="DeepSeek API key."),
+    _p("together", "Together AI", "https://api.together.xyz/v1", hint="Together API key."),
+    _p("xai", "xAI (Grok)", "https://api.x.ai/v1", hint="xAI API key."),
+    _p(
+        "ollama",
+        "Ollama (local / offline)",
+        "http://localhost:11434/v1",
+        editable=True,
+        offline=True,
+        key_required=False,
+        hint="Offline provider: API key is optional. Your server must be able to reach this URL (a deployed FreshGate cannot reach localhost on your PC; use a tunnel URL or run FreshGate locally).",
+    ),
+    _p(
+        "lmstudio",
+        "LM Studio (local / offline)",
+        "http://localhost:1234/v1",
+        editable=True,
+        offline=True,
+        key_required=False,
+        hint="Offline provider: API key is optional. Same reachability note as Ollama.",
+    ),
+    _p(
+        "custom",
+        "Custom OpenAI-compatible",
+        "",
+        editable=True,
+        key_required=False,
+        hint="Any server that implements OpenAI chat completions and /models (vLLM, LiteLLM, llama.cpp...). API key optional. Only use endpoints you trust.",
+    ),
 ]
 
-SUPPORTED_PROVIDER_IDS = {provider["id"] for provider in PROVIDER_CATALOG}
+SUPPORTED_PROVIDER_IDS = {p["id"] for p in PROVIDER_CATALOG}
+
+
+def get_provider(provider_id: str) -> Optional[dict[str, Any]]:
+    return next((p for p in PROVIDER_CATALOG if p["id"] == provider_id), None)
 
 
 @router.get("")
@@ -66,46 +107,23 @@ async def list_providers():
     return {"providers": PROVIDER_CATALOG}
 
 
-class ModelListRequest(BaseModel):
+class LegacyModelListRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     base_url: str | None = None
 
 
 @router.post("/{provider_id}/models")
-async def list_provider_models(
+async def legacy_list_provider_models(
     provider_id: str,
-    request: ModelListRequest,
-    api_key: str | None = Header(default=None, alias="X-LLM-API-Key"),
+    request: LegacyModelListRequest,
+    req: Request,
 ):
-    """Fetch current model IDs using a request-scoped key; credentials are never persisted."""
-    provider = next((item for item in PROVIDER_CATALOG if item["id"] == provider_id), None)
-    if provider is None or provider_id == "custom":
-        raise HTTPException(status_code=400, detail="Live model listing is not supported for this provider.")
-    if provider_id != "ollama" and (not api_key or not api_key.strip()):
-        raise HTTPException(status_code=400, detail="Enter the provider API key before loading models.")
-
-    if provider_id == "ollama":
-        base_url = (request.base_url or provider["base_url"]).rstrip("/")
-        if not base_url.endswith("/v1"):
-            raise HTTPException(status_code=400, detail="Ollama base URL must end in /v1 to load local models.")
-        url = f"{base_url[:-3]}/api/tags"
-        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-    else:
-        url = f"{provider['base_url'].rstrip('/')}/models"
-        headers = {"Authorization": f"Bearer {api_key.strip()}"}
-
-    try:
-        async with httpx.AsyncClient(timeout=12.0, follow_redirects=False) as client:
-            response = await client.get(url, headers=headers)
-        response.raise_for_status()
-        payload = response.json()
-    except httpx.HTTPStatusError as exc:
-        raise HTTPException(status_code=exc.response.status_code, detail="The provider could not return its model list. Check the API key and provider access.") from exc
-    except (httpx.HTTPError, ValueError) as exc:
-        raise HTTPException(status_code=502, detail="Could not load models from the selected provider.") from exc
-
-    if provider_id == "ollama":
-        models = [item.get("name") for item in payload.get("models", []) if isinstance(item, dict) and item.get("name")]
-    else:
-        models = [item.get("id") for item in payload.get("data", []) if isinstance(item, dict) and item.get("id")]
-    return {"models": sorted(set(models), key=str.casefold)}
+    from server.routes.profile import fetch_models, ModelsBody
+    from server.users import current_user
+    user = current_user(req)
+    models_body = ModelsBody(
+        provider=provider_id,
+        base_url=request.base_url or "",
+        api_key="",
+    )
+    return await fetch_models(models_body, user)

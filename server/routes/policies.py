@@ -1,16 +1,21 @@
 """Policy Studio API endpoints."""
-
 from __future__ import annotations
 
 import sqlite3
-from fastapi import APIRouter, HTTPException, Response, status
+from fastapi import APIRouter, HTTPException, Request, Response, status
 
+from core.categories import category_registry
 from core.persistence import get_feature_store
 from core.policies import create_policy, evaluate_policy_preview, get_policy, list_policies, update_policy
 from core.policy_models import PolicyConfig, PolicyCreateRequest, PolicyPreviewRequest
-from core.categories import category_registry
+from server.users import current_user
 
 router = APIRouter(prefix="/api/policies", tags=["policies"])
+
+
+def _scoped(req: Request):
+    user = current_user(req)
+    return user, get_feature_store().for_owner(user["_id"])
 
 
 def _validate_candidate(values: dict) -> tuple[PolicyConfig, list[dict]]:
@@ -38,18 +43,20 @@ async def get_policy_categories():
 
 
 @router.get("")
-async def get_policies(limit: int = 100, offset: int = 0):
+async def get_policies(req: Request, limit: int = 100, offset: int = 0):
+    user, store = _scoped(req)
     try:
-        values = list_policies(limit=limit, offset=offset)
+        values = list_policies(store=store, limit=limit, offset=offset)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"policies": [policy.model_dump() for policy in values], "limit": limit, "offset": offset}
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
-async def post_policy(request: PolicyCreateRequest):
+async def post_policy(request: PolicyCreateRequest, req: Request):
+    user, store = _scoped(req)
     try:
-        policy = create_policy(request.model_dump())
+        policy = create_policy(request.model_dump(), store=store)
     except sqlite3.IntegrityError as exc:
         raise HTTPException(status_code=409, detail="Policy ID already exists") from exc
     except ValueError as exc:
@@ -58,7 +65,8 @@ async def post_policy(request: PolicyCreateRequest):
 
 
 @router.post("/validate")
-async def validate_candidate_policy(request: PolicyCreateRequest):
+async def validate_candidate_policy(request: PolicyCreateRequest, req: Request):
+    user, _ = _scoped(req)
     try:
         candidate, warnings = _validate_candidate(request.model_dump())
     except ValueError as exc:
@@ -67,17 +75,19 @@ async def validate_candidate_policy(request: PolicyCreateRequest):
 
 
 @router.get("/{policy_id}")
-async def get_policy_by_id(policy_id: str):
-    policy = get_policy(policy_id)
+async def get_policy_by_id(policy_id: str, req: Request):
+    user, store = _scoped(req)
+    policy = get_policy(policy_id, store=store)
     if policy is None:
         raise HTTPException(status_code=404, detail="Policy not found")
     return policy.model_dump()
 
 
 @router.put("/{policy_id}")
-async def put_policy(policy_id: str, request: PolicyCreateRequest):
+async def put_policy(policy_id: str, request: PolicyCreateRequest, req: Request):
+    user, store = _scoped(req)
     try:
-        policy = update_policy(policy_id, request.model_dump())
+        policy = update_policy(policy_id, request.model_dump(), store=store)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if policy is None:
@@ -86,15 +96,17 @@ async def put_policy(policy_id: str, request: PolicyCreateRequest):
 
 
 @router.delete("/{policy_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_policy(policy_id: str):
-    if not get_feature_store().delete_policy(policy_id):
+async def delete_policy(policy_id: str, req: Request):
+    user, store = _scoped(req)
+    if not store.delete_policy(policy_id):
         raise HTTPException(status_code=404, detail="Policy not found")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/{policy_id}/validate")
-async def validate_policy(policy_id: str, request: PolicyCreateRequest):
-    current = get_policy(policy_id)
+async def validate_policy(policy_id: str, request: PolicyCreateRequest, req: Request):
+    user, store = _scoped(req)
+    current = get_policy(policy_id, store=store)
     if current is None:
         raise HTTPException(status_code=404, detail="Policy not found")
     try:
@@ -105,21 +117,23 @@ async def validate_policy(policy_id: str, request: PolicyCreateRequest):
 
 
 @router.post("/{policy_id}/preview")
-async def preview_policy(policy_id: str, request: PolicyPreviewRequest):
-    policy = get_policy(policy_id)
+async def preview_policy(policy_id: str, request: PolicyPreviewRequest, req: Request):
+    user, store = _scoped(req)
+    policy = get_policy(policy_id, store=store)
     if policy is None:
         raise HTTPException(status_code=404, detail="Policy not found")
     return evaluate_policy_preview(policy, request.claims)
 
 
 @router.post("/{policy_id}/duplicate", status_code=status.HTTP_201_CREATED)
-async def duplicate_policy(policy_id: str):
-    policy = get_policy(policy_id)
+async def duplicate_policy(policy_id: str, req: Request):
+    user, store = _scoped(req)
+    policy = get_policy(policy_id, store=store)
     if policy is None:
         raise HTTPException(status_code=404, detail="Policy not found")
     clone = policy.model_dump(exclude={"id", "created_at", "updated_at"})
     clone["name"] = f"{policy.name} copy"
     try:
-        return create_policy(clone).model_dump()
+        return create_policy(clone, store=store).model_dump()
     except sqlite3.IntegrityError as exc:
         raise HTTPException(status_code=409, detail="Could not duplicate policy") from exc

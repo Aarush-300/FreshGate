@@ -2,22 +2,35 @@ services:
   - type: web
     name: freshgate
     runtime: docker
-    plan: 0.5c-512mb
+    plan: free            # change to "starter" ($7/mo) for always-on Watchtower
     healthCheckPath: /health/ready
-    disk:
-      name: freshgate-data
-      mountPath: /data
-      sizeGB: 1
+    autoDeploy: true
     envVars:
+      - key: FRESHGATE_ENV
+        value: production
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: FRESHGATE_SESSION_SECRET
+        generateValue: true
       - key: FRESHGATE_ADMIN_KEY
         generateValue: true
+      - key: MONGODB_URI
+        sync: false          # paste your Atlas connection string in the Render dashboard
+      - key: MONGODB_DATABASE
+        value: freshgate
+      - key: FRESHGATE_STORE
+        value: mongo
       - key: FRESHGATE_MODE
         value: shadow
       - key: FRESHGATE_FAIL_OPEN
         value: "true"
       - key: FRESHGATE_CACHE_DB
-        value: /data/freshgate_cache.db
+        value: /tmp/freshgate_cache.db
       - key: FRESHGATE_AUDIT_DB
-        value: /data/freshgate_audit.db
+        value: /tmp/freshgate_audit.db
       - key: FRESHGATE_FEATURE_DB
-        value: /data/freshgate_features.db
+        value: /tmp/freshgate_features.db
+      - key: FRESHGATE_WATCHTOWER_ENABLED
+        value: "true"
+      - key: FRESHGATE_WATCHTOWER_MAX_CLAIMS
+        value: "50"

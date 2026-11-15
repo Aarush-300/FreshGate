@@ -17,7 +17,7 @@ from core.watchtower import WatchtowerService
 from server.app import app
 
 
-def test_policy_verify_watchtower_alert_replay_and_cli_end_to_end(monkeypatch):
+def test_policy_verify_watchtower_alert_replay_and_cli_end_to_end(monkeypatch, auth_cookie):
     db_path = Path(__file__).resolve().parents[1] / f".freshgate-integration-{uuid.uuid4().hex}.sqlite3"
     store = SQLiteFeatureStore(str(db_path))
 
@@ -74,7 +74,7 @@ def test_policy_verify_watchtower_alert_replay_and_cli_end_to_end(monkeypatch):
     monkeypatch.setattr("core.policies.get_feature_store", lambda: store)
 
     try:
-        with TestClient(app) as api:
+        with TestClient(app, cookies=auth_cookie) as api:
             policy_response = api.post("/api/policies", json={
                 "name": "Official Python releases",
                 "categories": ["version"],

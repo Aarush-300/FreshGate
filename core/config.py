@@ -117,7 +117,7 @@ class FreshGateConfig:
     watchtower_enabled: bool = True
     watchtower_poll_seconds: int = 10
     watchtower_max_concurrency: int = 2
-    watchtower_max_monitored_claims: int = 1000
+    watchtower_max_monitored_claims: int = 50
     watchtower_lease_seconds: int = 900
     watchtower_max_retries: int = 3
     watchtower_retry_base_seconds: int = 60
@@ -241,7 +241,7 @@ def load_config(override_env: Optional[Dict[str, str]] = None) -> FreshGateConfi
         watchtower_enabled=_bool_env("FRESHGATE_WATCHTOWER_ENABLED", True),
         watchtower_poll_seconds=max(1, min(300, _int_env("FRESHGATE_WATCHTOWER_POLL_SECONDS", 10))),
         watchtower_max_concurrency=max(1, min(10, _int_env("FRESHGATE_WATCHTOWER_MAX_CONCURRENCY", 2))),
-        watchtower_max_monitored_claims=max(1, min(10000, _int_env("FRESHGATE_WATCHTOWER_MAX_CLAIMS", 1000))),
+        watchtower_max_monitored_claims=max(1, min(10000, _int_env("FRESHGATE_WATCHTOWER_MAX_CLAIMS", 50))),
         watchtower_lease_seconds=max(60, min(3600, _int_env("FRESHGATE_WATCHTOWER_LEASE_SECONDS", 900))),
         watchtower_max_retries=max(1, min(10, _int_env("FRESHGATE_WATCHTOWER_MAX_RETRIES", 3))),
         watchtower_retry_base_seconds=max(5, min(3600, _int_env("FRESHGATE_WATCHTOWER_RETRY_BASE_SECONDS", 60))),

@@ -1,23 +1,33 @@
 """Watchtower monitoring and alert APIs."""
-
 from __future__ import annotations
 
-import sqlite3
 import asyncio
+import logging
+import sqlite3
 import time
 from typing import Literal, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Response, status
+from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pymongo.errors import DuplicateKeyError
 
 from core.categories import category_registry
+from core.models import Source
 from core.persistence import get_feature_store
 from core.policies import get_policy
 from core.watchtower import WatchtowerService
-from core.models import Source
+from server.pipeline_factory import pipeline_for_owner
+from server.users import current_user
+
+logger = logging.getLogger("freshgate.watchtower")
 
 router = APIRouter(prefix="/api/watchtower", tags=["watchtower"])
-watchtower_service = WatchtowerService()
+watchtower_service = WatchtowerService(pipeline_resolver=pipeline_for_owner)
+
+
+def _scoped(req: Request):
+    user = current_user(req)
+    return user, get_feature_store().for_owner(user["_id"])
 
 
 class MonitoringBaseline(BaseModel):
@@ -64,8 +74,8 @@ class MonitorPatch(BaseModel):
 
 
 @router.post("/monitor", status_code=status.HTTP_201_CREATED)
-async def monitor_claim(request: MonitorRequest):
-    store = get_feature_store()
+async def monitor_claim(request: MonitorRequest, req: Request):
+    user, store = _scoped(req)
     policy = None
     if request.policy_id:
         policy = await asyncio.to_thread(get_policy, request.policy_id, store=store)
@@ -84,87 +94,101 @@ async def monitor_claim(request: MonitorRequest):
         "last_evidence": [source.model_dump() for source in baseline.sources] if baseline else [],
     }
     try:
-        row = await asyncio.to_thread(store.save_monitored_claim, {
-            "claim_text": request.claim_text,
-            "category": request.category,
-            "monitoring_interval": request.monitoring_interval,
-            "policy_id": request.policy_id,
-            "enabled": request.enabled,
-            "last_verdict": baseline.verdict if baseline else None,
-            "last_score": baseline.score if baseline else None,
-            "last_checked_at": now if baseline else None,
-            "last_successful_at": now if baseline and baseline.verdict != "unverifiable" else None,
-            "next_check_at": now + request.monitoring_interval,
-            "metadata": metadata,
-            "entities": request.entities,
-            "jurisdiction": jurisdiction,
-        }, watchtower_service.config.watchtower_max_monitored_claims)
+        row = await asyncio.to_thread(
+            store.save_monitored_claim,
+            {
+                "claim_text": request.claim_text,
+                "category": request.category,
+                "monitoring_interval": request.monitoring_interval,
+                "policy_id": request.policy_id,
+                "enabled": request.enabled,
+                "last_verdict": baseline.verdict if baseline else None,
+                "last_score": baseline.score if baseline else None,
+                "last_checked_at": now if baseline else None,
+                "last_successful_at": now if baseline and baseline.verdict != "unverifiable" else None,
+                "next_check_at": now + request.monitoring_interval,
+                "metadata": metadata,
+                "entities": request.entities,
+                "jurisdiction": jurisdiction,
+            },
+            watchtower_service.config.watchtower_max_monitored_claims,
+        )
     except OverflowError as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from exc
-    except sqlite3.IntegrityError as exc:
+    except (sqlite3.IntegrityError, DuplicateKeyError) as exc:
         raise HTTPException(status_code=409, detail="Could not register monitored claim") from exc
+
     return row
 
 
 @router.get("/claims")
-async def list_claims(limit: int = Query(default=100, ge=1, le=1000), offset: int = Query(default=0, ge=0)):
-    store = get_feature_store()
+async def list_claims(
+    req: Request,
+    limit: int = Query(default=100, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+):
+    user, store = _scoped(req)
     rows = await asyncio.to_thread(store.list_monitored_claims, limit, offset)
     alerts = await asyncio.to_thread(store.list_alerts, 1000, 0, True)
+    total_count = await asyncio.to_thread(store.count_monitored_claims)
+    now = time.time()
     return {
         "claims": rows,
         "limit": limit,
         "offset": offset,
         "overview": {
-            "total": await asyncio.to_thread(store.count_monitored_claims),
-            "healthy": sum(1 for row in rows if row["enabled"] and row["last_error"] is None),
-            "changed": sum(1 for alert in alerts if alert["monitored_claim_id"]),
-            "pending": sum(1 for row in rows if row["enabled"] and row["next_check_at"] <= time.time()),
-            "failed": sum(1 for row in rows if row["last_error"] is not None),
+            "total": total_count,
+            "healthy": sum(1 for row in rows if row.get("enabled") and row.get("last_error") is None),
+            "changed": sum(1 for alert in alerts if alert.get("monitored_claim_id")),
+            "pending": sum(1 for row in rows if row.get("enabled") and (row.get("next_check_at") or 0) <= now),
+            "failed": sum(1 for row in rows if row.get("last_error") is not None),
         },
     }
 
 
 @router.get("/claims/{claim_id}")
-async def get_claim(claim_id: str):
-    store = get_feature_store()
+async def get_claim(claim_id: str, req: Request):
+    user, store = _scoped(req)
     row = await asyncio.to_thread(store.get_monitored_claim, claim_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Monitored claim not found")
     row["history"] = await asyncio.to_thread(store.list_snapshots, row["claim_fingerprint"], 20, 0)
-    row["alerts"] = [alert for alert in await asyncio.to_thread(store.list_alerts, 100, 0, False)
-                     if alert["monitored_claim_id"] == claim_id]
+    alerts = await asyncio.to_thread(store.list_alerts, 100, 0, False)
+    row["alerts"] = [alert for alert in alerts if alert.get("monitored_claim_id") == claim_id]
     return row
 
 
 @router.patch("/claims/{claim_id}")
-async def patch_claim(claim_id: str, request: MonitorPatch):
+async def patch_claim(claim_id: str, request: MonitorPatch, req: Request):
+    user, store = _scoped(req)
     updates = request.model_dump(exclude_unset=True)
     if "policy_id" in updates and updates["policy_id"] is not None:
-        policy = await asyncio.to_thread(get_policy, updates["policy_id"])
-        row = await asyncio.to_thread(get_feature_store().get_monitored_claim, claim_id)
+        policy = await asyncio.to_thread(get_policy, updates["policy_id"], store=store)
+        row = await asyncio.to_thread(store.get_monitored_claim, claim_id)
         if policy is None or not policy.enabled:
             raise HTTPException(status_code=422, detail="Policy does not exist or is disabled")
-        if row and row["category"] not in policy.categories:
+        if row and row.get("category") not in policy.categories:
             raise HTTPException(status_code=422, detail="Policy does not include this claim category")
-    row = await asyncio.to_thread(get_feature_store().update_monitored_claim, claim_id, updates)
+    row = await asyncio.to_thread(store.update_monitored_claim, claim_id, updates)
     if row is None:
         raise HTTPException(status_code=404, detail="Monitored claim not found")
     return row
 
 
 @router.delete("/claims/{claim_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_claim(claim_id: str):
-    deleted = await asyncio.to_thread(get_feature_store().delete_monitored_claim, claim_id)
+async def delete_claim(claim_id: str, req: Request):
+    user, store = _scoped(req)
+    deleted = await asyncio.to_thread(store.delete_monitored_claim, claim_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Monitored claim not found")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/claims/{claim_id}/check")
-async def check_claim(claim_id: str):
+async def check_claim(claim_id: str, req: Request):
+    user, store = _scoped(req)
     try:
-        outcome = await watchtower_service.check_now(claim_id)
+        outcome = await watchtower_service.check_now(claim_id, owner_id=user["_id"])
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if outcome is None:
@@ -174,27 +198,31 @@ async def check_claim(claim_id: str):
 
 @router.get("/alerts")
 async def list_alerts(
+    req: Request,
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
     unacknowledged_only: bool = False,
 ):
+    user, store = _scoped(req)
     rows = await asyncio.to_thread(
-        get_feature_store().list_alerts, limit, offset, unacknowledged_only
+        store.list_alerts, limit, offset, unacknowledged_only
     )
     return {"alerts": rows, "limit": limit, "offset": offset}
 
 
 @router.get("/alerts/{alert_id}")
-async def get_alert(alert_id: str):
-    row = await asyncio.to_thread(get_feature_store().get_alert, alert_id)
+async def get_alert(alert_id: str, req: Request):
+    user, store = _scoped(req)
+    row = await asyncio.to_thread(store.get_alert, alert_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Alert not found")
     return row
 
 
 @router.post("/alerts/{alert_id}/acknowledge")
-async def acknowledge_alert(alert_id: str):
-    changed = await asyncio.to_thread(get_feature_store().acknowledge_alert, alert_id)
+async def acknowledge_alert(alert_id: str, req: Request):
+    user, store = _scoped(req)
+    changed = await asyncio.to_thread(store.acknowledge_alert, alert_id)
     if not changed:
         raise HTTPException(status_code=404, detail="Alert not found")
-    return await asyncio.to_thread(get_feature_store().get_alert, alert_id)
+    return await asyncio.to_thread(store.get_alert, alert_id)

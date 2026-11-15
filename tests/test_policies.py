@@ -80,8 +80,8 @@ def test_policy_source_filter_matches_domain_boundaries():
 
 
 @pytest.mark.asyncio
-async def test_policy_crud_preview_validate_and_duplicate_endpoints(policy_store):
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+async def test_policy_crud_preview_validate_and_duplicate_endpoints(policy_store, auth_cookie):
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", cookies=auth_cookie) as client:
         categories = await client.get("/api/policies/categories")
         assert categories.status_code == 200
         assert {item["name"] for item in categories.json()["categories"]} >= {"pricing", "version", "law"}
@@ -123,9 +123,9 @@ async def test_policy_crud_preview_validate_and_duplicate_endpoints(policy_store
 
 
 @pytest.mark.asyncio
-async def test_policy_reads_are_concurrent_and_default_pipeline_has_no_policy_result(policy_store):
+async def test_policy_reads_are_concurrent_and_default_pipeline_has_no_policy_result(policy_store, auth_cookie):
     policy = create_policy(valid_policy(), store=policy_store)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", cookies=auth_cookie) as client:
         responses = await asyncio.gather(*[
             client.get(f"/api/policies/{policy.id}") for _ in range(12)
         ])

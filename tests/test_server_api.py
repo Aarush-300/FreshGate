@@ -1,3 +1,4 @@
+import os
 import pytest
 from httpx import AsyncClient, ASGITransport
 from unittest.mock import patch, AsyncMock
@@ -122,8 +123,9 @@ async def test_dashboard_endpoint():
 
 @pytest.mark.asyncio
 async def test_benchmark_api_endpoint():
+    admin_key = os.environ.get("FRESHGATE_ADMIN_KEY", "test-admin-secret-key-at-least-24-chars-long")
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-        response = await ac.get("/api/benchmark")
+        response = await ac.get("/api/benchmark", headers={"X-Admin-Key": admin_key})
     assert response.status_code == 200
     data = response.json()
     assert data["total_items"] == 520

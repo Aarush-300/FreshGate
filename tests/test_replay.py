@@ -98,7 +98,7 @@ def test_pipeline_persists_one_immutable_snapshot_per_checked_claim(replay_store
 
 
 @pytest.mark.asyncio
-async def test_history_api_replay_comparison_timeline_and_read_only_behavior(replay_store):
+async def test_history_api_replay_comparison_timeline_and_read_only_behavior(replay_store, auth_cookie):
     policy = PolicyConfig.model_validate({"name": "Official sources", "categories": ["version"]})
     first = save_claim_snapshot(
         history_claim("confirmed", 92, "https://docs.example.com/release", "Version 3.13 is current"),
@@ -121,7 +121,7 @@ async def test_history_api_replay_comparison_timeline_and_read_only_behavior(rep
     })
     count_before = replay_store.count_snapshots(fingerprint)
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", cookies=auth_cookie) as client:
         history = await client.get(f"/api/history/claims/{fingerprint}?limit=1&offset=0")
         assert history.status_code == 200
         assert history.json()["total"] == 2

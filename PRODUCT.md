@@ -19,7 +19,7 @@ FreshGate is an AI gateway middleware and dashboard for finding and verifying ti
 - The FastAPI service exposes verification, health, metrics, provider status, benchmark, recent audit, policy, Watchtower, and Replay APIs.
 - The dashboard must use these service APIs and display their returned data and states. It must not present fabricated operational metrics or pretend records as live data.
 - The documented dashboard areas are Verify, System, Benchmarks, Audit log, Policy Studio, Watchtower, and Replay.
-- Request-scoped provider credentials entered in the browser apply only to that request and are not stored in browser storage.
+- Provider and search credentials are saved to the signed-in user's profile, encrypted at rest on the server, and are never stored in browser storage.
 - The service currently serves its dashboard from a static `dashboard/` directory. The selected dashboard surface is a React/Vite implementation.
 - Dashboard stack selected for this surface: React, TypeScript, Vite, and Tailwind CSS, served as static assets by the existing FastAPI service.
 
@@ -40,4 +40,4 @@ FreshGate is an AI gateway middleware and dashboard for finding and verifying ti
 - Distinguish unavailable, empty, failed, and successful states.
 - Make monitoring and policy changes observable and recoverable.
 - Keep verification history immutable and comparison read-only.
-- Do not persist request-scoped provider credentials in the browser.
+- Provider and search credentials are saved to the signed-in user's profile, encrypted at rest on the server, and are never stored in browser storage.

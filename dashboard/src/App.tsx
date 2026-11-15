@@ -5,16 +5,17 @@ import {
   Activity, AlertTriangle, ArrowDownRight, ArrowUpRight, BookOpen, Check, ChevronDown,
   ChevronRight, CircleHelp, Clock3, FileClock, FlaskConical, Gauge, History, Leaf,
   LoaderCircle, LockKeyhole, Menu, Plus, RefreshCw, Search, Settings2, ShieldCheck,
-  Sprout, Sun, Moon, Eye, EyeOff, X,
+  Sprout, Sun, Moon, Eye, EyeOff, Trash2, X,
 } from "lucide-react";
-import { api, jsonBody, patchBody } from "./api";
+import { api, jsonBody, patchBody, putBody, deleteReq, setUnauthorizedHandler } from "./api";
 import type {
   ApiStatus, Benchmark, Category, Claim, Health, Policy, RecordValue, Replay,
-  ProviderOption, Source, VerificationResult, WatchAlert, WatchClaim,
+  ProviderOption, Source, VerificationResult, WatchAlert, WatchClaim, User, UserSettings,
 } from "./types";
 
-type Section = "verify" | "system" | "benchmarks" | "audits" | "policies" | "watchtower" | "replay";
+type Section = "verify" | "system" | "benchmarks" | "audits" | "policies" | "watchtower" | "replay" | "profile";
 type LoadState<T> = { value: T | null; error: string | null };
+
 function initialTheme(): "light" | "dark" {
   try {
     const saved = window.localStorage.getItem("freshgate-theme");
@@ -33,21 +34,31 @@ const navigation: { id: Section; label: string; icon: typeof Activity; group?: s
   { id: "policies", label: "Policy Studio", icon: Settings2, group: "Evidence" },
   { id: "watchtower", label: "Watchtower", icon: Search },
   { id: "replay", label: "Replay", icon: History },
+  { id: "profile", label: "Profile", icon: Settings2 },
 ];
 
 const titleFor: Record<Section, string> = {
-  verify: "Verify a response", system: "System health", benchmarks: "Benchmarks",
-  audits: "Audit log", policies: "Policy Studio", watchtower: "Watchtower", replay: "Replay",
+  verify: "Verify a response",
+  system: "System health",
+  benchmarks: "Benchmarks",
+  audits: "Audit log",
+  policies: "Policy Studio",
+  watchtower: "Watchtower",
+  replay: "Replay",
+  profile: "Profile & credentials",
 };
 
 function asSection(value: string): Section {
-  return navigation.some((item) => item.id === value) ? value as Section : "verify";
+  const base = value.split("?")[0].replace(/^#/, "");
+  return navigation.some((item) => item.id === base) ? (base as Section) : "verify";
 }
 
 function dateTime(value?: string | number | null): string {
   if (value === null || value === undefined || value === "") return "Not recorded";
   const date = typeof value === "number" ? new Date(value * 1000) : new Date(value);
-  return Number.isNaN(date.valueOf()) ? String(value) : new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
+  return Number.isNaN(date.valueOf())
+    ? String(value)
+    : new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
 }
 
 function display(value: unknown): string {
@@ -99,6 +110,9 @@ function DataTable({ rows, columns, empty, onSelect }: {
 }
 
 export function App() {
+  const [user, setUser] = useState<User | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [replayFingerprint, setReplayFingerprint] = useState("");
   const [section, setSection] = useState<Section>(() => asSection(window.location.hash.slice(1)));
   const [theme, setTheme] = useState<"light" | "dark">(initialTheme);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -114,40 +128,113 @@ export function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [globalError, setGlobalError] = useState<string | null>(null);
 
-  const refreshWorkspace = useCallback(async () => {
-    setRefreshing(true);
-    const results = await Promise.allSettled([
-      api<Health>("/health"), api<ApiStatus>("/health/ready"),
-      api<RecordValue>("/api/provider/status"), api<RecordValue>("/api/deployment/status"),
-      api<{ policies: Policy[] }>("/api/policies"), api<{ categories: Category[] }>("/api/policies/categories"),
-      api<{ claims: WatchClaim[] }>("/api/watchtower/claims"), api<{ alerts: WatchAlert[] }>("/api/watchtower/alerts?unacknowledged_only=true"),
-    ]);
-    const [h, r, p, d, pol, cat, c, a] = results;
-    if (h.status === "fulfilled") setHealth({ value: h.value, error: null }); else setHealth({ value: null, error: h.reason instanceof Error ? h.reason.message : "Could not reach FreshGate." });
-    if (r.status === "fulfilled") setReadiness({ value: r.value, error: null }); else setReadiness({ value: null, error: r.reason instanceof Error ? r.reason.message : "Readiness could not be loaded." });
-    if (p.status === "fulfilled") setProvider({ value: p.value, error: null }); else setProvider({ value: null, error: p.reason instanceof Error ? p.reason.message : "Provider status could not be loaded." });
-    if (d.status === "fulfilled") setDeployment({ value: d.value, error: null }); else setDeployment({ value: null, error: d.reason instanceof Error ? d.reason.message : "Deployment settings could not be loaded." });
-    if (pol.status === "fulfilled") setPolicies(pol.value.policies); else setGlobalError(pol.reason instanceof Error ? pol.reason.message : "Policies could not be loaded.");
-    if (cat.status === "fulfilled") setCategories(cat.value.categories); else setGlobalError(cat.reason instanceof Error ? cat.reason.message : "Categories could not be loaded.");
-    if (c.status === "fulfilled") setClaims(c.value.claims); else setGlobalError(c.reason instanceof Error ? c.reason.message : "Watchtower claims could not be loaded.");
-    if (a.status === "fulfilled") setAlerts(a.value.alerts); else setGlobalError(a.reason instanceof Error ? a.reason.message : "Watchtower alerts could not be loaded.");
-    setRefreshing(false);
+  const resetWorkspace = useCallback(() => {
+    setClaims([]);
+    setAlerts([]);
+    setPolicies([]);
+    setCategories([]);
+    setBenchmark({ value: null, error: null });
+    setProvider({ value: null, error: null });
+    setDeployment({ value: null, error: null });
+    setHealth({ value: null, error: null });
+    setReadiness({ value: null, error: null });
+    setReplayFingerprint("");
+    setGlobalError(null);
   }, []);
 
+  const refreshWorkspace = useCallback(async () => {
+    if (!user) return;
+    if (document.visibilityState !== "visible") return;
+    setRefreshing(true);
+    const results = await Promise.allSettled([
+      api<Health>("/health"),
+      api<ApiStatus>("/health/ready"),
+      api<RecordValue>("/api/provider/status"),
+      api<RecordValue>("/api/deployment/status"),
+      api<{ policies: Policy[] }>("/api/policies"),
+      api<{ categories: Category[] }>("/api/policies/categories"),
+      api<{ claims: WatchClaim[] }>("/api/watchtower/claims"),
+      api<{ alerts: WatchAlert[] }>("/api/watchtower/alerts?unacknowledged_only=true"),
+    ]);
+    const [h, r, p, d, pol, cat, c, a] = results;
+    if (h.status === "fulfilled") setHealth({ value: h.value, error: null });
+    else setHealth({ value: null, error: h.reason instanceof Error ? h.reason.message : "Could not reach FreshGate." });
+    if (r.status === "fulfilled") setReadiness({ value: r.value, error: null });
+    else setReadiness({ value: null, error: r.reason instanceof Error ? r.reason.message : "Readiness could not be loaded." });
+    if (p.status === "fulfilled") setProvider({ value: p.value, error: null });
+    else setProvider({ value: null, error: p.reason instanceof Error ? p.reason.message : "Provider status could not be loaded." });
+    if (d.status === "fulfilled") setDeployment({ value: d.value, error: null });
+    else setDeployment({ value: null, error: d.reason instanceof Error ? d.reason.message : "Deployment settings could not be loaded." });
+    if (pol.status === "fulfilled") setPolicies(pol.value.policies);
+    else setGlobalError(pol.reason instanceof Error ? pol.reason.message : "Policies could not be loaded.");
+    if (cat.status === "fulfilled") setCategories(cat.value.categories);
+    else setGlobalError(cat.reason instanceof Error ? cat.reason.message : "Categories could not be loaded.");
+    if (c.status === "fulfilled") setClaims(c.value.claims);
+    else setGlobalError(c.reason instanceof Error ? c.reason.message : "Watchtower claims could not be loaded.");
+    if (a.status === "fulfilled") setAlerts(a.value.alerts);
+    else setGlobalError(a.reason instanceof Error ? a.reason.message : "Watchtower alerts could not be loaded.");
+    setRefreshing(false);
+  }, [user]);
+
+  // Auth me check on mount and hash sync
   useEffect(() => {
     const sync = () => setSection(asSection(window.location.hash.slice(1)));
     window.addEventListener("hashchange", sync);
-    void refreshWorkspace();
-    const timer = window.setInterval(() => void refreshWorkspace(), 45_000);
-    return () => { window.removeEventListener("hashchange", sync); window.clearInterval(timer); };
-  }, [refreshWorkspace]);
+    api<User>("/api/auth/me")
+      .then((data) => {
+        setUser(data);
+        setAuthReady(true);
+      })
+      .catch(() => {
+        setUser(null);
+        setAuthReady(true);
+      });
+    return () => {
+      window.removeEventListener("hashchange", sync);
+    };
+  }, []);
 
-  useEffect(() => { document.title = `FreshGate · ${titleFor[section]}`; }, [section]);
+  // Workspace refresh when user logs in or changes
+  useEffect(() => {
+    if (user) {
+      void refreshWorkspace();
+    }
+  }, [user, refreshWorkspace]);
+
+  // 45s polling interval active only for logged-in users with visible document
+  useEffect(() => {
+    if (!user) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        void refreshWorkspace();
+      }
+    }, 45_000);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [user, refreshWorkspace]);
+
+  // Global 401 handler
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      resetWorkspace();
+      setUser(null);
+    });
+    return () => {
+      setUnauthorizedHandler(null);
+    };
+  }, [resetWorkspace]);
+
+  useEffect(() => {
+    document.title = `FreshGate · ${titleFor[section]}`;
+  }, [section]);
 
   useLayoutEffect(() => {
     document.documentElement.dataset.theme = theme;
     document.documentElement.style.colorScheme = theme;
-    try { window.localStorage.setItem("freshgate-theme", theme); } catch {
+    try {
+      window.localStorage.setItem("freshgate-theme", theme);
+    } catch {
       // The active theme remains set for this session when browser storage is unavailable.
     }
   }, [theme]);
@@ -159,164 +246,659 @@ export function App() {
     setGlobalError(null);
   };
 
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMenuOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [menuOpen]);
+
   const openAlerts = alerts.length;
 
-  return <div className="app-shell">
-    <button className={`mobile-scrim ${menuOpen ? "visible" : ""}`} aria-label="Close navigation" onClick={() => setMenuOpen(false)} />
-    <aside className={`sidebar ${menuOpen ? "open" : ""}`}>
-      <a className="brand" href="#verify" onClick={() => navigate("verify")} aria-label="FreshGate home">
-        <span className="brand-mark"><Sprout size={20} strokeWidth={1.8} /></span><span>FreshGate</span>
-      </a>
-      <div className="workspace-label">VERIFICATION WORKSPACE</div>
-      <nav aria-label="Main navigation" className="primary-nav">
-        {navigation.map((item, index) => {
-          const Icon = item.icon;
-          return <div key={item.id}>
-            {item.group && <div className="nav-group">{item.group}</div>}
-            <a href={`#${item.id}`} onClick={(event) => { event.preventDefault(); navigate(item.id); }} className={`nav-link ${section === item.id ? "active" : ""}`} aria-current={section === item.id ? "page" : undefined}>
-              <Icon size={17} strokeWidth={1.8} /><span>{item.label}</span>
-              {item.id === "watchtower" && openAlerts > 0 && <span className="nav-count" aria-label={`${openAlerts} unacknowledged alerts`}>{openAlerts > 99 ? "99+" : openAlerts}</span>}
-              {section === item.id && <ChevronRight size={15} className="nav-chevron" />}
-            </a>
-            {index === 0 && <div className="nav-divider" />}
-          </div>;
-        })}
-      </nav>
-      <div className="sidebar-bottom">
-        <div className="sidebar-foot"><Leaf size={14} /> Current evidence, clearly noted.</div>
-      </div>
-    </aside>
-
-    <div className="main-shell">
-      <header className="topbar">
-        <button className="icon-button mobile-menu" aria-label="Open navigation" onClick={() => setMenuOpen(true)}><Menu size={19} /></button>
-        <div className="breadcrumb"><span>FreshGate</span><ChevronRight size={14} /><strong>{titleFor[section]}</strong></div>
-        <div className="topbar-actions">
-          <button className="theme-switch" type="button" role="switch" aria-checked={theme === "dark"} aria-label="Dark mode" title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"} onClick={() => setTheme((current) => current === "dark" ? "light" : "dark")}>
-            <span className="theme-switch-icon" aria-hidden="true">{theme === "dark" ? <Moon size={14} /> : <Sun size={14} />}</span>
-            <span className="theme-switch-label">Dark mode</span>
-            <span className="theme-switch-track" aria-hidden="true"><i /></span>
-          </button>
-          <button className="icon-button" title="Refresh workspace" aria-label="Refresh workspace" onClick={() => void refreshWorkspace()}><RefreshCw size={16} className={refreshing ? "spin" : ""} /></button>
+  if (!authReady) {
+    return (
+      <div className="auth-screen">
+        <div className="loading-line">
+          <LoaderCircle size={18} className="spin" /> Loading FreshGate workspace…
         </div>
-      </header>
-      <main className="main-content" key={section}>
-        {globalError && <InlineNotice onDismiss={() => setGlobalError(null)}>{globalError}</InlineNotice>}
-        {section === "verify" && <VerifyView policies={policies} onMonitor={async (claim, result) => {
-          await api("/api/watchtower/monitor", jsonBody({
-            claim_text: claim.text,
-            category: claim.type,
-            ...(result ? { baseline: { verdict: claim.verdict ?? "unverifiable", score: claim.score ?? undefined, sources: claim.sources ?? [] } } : {}),
-          }));
-          await refreshWorkspace();
-        }} />}
-        {section === "system" && <SystemView health={health} readiness={readiness} provider={provider} deployment={deployment} refreshing={refreshing} onRefresh={() => void refreshWorkspace()} />}
-        {section === "benchmarks" && <BenchmarkView data={benchmark} setData={setBenchmark} />}
-        {section === "audits" && <AuditView />}
-        {section === "policies" && <PolicyView policies={policies} categories={categories} onChanged={refreshWorkspace} />}
-        {section === "watchtower" && <WatchtowerView claims={claims} alerts={alerts} categories={categories} policies={policies} onRefresh={refreshWorkspace} onError={setGlobalError} />}
-        {section === "replay" && <ReplayView claims={claims} />}
-      </main>
-      <footer className="app-footer"><span>FreshGate</span><span>Verification decisions stay attached to their evidence.</span></footer>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <AuthView
+        theme={theme}
+        onToggleTheme={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}
+        onAuthenticated={async () => {
+          try {
+            const u = await api<User>("/api/auth/me");
+            setUser(u);
+          } catch {}
+        }}
+      />
+    );
+  }
+
+  return (
+    <div className="app-shell">
+      <button className={`mobile-scrim ${menuOpen ? "visible" : ""}`} aria-label="Close navigation" onClick={() => setMenuOpen(false)} />
+      <aside className={`sidebar ${menuOpen ? "open" : ""}`}>
+        <a className="brand" href="#verify" onClick={() => navigate("verify")} aria-label="FreshGate home">
+          <span className="brand-mark"><Sprout size={20} strokeWidth={1.8} /></span><span>FreshGate</span>
+        </a>
+        <div className="workspace-label">VERIFICATION WORKSPACE</div>
+        <nav aria-label="Main navigation" className="primary-nav">
+          {navigation.map((item, index) => {
+            const Icon = item.icon;
+            return (
+              <div key={item.id}>
+                {item.group && <div className="nav-group">{item.group}</div>}
+                <a
+                  href={`#${item.id}`}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    navigate(item.id);
+                  }}
+                  className={`nav-link ${section === item.id ? "active" : ""}`}
+                  aria-current={section === item.id ? "page" : undefined}
+                >
+                  <Icon size={17} strokeWidth={1.8} /><span>{item.label}</span>
+                  {item.id === "watchtower" && openAlerts > 0 && (
+                    <span className="nav-count" aria-label={`${openAlerts} unacknowledged alerts`}>
+                      {openAlerts > 99 ? "99+" : openAlerts}
+                    </span>
+                  )}
+                  {section === item.id && <ChevronRight size={15} className="nav-chevron" />}
+                </a>
+                {index === 0 && <div className="nav-divider" />}
+              </div>
+            );
+          })}
+        </nav>
+        <div className="sidebar-bottom">
+          <div className="user-profile-badge">
+            <div className="user-email-text" title={user.email}>
+              <LockKeyhole size={13} />
+              <span>{user.email}</span>
+            </div>
+            <button
+              className="text-button small"
+              type="button"
+              onClick={async () => {
+                try {
+                  await api("/api/auth/logout", { method: "POST" });
+                } catch {}
+                resetWorkspace();
+                setUser(null);
+                window.location.hash = "verify";
+              }}
+            >
+              <X size={12} /> Sign out
+            </button>
+          </div>
+          <div className="sidebar-foot"><Leaf size={14} /> Current evidence, clearly noted.</div>
+        </div>
+      </aside>
+
+      <div className="main-shell">
+        <header className="topbar">
+          <button className="icon-button mobile-menu" aria-label="Open navigation" onClick={() => setMenuOpen(true)}>
+            <Menu size={19} />
+          </button>
+          <div className="breadcrumb"><span>FreshGate</span><ChevronRight size={14} /><strong>{titleFor[section]}</strong></div>
+          <div className="topbar-actions">
+            <button
+              className="theme-switch"
+              type="button"
+              role="switch"
+              aria-checked={theme === "dark"}
+              aria-label="Dark mode"
+              title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+              onClick={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}
+            >
+              <span className="theme-switch-icon" aria-hidden="true">{theme === "dark" ? <Moon size={14} /> : <Sun size={14} />}</span>
+              <span className="theme-switch-label">Dark mode</span>
+              <span className="theme-switch-track" aria-hidden="true"><i /></span>
+            </button>
+            <button className="icon-button" title="Refresh workspace" aria-label="Refresh workspace" onClick={() => void refreshWorkspace()}>
+              <RefreshCw size={16} className={refreshing ? "spin" : ""} />
+            </button>
+          </div>
+        </header>
+        <main className="main-content" key={section}>
+          {globalError && <InlineNotice onDismiss={() => setGlobalError(null)}>{globalError}</InlineNotice>}
+          {section === "verify" && (
+            <VerifyView
+              user={user}
+              policies={policies}
+              onMonitor={async (claim, result) => {
+                await api("/api/watchtower/monitor", jsonBody({
+                  claim_text: claim.text,
+                  category: claim.type,
+                  ...(result
+                    ? {
+                        baseline: {
+                          verdict: claim.verdict ?? "unverifiable",
+                          score: claim.score != null ? Math.round(claim.score) : undefined,
+                          sources: claim.sources ?? [],
+                        },
+                      }
+                    : {}),
+                }));
+                await refreshWorkspace();
+              }}
+            />
+          )}
+          {section === "system" && (
+            <SystemView
+              health={health}
+              readiness={readiness}
+              provider={provider}
+              deployment={deployment}
+              refreshing={refreshing}
+              onRefresh={() => void refreshWorkspace()}
+            />
+          )}
+          {section === "benchmarks" && <BenchmarkView data={benchmark} setData={setBenchmark} />}
+          {section === "audits" && <AuditView />}
+          {section === "policies" && <PolicyView policies={policies} categories={categories} onChanged={refreshWorkspace} />}
+          {section === "watchtower" && (
+            <WatchtowerView
+              claims={claims}
+              alerts={alerts}
+              categories={categories}
+              policies={policies}
+              onRefresh={refreshWorkspace}
+              onError={setGlobalError}
+              onOpenReplay={(fp: string) => {
+                setReplayFingerprint(fp);
+                navigate("replay");
+              }}
+            />
+          )}
+          {section === "replay" && <ReplayView claims={claims} initialFingerprint={replayFingerprint} />}
+          {section === "profile" && (
+            <ProfileView
+              user={user}
+              onSaved={(settings) => setUser({ ...user, settings })}
+            />
+          )}
+        </main>
+        <footer className="app-footer">
+          <span>FreshGate</span>
+          <span>Provider and search credentials are saved to the signed-in user's profile, encrypted at rest on the server, and are never stored in browser storage.</span>
+        </footer>
+      </div>
     </div>
-  </div>;
+  );
 }
 
-function VerifyView({ policies, onMonitor }: { policies: Policy[]; onMonitor: (claim: Claim, result: VerificationResult) => Promise<void> }) {
-  const [answer, setAnswer] = useState("");
-  const [policyId, setPolicyId] = useState("");
+function AuthView({ theme, onToggleTheme, onAuthenticated }: { theme: "light" | "dark"; onToggleTheme: () => void; onAuthenticated: () => Promise<void> }) {
+  const [mode, setMode] = useState<"login" | "register">("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!email.trim()) { setError("Enter an email address."); return; }
+    if (password.length < 10) { setError("Password must be at least 10 characters."); return; }
+    setBusy(true); setError(null);
+    try {
+      await api(`/api/auth/${mode}`, jsonBody({ email: email.trim(), password }));
+      await onAuthenticated();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Authentication failed.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="auth-screen">
+      <div className="auth-theme-toggle">
+        <button className="theme-switch" type="button" role="switch" aria-checked={theme === "dark"} aria-label="Dark mode" title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"} onClick={onToggleTheme}>
+          <span className="theme-switch-icon" aria-hidden="true">{theme === "dark" ? <Moon size={14} /> : <Sun size={14} />}</span>
+          <span className="theme-switch-label">Dark mode</span>
+          <span className="theme-switch-track" aria-hidden="true"><i /></span>
+        </button>
+      </div>
+      <form className="folio-panel auth-card" noValidate onSubmit={(event) => void handleSubmit(event)}>
+        <div className="auth-brand">
+          <span className="brand-mark"><Sprout size={22} strokeWidth={1.8} /></span>
+          <span className="auth-brand-text">FreshGate</span>
+        </div>
+        <div className="workspace-label">VERIFICATION WORKSPACE</div>
+        <div className="auth-card-head">
+          <h2>{mode === "login" ? "Operator sign in" : "Create operator account"}</h2>
+          <p className="panel-copy">{mode === "login" ? "Sign in to access your monitored claims, alerts, and encrypted provider credentials." : "Register an account to store Watchtower claims, alerts, and encrypted API keys."}</p>
+        </div>
+        <label className="field-group">
+          <span className="field-label">Email address</span>
+          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="operator@example.com" autoComplete="username" required disabled={busy} />
+        </label>
+        <label className="field-group">
+          <span className="field-label">Password {mode === "register" && <span>MIN 10 CHARACTERS</span>}</span>
+          <span className="secret-field">
+            <input
+              type={showPassword ? "text" : "password"}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              minLength={10}
+              placeholder="••••••••••••"
+              autoComplete={mode === "login" ? "current-password" : "new-password"}
+              required
+              disabled={busy}
+            />
+            <button
+              type="button"
+              className="icon-button"
+              onClick={() => setShowPassword((s) => !s)}
+              aria-label={showPassword ? "Hide password" : "Show password"}
+            >
+              {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+            </button>
+          </span>
+        </label>
+        {error && <InlineNotice onDismiss={() => setError(null)}>{error}</InlineNotice>}
+        <button className="primary-button auth-submit-btn" type="submit" disabled={busy || !email.trim() || password.length < 10}>
+          {busy ? <><LoaderCircle size={15} className="spin" /> {mode === "login" ? "Signing in…" : "Creating account…"}</> : mode === "login" ? "Sign in" : "Create account"}
+        </button>
+        <div className="auth-switch-row">
+          <span>{mode === "login" ? "Need an operator account?" : "Already have an account?"}</span>
+          <button type="button" className="text-button" onClick={() => { setMode((m) => m === "login" ? "register" : "login"); setError(null); }}>
+            {mode === "login" ? "Create an account" : "Back to sign in"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function ProfileView({ user, onSaved }: { user: User; onSaved: (settings: UserSettings) => void }) {
+  const [provider, setProvider] = useState(user.settings.provider || "openai");
+  const [baseUrl, setBaseUrl] = useState(user.settings.base_url || "");
+  const [model, setModel] = useState(user.settings.model || "");
+  const [apiKey, setApiKey] = useState("");
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [tavilyKey, setTavilyKey] = useState("");
+  const [showTavilyKey, setShowTavilyKey] = useState(false);
   const [providers, setProviders] = useState<ProviderOption[]>([]);
-  const [providerId, setProviderId] = useState("");
-  const [model, setModel] = useState("");
+  const [models, setModels] = useState<string[]>([]);
   const [customModel, setCustomModel] = useState("");
-  const [providerModels, setProviderModels] = useState<string[]>([]);
+  const [isManualModel, setIsManualModel] = useState(false);
   const [loadingModels, setLoadingModels] = useState(false);
   const [modelNotice, setModelNotice] = useState<string | null>(null);
-  const [baseUrl, setBaseUrl] = useState("");
-  const [llmKey, setLlmKey] = useState("");
-  const [showLlmKey, setShowLlmKey] = useState(false);
-  const [searchKey, setSearchKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  // Load providers once on mount
+  useEffect(() => {
+    api<{ providers: ProviderOption[] }>("/api/providers")
+      .then((data) => {
+        setProviders(data.providers);
+        const activeItem = data.providers.find((p) => p.id === (user.settings.provider || "openai")) ?? data.providers[0];
+        if (activeItem) {
+          if (!baseUrl) setBaseUrl(activeItem.base_url);
+          if (!model) setModel(activeItem.default_model);
+        }
+      })
+      .catch((cause) => {
+        setError(cause instanceof Error ? cause.message : "Provider catalog could not be loaded.");
+      });
+  }, []);
+
+  const active = providers.find((p) => p.id === provider) ?? providers[0];
+
+  const handleProviderChange = (newProviderId: string) => {
+    setProvider(newProviderId);
+    const p = providers.find((item) => item.id === newProviderId);
+    if (p) {
+      setModel(p.default_model || "");
+      setCustomModel("");
+      setIsManualModel(false);
+      setModels([]);
+      setApiKey("");
+      setBaseUrl(p.base_url || "");
+      setModelNotice(null);
+    }
+  };
+
+  const loadModels = async () => {
+    if (!active || active.id === "custom") {
+      setModelNotice("Enter a model ID manually for custom providers.");
+      return;
+    }
+    setLoadingModels(true);
+    setModelNotice(null);
+    try {
+      const data = await api<{ models: string[] }>("/api/profile/models", jsonBody({
+        provider,
+        base_url: active.editable_base_url ? baseUrl.trim() : "",
+        api_key: apiKey.trim(),
+      }));
+      setModels(data.models);
+      setModelNotice(`${data.models.length} models loaded.`);
+    } catch (cause) {
+      setModelNotice(cause instanceof Error ? cause.message : "Could not load models.");
+    } finally {
+      setLoadingModels(false);
+    }
+  };
+
+  // Auto-click load models once on mount if a key is saved and provider matches
+  useEffect(() => {
+    if (user.settings.has_api_key && user.settings.provider === provider && !models.length && active && active.id !== "custom") {
+      void loadModels();
+    }
+  }, [providers]);
+
+  const handleSave = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setError(null);
+    setNotice(null);
+
+    const effectiveModel = (isManualModel ? customModel : model).trim();
+    if (!effectiveModel) {
+      setError("Model is required.");
+      return;
+    }
+
+    const isSameProvider = user.settings.provider === provider;
+    const hasKey = apiKey.trim() || (isSameProvider && user.settings.has_api_key);
+    if (active?.key_required && !hasKey) {
+      setError(`An API key is required for ${active.name}.`);
+      return;
+    }
+
+    const hasTavily = tavilyKey.trim() || user.settings.has_tavily_key;
+    if (!hasTavily) {
+      setError("A Tavily search API key is required.");
+      return;
+    }
+
+    if (active?.editable_base_url) {
+      try {
+        const u = new URL(baseUrl.trim());
+        if (!["http:", "https:"].includes(u.protocol) || u.username || u.password) {
+          setError("Base URL must be a complete http or https URL without embedded credentials.");
+          return;
+        }
+      } catch {
+        setError("Base URL must be a complete valid URL (e.g. http://localhost:11434/v1).");
+        return;
+      }
+    }
+
+    setBusy(true);
+    try {
+      const updated = await api<UserSettings>("/api/profile/settings", putBody({
+        provider,
+        model: effectiveModel,
+        base_url: active?.editable_base_url ? baseUrl.trim() : "",
+        api_key: apiKey.trim(),
+        tavily_key: tavilyKey.trim(),
+      }));
+      onSaved(updated);
+      setApiKey("");
+      setTavilyKey("");
+      setModel(effectiveModel);
+      setIsManualModel(false);
+      setNotice("Saved. Your settings are encrypted and will be here next time you log in.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Failed to save profile settings.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Missing items for profile status badge
+  const isSameProvider = user.settings.provider === provider;
+  const hasKey = apiKey.trim() || (isSameProvider && user.settings.has_api_key);
+  const hasTavily = tavilyKey.trim() || user.settings.has_tavily_key;
+  const effectiveModel = isManualModel ? customModel.trim() : model.trim();
+  const missingItems: string[] = [];
+  if (active?.key_required && !hasKey) missingItems.push(`${active?.name || "provider"} API key`);
+  if (!effectiveModel) missingItems.push("model");
+  if (!hasTavily) missingItems.push("Tavily key");
+
+  const isProfileComplete = user.settings.is_complete && missingItems.length === 0;
+
+  // Build model options: catalog or loaded models, plus preserved saved model
+  const modelOptions = Array.from(new Set([
+    ...(model && !isManualModel ? [model] : []),
+    ...(models.length ? models : active?.models ?? []),
+  ]));
+
+  return (
+    <>
+      <SectionHeading
+        title="Profile & credentials"
+        detail="Saved securely to your account and encrypted at rest with AES-256 (Fernet). Used for live verification and Watchtower rechecks."
+        action={
+          <div className="profile-status-badge">
+            {isProfileComplete ? (
+              <span className="badge good"><Check size={13} /> Profile complete</span>
+            ) : (
+              <span className="badge caution"><AlertTriangle size={13} /> Profile incomplete: missing {missingItems.join(", ") || "configuration"}</span>
+            )}
+          </div>
+        }
+      />
+      {error && <InlineNotice onDismiss={() => setError(null)}>{error}</InlineNotice>}
+      {notice && <InlineNotice variant="success" onDismiss={() => setNotice(null)}>{notice}</InlineNotice>}
+
+      {active?.offline && (
+        <div className="offline-notice notice info">
+          <CircleHelp size={17} />
+          <div>
+            <strong>Local provider note:</strong>
+            <p>{active.credential_hint}</p>
+          </div>
+        </div>
+      )}
+
+      <form className="folio-panel profile-panel" onSubmit={(event) => void handleSave(event)}>
+        <div className="panel-heading">
+          <h2>Default provider settings</h2>
+          <Settings2 size={18} className="panel-symbol" />
+        </div>
+        <p className="panel-copy">Configure your AI provider, model, and search key. Stored encrypted at rest on the server.</p>
+
+        <div className="provider-grid">
+          <label className="field-group">
+            <span className="field-label">AI provider</span>
+            <select value={provider} onChange={(e) => handleProviderChange(e.target.value)}>
+              {providers.map((p) => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+          </label>
+
+          <label className="field-group">
+            <span className="field-label">
+              <span>API key</span> <span className="field-tag">{active?.key_required ? "REQUIRED" : "OPTIONAL"}</span>
+              {isSameProvider && user.settings.has_api_key && <span className="key-saved-pill">✓ Saved</span>}
+            </span>
+            <span className="secret-field">
+              <input
+                type={showApiKey ? "text" : "password"}
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder={
+                  isSameProvider && user.settings.has_api_key
+                    ? `Saved (${user.settings.api_key_hint}). Leave blank to keep it.`
+                    : `Paste your ${active?.name || "provider"} API key`
+                }
+                autoComplete="new-password"
+              />
+              <button
+                type="button"
+                className="icon-button"
+                onClick={() => setShowApiKey((s) => !s)}
+                aria-label={showApiKey ? "Hide key" : "Show key"}
+              >
+                {showApiKey ? <EyeOff size={15} /> : <Eye size={15} />}
+              </button>
+            </span>
+          </label>
+
+          <label className="field-group">
+            <span className="field-label">
+              <span>Base URL</span> {!active?.editable_base_url && <small>(set automatically)</small>}
+            </span>
+            {active?.editable_base_url ? (
+              <>
+                <input
+                  type="url"
+                  value={baseUrl}
+                  onChange={(e) => setBaseUrl(e.target.value)}
+                  placeholder={active.base_url || "http://localhost:11434/v1"}
+                  required
+                />
+                <small className="field-subtext">{active.credential_hint}</small>
+              </>
+            ) : (
+              <input
+                type="url"
+                value={active?.base_url || baseUrl}
+                readOnly
+                disabled
+                className="readonly-input"
+              />
+            )}
+          </label>
+
+          <div className="field-group model-group">
+            <span className="field-label">
+              <span>Model</span> <span className="field-tag">REQUIRED</span>
+            </span>
+            <div className="model-controls">
+              <select
+                aria-label="Choose a model"
+                value={isManualModel ? "__manual__" : model}
+                onChange={(e) => {
+                  if (e.target.value === "__manual__") {
+                    setIsManualModel(true);
+                  } else {
+                    setIsManualModel(false);
+                    setModel(e.target.value);
+                  }
+                }}
+              >
+                {modelOptions.map((modelId) => (
+                  <option key={modelId} value={modelId}>{modelId}</option>
+                ))}
+                <option value="__manual__">Enter a model ID manually…</option>
+              </select>
+              <button
+                className="secondary-button model-load"
+                type="button"
+                onClick={() => void loadModels()}
+                disabled={busy || loadingModels || active?.id === "custom"}
+              >
+                {loadingModels ? <LoaderCircle size={14} className="spin" /> : <RefreshCw size={14} />} Load models
+              </button>
+            </div>
+            {(isManualModel || !modelOptions.length) && (
+              <input
+                value={customModel}
+                onChange={(e) => setCustomModel(e.target.value)}
+                placeholder="e.g. gpt-4o, claude-3-5-sonnet-20241022, llama3"
+                autoComplete="off"
+                className="manual-model-input"
+                required
+              />
+            )}
+            {modelNotice && <small className="model-notice" role="status">{modelNotice}</small>}
+          </div>
+
+          <label className="field-group search-key-field span-two">
+            <span className="field-label">
+              Tavily search API key <span className="field-tag">REQUIRED</span>
+              {user.settings.has_tavily_key && <span className="key-saved-pill">✓ Saved</span>}
+            </span>
+            <span className="secret-field">
+              <input
+                type={showTavilyKey ? "text" : "password"}
+                value={tavilyKey}
+                onChange={(e) => setTavilyKey(e.target.value)}
+                placeholder={
+                  user.settings.has_tavily_key
+                    ? `Saved (${user.settings.tavily_key_hint}). Leave blank to keep it.`
+                    : "Paste your Tavily API key"
+                }
+                autoComplete="new-password"
+              />
+              <button
+                type="button"
+                className="icon-button"
+                onClick={() => setShowTavilyKey((s) => !s)}
+                aria-label={showTavilyKey ? "Hide key" : "Show key"}
+              >
+                {showTavilyKey ? <EyeOff size={15} /> : <Eye size={15} />}
+              </button>
+            </span>
+            <small className="field-subtext">Used to find current web evidence. Get a free key at tavily.com.</small>
+          </label>
+        </div>
+
+        <div className="profile-actions">
+          <button className="primary-button" type="submit" disabled={busy}>
+            {busy ? <><LoaderCircle size={15} className="spin" /> Saving…</> : <><Check size={15} /> Save settings</>}
+          </button>
+        </div>
+      </form>
+    </>
+  );
+}
+
+function VerifyView({ user, policies, onMonitor }: { user?: User | null; policies: Policy[]; onMonitor: (claim: Claim, result: VerificationResult) => Promise<void> }) {
+  const [answer, setAnswer] = useState("");
+  const [policyId, setPolicyId] = useState("");
   const [result, setResult] = useState<VerificationResult | null>(null);
   const [selectedClaimId, setSelectedClaimId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-  const activeProvider = providers.find((providerOption) => providerOption.id === providerId) ?? null;
+
   const selectedClaim = result?.claims.find((claim) => claim.id === selectedClaimId) ?? result?.claims[0] ?? null;
 
-  useEffect(() => {
-    let active = true;
-    api<{ providers: ProviderOption[] }>("/api/providers")
-      .then(({ providers: items }) => {
-        if (!active) return;
-        setProviders(items);
-        const defaultProvider = items[0];
-        if (defaultProvider) {
-          setProviderId(defaultProvider.id);
-          setBaseUrl(defaultProvider.base_url);
-          setModel(defaultProvider.default_model);
-        }
-      })
-      .catch((cause) => {
-        if (active) setError(cause instanceof Error ? cause.message : "Provider choices could not be loaded. Refresh and try again.");
-      });
-    return () => { active = false; };
-  }, []);
-
-  const chooseProvider = (nextProviderId: string) => {
-    const nextProvider = providers.find((item) => item.id === nextProviderId);
-    setProviderId(nextProviderId);
-    setBaseUrl(nextProvider?.base_url ?? "");
-    setModel(nextProvider?.default_model ?? "");
-    setCustomModel(""); setProviderModels([]); setModelNotice(null);
-    setLlmKey("");
-    setShowLlmKey(false);
-  };
-
-  const loadModels = async () => {
-    if (!activeProvider || activeProvider.id === "custom") { setModelNotice("Enter a model ID for custom providers."); return; }
-    setLoadingModels(true); setModelNotice(null);
-    try {
-      const headers: Record<string, string> = {};
-      if (llmKey.trim()) headers["X-LLM-API-Key"] = llmKey.trim();
-      const data = await api<{ models: string[] }>(`/api/providers/${encodeURIComponent(providerId)}/models`, {
-        ...jsonBody({ base_url: baseUrl.trim() || activeProvider.base_url }), headers,
-      });
-      setProviderModels(data.models);
-      if (model && !data.models.includes(model)) setCustomModel(model);
-      setModelNotice(`${data.models.length} models loaded from ${activeProvider.name}.`);
-    } catch (cause) { setModelNotice(cause instanceof Error ? cause.message : "Could not load provider models."); }
-    finally { setLoadingModels(false); }
+  const tryExample = () => {
+    setAnswer(
+      "As of today, Python 3.13 is the current stable release. Sam Altman serves as the CEO of OpenAI, and the standard pricing for GPT-4o input tokens is $2.50 per million tokens."
+    );
+    if (policies.length > 0 && !policyId) {
+      setPolicyId(policies[0].id);
+    }
   };
 
   const verify = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!answer.trim()) { setError("Paste a response before starting a check."); return; }
-    if (!providerId || (providerId !== "ollama" && !llmKey.trim()) || !searchKey.trim() || !baseUrl.trim() || !model.trim()) {
-      setError("Choose a provider, enter its required API key and Tavily key, base URL, and model before verifying.");
+    if (!user?.settings?.is_complete) {
+      setError("Finish your Profile before checking responses.");
       return;
     }
-    try {
-      const parsedBaseUrl = new URL(baseUrl.trim());
-      if (!["http:", "https:"].includes(parsedBaseUrl.protocol) || parsedBaseUrl.username || parsedBaseUrl.password) {
-        setError("Enter a complete HTTP or HTTPS base URL without embedded credentials.");
-        return;
-      }
-    } catch {
-      setError("Enter a complete provider base URL, including https://.");
+    if (!answer.trim()) {
+      setError("Paste a response before starting a check.");
       return;
     }
-    setBusy(true); setError(null); setMessage(null); setResult(null); setSelectedClaimId(null);
+    setBusy(true);
+    setError(null);
+    setMessage(null);
+    setResult(null);
+    setSelectedClaimId(null);
     try {
-      const headers: Record<string, string> = { "X-LLM-API-Key": llmKey.trim(), "X-Tavily-API-Key": searchKey.trim() };
-      const body = {
+      const data = await api<VerificationResult>("/verify", jsonBody({
         answer,
-        provider: providerId,
-        base_url: baseUrl.trim(),
-        model: model.trim(),
         ...(policyId ? { policy_id: policyId } : {}),
-      };
-      const data = await api<VerificationResult>("/verify", { ...jsonBody(body), headers });
+      }));
       setResult(data);
       setSelectedClaimId(data.claims[0]?.id ?? null);
       setMessage(data.summary.message ?? "Verification finished.");
@@ -328,131 +910,200 @@ function VerifyView({ policies, onMonitor }: { policies: Policy[]; onMonitor: (c
   };
 
   const monitor = async (claim: Claim) => {
-    setError(null); setMessage(null);
-    try { await onMonitor(claim, result!); setMessage("Claim added to Watchtower. Scheduled checks use server-configured provider credentials."); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : "Could not add this claim. Check that it belongs to a supported volatile category."); }
+    setError(null);
+    setMessage(null);
+    try {
+      await onMonitor(claim, result!);
+      setMessage("Claim added to Watchtower. Scheduled checks use the provider and Tavily key saved in your Profile.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not add this claim. Check that it belongs to a supported volatile category.");
+    }
   };
 
-  return <>
-    <SectionHeading title="Verify a response" detail="Find time-sensitive claims and inspect the evidence behind each one." />
-    <div className="verify-layout">
-      <form className="folio-panel verify-form" noValidate onSubmit={(event) => void verify(event)}>
-        <div className="panel-heading"><h2>Response to verify</h2><span className="panel-index">INPUT</span></div>
-        <p className="panel-copy">Paste an AI response. FreshGate extracts factual claims, checks current sources, and reports what it found.</p>
-        <label className="field-label" htmlFor="answer">AI response</label>
-        <textarea id="answer" className="response-input" value={answer} onChange={(event) => setAnswer(event.target.value)} maxLength={50000} placeholder="Paste a response to begin verification…" aria-describedby="response-help" />
-        <div id="response-help" className="field-hint"><span>Keys are sent with this request. Clear them manually when you are done.</span><span className="tabular">{new Intl.NumberFormat().format(answer.length)} / 50,000</span></div>
-        <fieldset className="provider-config" disabled={busy}>
-          <legend>Provider connection</legend>
-          <div className="provider-grid">
-            <label className="field-group"><span className="field-label">API provider</span>
-              <select value={providerId} onChange={(event) => chooseProvider(event.target.value)} required>
-                <option value="" disabled>Select a provider</option>
-                {providers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-              </select>
-            </label>
-            <label className="field-group"><span className="field-label">API key</span>
-              <span className="secret-field">
-                <input autoComplete="new-password" type={showLlmKey ? "text" : "password"} value={llmKey} onChange={(event) => setLlmKey(event.target.value)} placeholder={providerId === "ollama" ? "Optional for local Ollama" : "Paste the selected provider key"} required={providerId !== "ollama"} />
-                <button type="button" className="icon-button" onClick={() => setShowLlmKey((shown) => !shown)} aria-label={showLlmKey ? "Hide API key" : "Show API key"} title={showLlmKey ? "Hide API key" : "Show API key"}>{showLlmKey ? <EyeOff size={15} /> : <Eye size={15} />}</button>
-              </span>
-            </label>
-            <label className="field-group"><span className="field-label">Base URL</span>
-              <input type="url" value={baseUrl} onChange={(event) => { setBaseUrl(event.target.value); if (llmKey) setLlmKey(""); }} placeholder="https://api.provider.com/v1" required />
-            </label>
-            <div className="field-group model-group"><span className="field-label">Model</span>
-              <div className="model-controls"><select aria-label="Choose a model" value={model && [...(providerModels.length ? providerModels : activeProvider?.models ?? [])].includes(model) ? model : "__other__"} onChange={(event) => { if (event.target.value === "__other__") { setModel(""); setCustomModel(""); } else { setModel(event.target.value); setCustomModel(""); } }} required>
-                <option value="" disabled>Select a model</option>
-                {(providerModels.length ? providerModels : activeProvider?.models ?? []).map((modelId) => <option key={modelId} value={modelId}>{modelId}</option>)}
-                <option value="__other__">Other…</option>
-              </select>
-              <button className="secondary-button model-load" type="button" onClick={() => void loadModels()} disabled={busy || loadingModels || providerId === "custom"}>{loadingModels ? <LoaderCircle size={14} className="spin" /> : <RefreshCw size={14} />} Load models</button></div>
-              {(!model || ![...(providerModels.length ? providerModels : activeProvider?.models ?? [])].includes(model)) && <input value={customModel} onChange={(event) => { setCustomModel(event.target.value); setModel(event.target.value); }} placeholder="Type a model ID" autoComplete="off" required />}
-              {modelNotice && <small className="model-notice" role="status">{modelNotice}</small>}
-            </div>
+  return (
+    <>
+      <SectionHeading title="Verify a response" detail="Find time-sensitive claims and inspect the evidence behind each one." />
+      <div className="verify-layout">
+        <form className="folio-panel verify-form" noValidate onSubmit={(event) => void verify(event)}>
+          <div className="panel-heading">
+            <h2>Response to verify</h2>
+            <span className="panel-index">INPUT</span>
           </div>
-          <p className="provider-hint">{activeProvider?.credential_hint ?? "Provider defaults include a base URL and model; you can edit both. Only use an endpoint you trust."}</p>
-          <div className="search-key-field"><label className="field-group"><span className="field-label">Tavily search API key <span>REQUIRED</span></span><input autoComplete="new-password" type="password" value={searchKey} onChange={(event) => setSearchKey(event.target.value)} placeholder="Paste your Tavily API key" required /></label><p>Used to find current web evidence. The key remains in this form until you clear it.</p></div>
-        </fieldset>
-        <div className="form-row">
-          <label className="field-group"><span className="field-label">Policy <span>OPTIONAL</span></span>
-            <select value={policyId} onChange={(event) => setPolicyId(event.target.value)}>
-              <option value="">No policy</option>{policies.filter((policy) => policy.enabled).map((policy) => <option key={policy.id} value={policy.id}>{policy.name}</option>)}
-            </select>
-          </label>
-          <button className="primary-button" type="submit" disabled={busy || !answer.trim()}>{busy ? <><LoaderCircle size={16} className="spin" />Checking</> : <>Check response <ArrowUpRight size={16} /></>}</button>
-        </div>
-        {busy && <div className="checking-track" aria-live="polite"><span className="track-dot" /><span>Extracting claims and checking current evidence</span><span className="track-line" /></div>}
-        {error && <InlineNotice>{error}</InlineNotice>}{message && <InlineNotice variant="success">{message}</InlineNotice>}
-      </form>
-      <section className="route-panel" aria-label="Verification steps">
-        <div className="panel-heading"><h2>Evidence path</h2><BookOpen size={17} className="panel-symbol" /></div>
-        <p className="panel-copy">A steady route from response to decision.</p>
-        <ol className={`evidence-route ${busy ? "is-running" : ""}`}>
-          <li><span className="route-marker">A</span><div><strong>Extract claims</strong><span>Find factual statements</span></div><span className="route-note">TEXT</span></li>
-          <li><span className="route-marker">B</span><div><strong>Assess freshness</strong><span>Identify facts that can change</span></div><span className="route-note">TIME</span></li>
-          <li><span className="route-marker">C</span><div><strong>Check evidence</strong><span>Compare current sources</span></div><span className="route-note">SOURCES</span></li>
-          <li><span className="route-marker">D</span><div><strong>Apply policy</strong><span>Use your selected rules, if any</span></div><span className="route-note">RULES</span></li>
-        </ol>
-        <div className="route-foot"><span className="route-legend"><i /> Verification path</span><span>Results include claim-level sources</span></div>
-      </section>
-    </div>
-    {result && <VerificationEvidence result={result} selectedClaim={selectedClaim} onSelect={setSelectedClaimId} onMonitor={(claim) => void monitor(claim)} />}
-  </>;
+          <p className="panel-copy">Paste an AI response. FreshGate extracts factual claims, checks current sources, and reports what it found.</p>
+
+          {!user?.settings?.is_complete ? (
+            <div className="setup-callout notice info">
+              <CircleHelp size={18} />
+              <div className="setup-callout-text">
+                <strong>Profile setup required</strong>
+                <p>Finish your Profile to start checking. Pick your AI provider and model, add your API key (if required) and your Tavily key.</p>
+              </div>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => {
+                  window.location.hash = "profile";
+                }}
+              >
+                Open Profile
+              </button>
+            </div>
+          ) : null}
+
+          <div className="verify-input-header">
+            <label className="field-label" htmlFor="answer">AI response</label>
+            <button type="button" className="text-button example-btn" onClick={tryExample}>
+              <FlaskConical size={13} /> Try an example
+            </button>
+          </div>
+
+          <textarea
+            id="answer"
+            className="response-input"
+            value={answer}
+            onChange={(event) => setAnswer(event.target.value)}
+            maxLength={50000}
+            placeholder="Paste an AI response to check its freshness and factual claims…"
+            aria-describedby="response-help"
+          />
+
+          <div id="response-help" className="field-hint">
+            {user?.settings?.is_complete ? (
+              <span className="provider-active-indicator">
+                Using <strong>{user.settings.provider}</strong> · <strong>{user.settings.model}</strong> · Tavily key ✓
+                <button
+                  type="button"
+                  className="text-button inline-link"
+                  onClick={() => {
+                    window.location.hash = "profile";
+                  }}
+                >
+                  Change
+                </button>
+              </span>
+            ) : (
+              <span>Profile setup required before verification.</span>
+            )}
+            <span className="tabular">{new Intl.NumberFormat().format(answer.length)} / 50,000</span>
+          </div>
+
+          <div className="form-row">
+            <label className="field-group">
+              <span className="field-label">Policy <span>OPTIONAL</span></span>
+              <select value={policyId} onChange={(event) => setPolicyId(event.target.value)}>
+                <option value="">No policy</option>
+                {policies.filter((policy) => policy.enabled).map((policy) => (
+                  <option key={policy.id} value={policy.id}>{policy.name}</option>
+                ))}
+              </select>
+            </label>
+            <button
+              className="primary-button"
+              type="submit"
+              disabled={busy || !answer.trim() || !user?.settings?.is_complete}
+            >
+              {busy ? <><LoaderCircle size={16} className="spin" /> Checking</> : <>Check response <ArrowUpRight size={16} /></>}
+            </button>
+          </div>
+
+          {busy && (
+            <div className="checking-track" aria-live="polite">
+              <span className="track-dot" />
+              <span>Extracting claims and checking current evidence</span>
+              <span className="track-line" />
+            </div>
+          )}
+          {error && <InlineNotice onDismiss={() => setError(null)}>{error}</InlineNotice>}
+          {message && <InlineNotice variant="success" onDismiss={() => setMessage(null)}>{message}</InlineNotice>}
+        </form>
+
+        <section className="route-panel" aria-label="Verification steps">
+          <div className="panel-heading"><h2>Evidence path</h2><BookOpen size={17} className="panel-symbol" /></div>
+          <p className="panel-copy">A steady route from response to decision.</p>
+          <ol className={`evidence-route ${busy ? "is-running" : ""}`}>
+            <li><span className="route-marker">A</span><div><strong>Extract claims</strong><span>Find factual statements</span></div><span className="route-note">TEXT</span></li>
+            <li><span className="route-marker">B</span><div><strong>Assess freshness</strong><span>Identify facts that can change</span></div><span className="route-note">TIME</span></li>
+            <li><span className="route-marker">C</span><div><strong>Check evidence</strong><span>Compare current sources</span></div><span className="route-note">SOURCES</span></li>
+            <li><span className="route-marker">D</span><div><strong>Apply policy</strong><span>Use your selected rules, if any</span></div><span className="route-note">RULES</span></li>
+          </ol>
+          <div className="route-foot"><span className="route-legend"><i /> Verification path</span><span>Results include claim-level sources</span></div>
+        </section>
+      </div>
+      {result && <VerificationEvidence result={result} selectedClaim={selectedClaim} onSelect={setSelectedClaimId} onMonitor={(claim) => void monitor(claim)} />}
+    </>
+  );
 }
 
 function VerificationEvidence({ result, selectedClaim, onSelect, onMonitor }: {
   result: VerificationResult; selectedClaim: Claim | null; onSelect: (id: string) => void; onMonitor: (claim: Claim) => void;
 }) {
   const summary = result.summary;
-  return <section className="results-section">
-    <div className="results-top"><h2>Findings</h2><StatusMark value={result.status} /></div>
-    <div className="result-summary">
-      <div><span className="summary-label">Claims found</span><strong className="serif-number">{summary.total}</strong></div>
-      <div><span className="summary-label">Checked</span><strong className="serif-number">{summary.checked}</strong></div>
-      <div><span className="summary-label">Stale</span><strong className="serif-number">{summary.stale}</strong></div>
-      <div><span className="summary-label">Mean score</span><strong className="serif-number">{summary.avg_score ?? "—"}</strong></div>
-      <p>{summary.message ?? "Claim findings are shown below."}</p>
-    </div>
-    {result.error && <InlineNotice>{result.error}</InlineNotice>}
-    {!result.claims.length ? <EmptyState title="No changing claims found" detail={summary.message ?? "This response did not contain volatile factual claims."} /> :
-      <div className="evidence-results">
-        <div className="claims-table">
-          <div className="table-title"><div><h3>Claims</h3><span>Choose a row to inspect its source notes.</span></div><span className="table-count">{result.claims.length} {result.claims.length === 1 ? "claim" : "claims"}</span></div>
-          <div className="table-wrap"><table><thead><tr><th>Statement</th><th>Category</th><th>Verdict</th><th>Score</th></tr></thead>
-            <tbody>{result.claims.map((claim) => <tr key={claim.id} tabIndex={0} aria-selected={selectedClaim?.id === claim.id} onKeyDown={(event) => {
-              if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect(claim.id); }
-            }} onClick={() => onSelect(claim.id)} className={`selectable-row ${selectedClaim?.id === claim.id ? "chosen" : ""}`}>
-              <td className="claim-text">{claim.text}</td><td>{display(claim.type)}</td><td><StatusMark value={claim.verdict} /></td><td className="tabular">{claim.score ?? "—"}</td>
-            </tr>)}</tbody></table></div>
+  return (
+    <section className="results-section">
+      <div className="results-top"><h2>Findings</h2><StatusMark value={result.status} /></div>
+      <div className="result-summary">
+        <div><span className="summary-label">Claims found</span><strong className="serif-number">{summary.total}</strong></div>
+        <div><span className="summary-label">Checked</span><strong className="serif-number">{summary.checked}</strong></div>
+        <div><span className="summary-label">Stale</span><strong className="serif-number">{summary.stale}</strong></div>
+        <div><span className="summary-label">Mean score</span><strong className="serif-number">{summary.avg_score ?? "—"}</strong></div>
+        <p>{summary.message ?? "Claim findings are shown below."}</p>
+      </div>
+      {result.error && <InlineNotice>{result.error}</InlineNotice>}
+      {!result.claims.length ? (
+        <EmptyState title="No changing claims found" detail={summary.message ?? "This response did not contain volatile factual claims."} />
+      ) : (
+        <div className="evidence-results">
+          <div className="claims-table">
+            <div className="table-title"><div><h3>Claims</h3><span>Choose a row to inspect its source notes.</span></div><span className="table-count">{result.claims.length} {result.claims.length === 1 ? "claim" : "claims"}</span></div>
+            <div className="table-wrap"><table><thead><tr><th>Statement</th><th>Category</th><th>Verdict</th><th>Score</th></tr></thead>
+              <tbody>{result.claims.map((claim) => (
+                <tr
+                  key={claim.id}
+                  tabIndex={0}
+                  aria-selected={selectedClaim?.id === claim.id}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect(claim.id); }
+                  }}
+                  onClick={() => onSelect(claim.id)}
+                  className={`selectable-row ${selectedClaim?.id === claim.id ? "chosen" : ""}`}
+                >
+                  <td className="claim-text">{claim.text}</td><td>{display(claim.type)}</td><td><StatusMark value={claim.verdict} /></td><td className="tabular">{claim.score != null ? claim.score : "Not scored"}</td>
+                </tr>
+              ))}</tbody></table></div>
+          </div>
+          {selectedClaim && <ClaimFolio claim={selectedClaim} onMonitor={() => onMonitor(selectedClaim)} />}
         </div>
-        {selectedClaim && <ClaimFolio claim={selectedClaim} onMonitor={() => onMonitor(selectedClaim)} />}
-      </div>}
-  </section>;
+      )}
+    </section>
+  );
 }
 
 function ClaimFolio({ claim, onMonitor }: { claim: Claim; onMonitor: () => void }) {
   const sources = claim.sources ?? [];
-  return <section className="claim-folio">
-    <div className="folio-margin"><span className="folio-caption">SELECTED CLAIM</span><span className="folio-id">{claim.id.slice(0, 8)}</span></div>
-    <div className="folio-main"><div className="claim-folio-head"><h3>{claim.text}</h3><button className="text-button" onClick={onMonitor}><Clock3 size={15} /> Monitor claim</button></div>
-      <div className="claim-meta"><span>{display(claim.type)}</span><StatusMark value={claim.verdict} /><span>Score {claim.score ?? "—"}</span><span>Checked {dateTime(claim.verification_timestamp)}</span></div>
-      {claim.explanation && <p className="claim-explanation">{claim.explanation}</p>}
-      <div className="source-notes"><div className="notes-heading"><h4>Source notes</h4><span>{sources.length ? `${sources.length} ${sources.length === 1 ? "source" : "sources"}` : "No sources returned"}</span></div>
-        {sources.length ? sources.map((source, index) => <SourceNote key={`${source.url}-${index}`} source={source} index={index + 1} />) : <p className="muted-line">The verification returned no source citations for this claim.</p>}
+  return (
+    <section className="claim-folio">
+      <div className="folio-margin"><span className="folio-caption">SELECTED CLAIM</span><span className="folio-id">{claim.id.slice(0, 8)}</span></div>
+      <div className="folio-main"><div className="claim-folio-head"><h3>{claim.text}</h3><button className="text-button" onClick={onMonitor}><Clock3 size={15} /> Monitor claim</button></div>
+        <div className="claim-meta"><span>{display(claim.type)}</span><StatusMark value={claim.verdict} /><span>Score {claim.score != null ? claim.score : "Not scored"}</span><span>Checked {dateTime(claim.verification_timestamp)}</span></div>
+        {claim.explanation && <p className="claim-explanation">{claim.explanation}</p>}
+        <div className="source-notes"><div className="notes-heading"><h4>Source notes</h4><span>{sources.length ? `${sources.length} ${sources.length === 1 ? "source" : "sources"}` : "No sources returned"}</span></div>
+          {sources.length ? sources.map((source, index) => <SourceNote key={`${source.url}-${index}`} source={source} index={index + 1} />) : <p className="muted-line">The verification returned no source citations for this claim.</p>}
+        </div>
       </div>
-    </div>
-  </section>;
+    </section>
+  );
 }
 
 function SourceNote({ source, index }: { source: Source; index: number }) {
-  return <article className="source-note" style={{ animationDelay: `${Math.min(index - 1, 5) * 70}ms` }}>
-    <span className="source-number">{new Intl.NumberFormat(undefined, { minimumIntegerDigits: 2, useGrouping: false }).format(index)}</span>
-    <div className="source-body"><a href={source.url} target="_blank" rel="noreferrer">{source.domain || source.url}<ArrowUpRight size={13} /></a>
-      <p>{source.snippet || "No source excerpt was returned."}</p>
-      <div className="source-meta"><span>{source.is_primary ? "Primary source" : "Evidence source"}</span><span>Published {dateTime(source.published)}</span>{source.authority_score !== undefined && <span>Authority {new Intl.NumberFormat(undefined, { style: "percent", maximumFractionDigits: 0 }).format(source.authority_score)}</span>}</div>
-    </div>
-  </article>;
+  return (
+    <article className="source-note" style={{ animationDelay: `${Math.min(index - 1, 5) * 70}ms` }}>
+      <span className="source-number">{new Intl.NumberFormat(undefined, { minimumIntegerDigits: 2, useGrouping: false }).format(index)}</span>
+      <div className="source-body"><a href={source.url} target="_blank" rel="noreferrer">{source.domain || source.url}<ArrowUpRight size={13} /></a>
+        <p>{source.snippet || "No source excerpt was returned."}</p>
+        <div className="source-meta"><span>{source.is_primary ? "Primary source" : "Evidence source"}</span><span>Published {dateTime(source.published)}</span>{source.authority_score !== undefined && <span>Authority {new Intl.NumberFormat(undefined, { style: "percent", maximumFractionDigits: 0 }).format(source.authority_score)}</span>}</div>
+      </div>
+    </article>
+  );
 }
 
 function SystemView({ health, readiness, provider, deployment, refreshing, onRefresh }: {
@@ -469,20 +1120,22 @@ function SystemView({ health, readiness, provider, deployment, refreshing, onRef
     { label: "Cache", value: readiness.value?.cache ?? display(cache.status), detail: "Readiness probe", error: readiness.error },
     { label: "Circuit breaker", value: display((deployment.value?.circuit_breaker as RecordValue | undefined)?.state ?? (deployment.value?.circuit_breaker as RecordValue | undefined)?.status), detail: `Mode ${display(deployment.value?.mode)}`, error: deployment.error },
   ];
-  return <>
-    <SectionHeading title="System health" detail="Service readiness, provider connections, and runtime state reported by FreshGate." action={<button className="secondary-button" onClick={onRefresh} disabled={refreshing}><RefreshCw size={15} className={refreshing ? "spin" : ""} /> Refresh</button>} />
-    <div className="health-ledger">
-      {entries.map((entry) => <div className="health-row" key={entry.label}><span className="health-label">{entry.label}</span><div>{entry.error ? <StatusMark value="unavailable" label="Unavailable" /> : <StatusMark value={entry.value} />}</div><span className="health-detail">{entry.error ?? entry.detail}</span></div>)}
-    </div>
-    <div className="system-columns">
-      <section className="folio-panel data-panel"><div className="panel-heading"><h2>Provider status</h2><Activity size={18} className="panel-symbol" /></div>
-        {provider.error ? <InlineNotice>{provider.error}</InlineNotice> : provider.value ? <DataExplorer value={{ openai: providerValue.openai ?? providerValue.llm, search: providerValue.tavily, circuit_breakers: breakers }} /> : <LoadingLine />}</section>
-      <section className="folio-panel data-panel"><div className="panel-heading"><h2>Cache & configuration</h2><Settings2 size={18} className="panel-symbol" /></div>
-        {provider.error ? <InlineNotice>{provider.error}</InlineNotice> : provider.value ? <DataExplorer value={{ cache, deployment: deployment.value, configuration: config, summary }} /> : <LoadingLine />}</section>
-    </div>
-    <section className="folio-panel metrics-panel"><div className="panel-heading"><h2>Service metrics</h2><Gauge size={18} className="panel-symbol" /></div>
-      <MetricsExplorer /></section>
-  </>;
+  return (
+    <>
+      <SectionHeading title="System health" detail="Service readiness, provider connections, and runtime state reported by FreshGate." action={<button className="secondary-button" onClick={onRefresh} disabled={refreshing}><RefreshCw size={15} className={refreshing ? "spin" : ""} /> Refresh</button>} />
+      <div className="health-ledger">
+        {entries.map((entry) => <div className="health-row" key={entry.label}><span className="health-label">{entry.label}</span><div>{entry.error ? <StatusMark value="unavailable" label="Unavailable" /> : <StatusMark value={entry.value} />}</div><span className="health-detail">{entry.error ?? entry.detail}</span></div>)}
+      </div>
+      <div className="system-columns">
+        <section className="folio-panel data-panel"><div className="panel-heading"><h2>Provider status</h2><Activity size={18} className="panel-symbol" /></div>
+          {provider.error ? <InlineNotice>{provider.error}</InlineNotice> : provider.value ? <DataExplorer value={{ openai: providerValue.openai ?? providerValue.llm, search: providerValue.tavily, circuit_breakers: breakers }} /> : <LoadingLine />}</section>
+        <section className="folio-panel data-panel"><div className="panel-heading"><h2>Cache & configuration</h2><Settings2 size={18} className="panel-symbol" /></div>
+          {provider.error ? <InlineNotice>{provider.error}</InlineNotice> : provider.value ? <DataExplorer value={{ cache, deployment: deployment.value, configuration: config, summary }} /> : <LoadingLine />}</section>
+      </div>
+      <section className="folio-panel metrics-panel"><div className="panel-heading"><h2>Service metrics</h2><Gauge size={18} className="panel-symbol" /></div>
+        <MetricsExplorer /></section>
+    </>
+  );
 }
 
 function LoadingLine() { return <div className="loading-line"><LoaderCircle size={16} className="spin" />Waiting for service data…</div>; }
@@ -517,21 +1170,26 @@ function BenchmarkView({ data, setData }: { data: LoadState<Benchmark>; setData:
     finally { setLoading(false); }
   }, [setData]);
   useEffect(() => { if (!data.value && !data.error) void load(); }, [data.value, data.error, load]);
-  return <>
-    <SectionHeading title="Benchmarks" detail="Evaluation results computed from the dataset currently served by FreshGate." action={<button className="secondary-button" onClick={() => void load()} disabled={loading}><RefreshCw size={15} className={loading ? "spin" : ""} /> Refresh</button>} />
-    {data.error && <InlineNotice onDismiss={() => setData({ value: null, error: null })}>{data.error}</InlineNotice>}
-    {data.value ? <><p className="source-caption">Dataset totals returned by <code>/api/benchmark</code>. These describe the evaluation dataset, not live traffic or a production guarantee.</p>
-      <div className="result-summary benchmark-summary">
-        <div><span className="summary-label">Dataset items</span><strong className="serif-number">{data.value.total_items}</strong></div>
-        <div><span className="summary-label">Contradicted</span><strong className="serif-number">{data.value.stale_items}</strong></div>
-        <div><span className="summary-label">Confirmed</span><strong className="serif-number">{data.value.control_items}</strong></div>
-        <div><span className="summary-label">Partial or unverifiable</span><strong className="serif-number">{data.value.partial_or_unverifiable_items}</strong></div>
-      </div>
-      <section className="folio-panel markdown-panel"><div className="panel-heading"><h2>Benchmark notes</h2><FlaskConical size={18} className="panel-symbol" /></div>
-        <div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{data.value.results_md}</ReactMarkdown></div>
-      </section>
-    </> : !data.error ? <LoadingLine /> : null}
-  </>;
+  return (
+    <>
+      <SectionHeading title="Benchmarks" detail="Evaluation results computed from the dataset currently served by FreshGate." action={<button className="secondary-button" onClick={() => void load()} disabled={loading}><RefreshCw size={15} className={loading ? "spin" : ""} /> Refresh</button>} />
+      {data.error && <InlineNotice onDismiss={() => setData({ value: null, error: null })}>{data.error}</InlineNotice>}
+      {data.value ? (
+        <>
+          <p className="source-caption">Dataset totals returned by <code>/api/benchmark</code>. These describe the evaluation dataset, not live traffic or a production guarantee.</p>
+          <div className="result-summary benchmark-summary">
+            <div><span className="summary-label">Dataset items</span><strong className="serif-number">{data.value.total_items}</strong></div>
+            <div><span className="summary-label">Contradicted</span><strong className="serif-number">{data.value.stale_items}</strong></div>
+            <div><span className="summary-label">Confirmed</span><strong className="serif-number">{data.value.control_items}</strong></div>
+            <div><span className="summary-label">Partial or unverifiable</span><strong className="serif-number">{data.value.partial_or_unverifiable_items}</strong></div>
+          </div>
+          <section className="folio-panel markdown-panel"><div className="panel-heading"><h2>Benchmark notes</h2><FlaskConical size={18} className="panel-symbol" /></div>
+            <div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{data.value.results_md}</ReactMarkdown></div>
+          </section>
+        </>
+      ) : !data.error ? <LoadingLine /> : null}
+    </>
+  );
 }
 
 function AuditView() {
@@ -547,20 +1205,29 @@ function AuditView() {
     finally { setBusy(false); setKey(""); }
   };
   const filtered = (audits ?? []).filter((row) => JSON.stringify(row).toLowerCase().includes(query.toLowerCase()));
-  return <>
-    <SectionHeading title="Audit log" detail="Recent immutable verification records. Access may require the configured admin key." />
-    <form className="access-strip" onSubmit={(event) => void load(event)}><div className="access-icon"><LockKeyhole size={17} /></div><div className="access-copy"><strong>Protected audit access</strong><span>Enter the admin key for this request. It is held in memory only and cleared after the request.</span></div><input type="password" autoComplete="off" value={key} onChange={(event) => setKey(event.target.value)} aria-label="Admin key" placeholder="Admin key" /><button className="secondary-button" disabled={busy}>{busy ? <LoaderCircle size={15} className="spin" /> : <Search size={15} />} Load records</button></form>
-    {error && <InlineNotice>{error}</InlineNotice>}
-    {audits && <section className="folio-panel data-panel"><div className="panel-heading"><h2>Recent verification activity</h2><span className="table-count">{filtered.length} records</span></div>
-      <label className="search-field"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filter audit records" aria-label="Filter audit records" /></label>
-      <DataTable rows={filtered} columns={[
-        { key: "created_at", label: "Recorded", format: (value) => dateTime(value as string | number | null) },
-        { key: "status", label: "Status", format: (value) => <StatusMark value={String(value ?? "unknown")} /> },
-        { key: "request_id", label: "Request" }, { key: "summary", label: "Summary" },
-        { key: "details", label: "Record", format: (value) => value && typeof value === "object" ? <details><summary>Inspect record <ChevronDown size={13} /></summary><pre>{JSON.stringify(value, null, 2)}</pre></details> : display(value) },
-      ]} empty="No recent audit records were returned." />
-    </section>}
-  </>;
+  return (
+    <>
+      <SectionHeading title="Audit log" detail="Gateway audit trail (admin key required). Recent immutable verification records." />
+      <form className="access-strip" onSubmit={(event) => void load(event)}>
+        <div className="access-icon"><LockKeyhole size={17} /></div>
+        <div className="access-copy"><strong>Protected audit access</strong><span>Enter the admin key for this request. It is held in memory only and cleared after the request.</span></div>
+        <input type="password" autoComplete="off" value={key} onChange={(event) => setKey(event.target.value)} aria-label="Admin key" placeholder="Admin key" />
+        <button className="secondary-button" disabled={busy}>{busy ? <LoaderCircle size={15} className="spin" /> : <Search size={15} />} Load records</button>
+      </form>
+      {error && <InlineNotice>{error}</InlineNotice>}
+      {audits && (
+        <section className="folio-panel data-panel"><div className="panel-heading"><h2>Recent verification activity</h2><span className="table-count">{filtered.length} records</span></div>
+          <label className="search-field"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filter audit records" aria-label="Filter audit records" /></label>
+          <DataTable rows={filtered} columns={[
+            { key: "created_at", label: "Recorded", format: (value) => dateTime(value as string | number | null) },
+            { key: "status", label: "Status", format: (value) => <StatusMark value={String(value ?? "unknown")} /> },
+            { key: "request_id", label: "Request" }, { key: "summary", label: "Summary" },
+            { key: "details", label: "Record", format: (value) => value && typeof value === "object" ? <details><summary>Inspect record <ChevronDown size={13} /></summary><pre>{JSON.stringify(value, null, 2)}</pre></details> : display(value) },
+          ]} empty="No recent audit records were returned." />
+        </section>
+      )}
+    </>
+  );
 }
 
 function PolicyView({ policies, categories, onChanged }: { policies: Policy[]; categories: Category[]; onChanged: () => Promise<void> }) {
@@ -569,6 +1236,7 @@ function PolicyView({ policies, categories, onChanged }: { policies: Policy[]; c
   const [notice, setNotice] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [previewPolicy, setPreviewPolicy] = useState<Policy | null>(null);
+
   const save = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault(); const form = event.currentTarget; const values = new FormData(form);
     const read = (key: string) => String(values.get(key) ?? "").trim();
@@ -598,6 +1266,7 @@ function PolicyView({ policies, categories, onChanged }: { policies: Policy[]; c
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Policy could not be saved."); }
     finally { setBusyId(null); }
   };
+
   const remove = async (policy: Policy) => {
     if (!window.confirm(`Delete “${policy.name}”? Monitored claims that use it may need another policy.`)) return;
     setBusyId(policy.id); setError(null); setNotice(null);
@@ -605,12 +1274,14 @@ function PolicyView({ policies, categories, onChanged }: { policies: Policy[]; c
     catch (cause) { setError(cause instanceof Error ? cause.message : "Policy could not be removed."); }
     finally { setBusyId(null); }
   };
+
   const duplicate = async (policy: Policy) => {
     setBusyId(policy.id); setError(null); setNotice(null);
     try { await api(`/api/policies/${encodeURIComponent(policy.id)}/duplicate`, { method: "POST" }); await onChanged(); setNotice(`“${policy.name}” was duplicated.`); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "Policy could not be duplicated."); }
     finally { setBusyId(null); }
   };
+
   const toggle = async (policy: Policy) => {
     setBusyId(policy.id); setError(null);
     const { id: _id, created_at: _created, updated_at: _updated, ...settings } = policy;
@@ -619,20 +1290,22 @@ function PolicyView({ policies, categories, onChanged }: { policies: Policy[]; c
     finally { setBusyId(null); }
   };
 
-  return <>
-    <SectionHeading title="Policy Studio" detail="Set evidence rules that apply when a response or monitored claim is checked." action={<button className="primary-button" onClick={() => { setEditing("new"); setError(null); }}><Plus size={16} /> New policy</button>} />
-    {error && <InlineNotice>{error}</InlineNotice>}{notice && <InlineNotice variant="success" onDismiss={() => setNotice(null)}>{notice}</InlineNotice>}
-    {editing !== null && <PolicyEditor policy={editing === "new" ? null : editing} categories={categories} busy={busyId !== null} onCancel={() => setEditing(null)} onSubmit={(event) => void save(event)} />}
-    {!policies.length ? <EmptyState title="No policies saved" detail="Create a policy to set source, freshness, verification mode, and cache rules." action={<button className="secondary-button" onClick={() => setEditing("new")}><Plus size={15} /> Create policy</button>} /> :
-      <section className="policy-list"><div className="list-heading"><h2>Policies</h2><span className="table-count">{policies.length} {policies.length === 1 ? "policy" : "policies"}</span></div>
-        {policies.map((policy) => <article className="policy-row" key={policy.id}>
-          <div className="policy-name"><span className={`policy-state ${policy.enabled ? "enabled" : "disabled"}`} /><div><h3>{policy.name}</h3><p>{policy.description || "No description provided."}</p><span className="policy-categories">{policy.categories.map(display).join(" · ")}</span></div></div>
-          <div className="policy-rules"><span>{policy.minimum_source_count} {policy.minimum_source_count === 1 ? "source" : "sources"} minimum</span><span>Freshness ≥ {policy.minimum_freshness_score}</span><span>{display(policy.verification_mode)} mode</span></div>
-          <div className="policy-actions"><button className="text-button" onClick={() => void toggle(policy)} disabled={busyId === policy.id} aria-label={`${policy.enabled ? "Disable" : "Enable"} ${policy.name}`}><StatusMark value={policy.enabled ? "enabled" : "disabled"} /></button><button className="text-button" onClick={() => setPreviewPolicy(previewPolicy?.id === policy.id ? null : policy)}><FlaskConical size={14} /> Preview</button><button className="text-button" onClick={() => setEditing(policy)}><Settings2 size={15} /> Edit</button><button className="icon-button" onClick={() => void duplicate(policy)} disabled={busyId === policy.id} title="Duplicate policy" aria-label={`Duplicate ${policy.name}`}><Plus size={15} /></button><button className="icon-button danger-icon" onClick={() => void remove(policy)} disabled={busyId === policy.id} title="Delete policy" aria-label={`Delete ${policy.name}`}><X size={15} /></button></div>
-          {previewPolicy?.id === policy.id && <PolicyPreview policy={policy} onClose={() => setPreviewPolicy(null)} />}
-        </article>)}
-      </section>}
-  </>;
+  return (
+    <>
+      <SectionHeading title="Policy Studio" detail="Set evidence rules that apply when a response or monitored claim is checked." action={<button className="primary-button" onClick={() => { setEditing("new"); setError(null); }}><Plus size={16} /> New policy</button>} />
+      {error && <InlineNotice>{error}</InlineNotice>}{notice && <InlineNotice variant="success" onDismiss={() => setNotice(null)}>{notice}</InlineNotice>}
+      {editing !== null && <PolicyEditor policy={editing === "new" ? null : editing} categories={categories} busy={busyId !== null} onCancel={() => setEditing(null)} onSubmit={(event) => void save(event)} />}
+      {!policies.length ? <EmptyState title="No policies saved" detail="Create a policy to set source, freshness, verification mode, and cache rules." action={<button className="secondary-button" onClick={() => setEditing("new")}><Plus size={15} /> Create policy</button>} /> :
+        <section className="policy-list"><div className="list-heading"><h2>Policies</h2><span className="table-count">{policies.length} {policies.length === 1 ? "policy" : "policies"}</span></div>
+          {policies.map((policy) => <article className="policy-row" key={policy.id}>
+            <div className="policy-name"><span className={`policy-state ${policy.enabled ? "enabled" : "disabled"}`} /><div><h3>{policy.name}</h3><p>{policy.description || "No description provided."}</p><span className="policy-categories">{policy.categories.map(display).join(" · ")}</span></div></div>
+            <div className="policy-rules"><span>{policy.minimum_source_count} {policy.minimum_source_count === 1 ? "source" : "sources"} minimum</span><span>Freshness ≥ {policy.minimum_freshness_score}</span><span>{display(policy.verification_mode)} mode</span></div>
+            <div className="policy-actions"><button className="text-button" onClick={() => void toggle(policy)} disabled={busyId === policy.id} aria-label={`${policy.enabled ? "Disable" : "Enable"} ${policy.name}`}><StatusMark value={policy.enabled ? "enabled" : "disabled"} /></button><button className="text-button" onClick={() => setPreviewPolicy(previewPolicy?.id === policy.id ? null : policy)}><FlaskConical size={14} /> Preview</button><button className="text-button" onClick={() => setEditing(policy)}><Settings2 size={15} /> Edit</button><button className="icon-button" onClick={() => void duplicate(policy)} disabled={busyId === policy.id} title="Duplicate policy" aria-label={`Duplicate ${policy.name}`}><Plus size={15} /></button><button className="icon-button danger-icon" onClick={() => void remove(policy)} disabled={busyId === policy.id} title="Delete policy" aria-label={`Delete ${policy.name}`}><X size={15} /></button></div>
+            {previewPolicy?.id === policy.id && <PolicyPreview policy={policy} onClose={() => setPreviewPolicy(null)} />}
+          </article>)}
+        </section>}
+    </>
+  );
 }
 
 function PolicyPreview({ policy, onClose }: { policy: Policy; onClose: () => void }) {
@@ -650,42 +1323,54 @@ function PolicyPreview({ policy, onClose }: { policy: Policy; onClose: () => voi
     } catch (cause) { setError(cause instanceof Error ? cause.message : "The preview could not be evaluated."); }
     finally { setBusy(false); }
   };
-  return <section className="policy-preview"><div className="preview-heading"><div><h3>Preview “{policy.name}”</h3><p>This uses the policy preview API. It does not call live providers or create a verification record.</p></div><button className="icon-button" onClick={onClose} aria-label="Close policy preview"><X size={16} /></button></div>
-    <form className="preview-form" onSubmit={(event) => void submit(event)}><label className="field-group"><span className="field-label">Sample claim</span><input required maxLength={5000} value={claim} onChange={(event) => setClaim(event.target.value)} placeholder="Enter a claim to evaluate against this policy" /></label>
-      <label className="field-group"><span className="field-label">Category</span><select required value={category} onChange={(event) => setCategory(event.target.value)}>{policy.categories.map((item) => <option key={item} value={item}>{display(item)}</option>)}</select></label>
-      <label className="field-group"><span className="field-label">Freshness score <span>OPTIONAL</span></span><input type="number" min="0" max="100" value={score} onChange={(event) => setScore(event.target.value)} placeholder="No score supplied" /></label>
-      <button className="secondary-button" disabled={busy || !claim.trim()}>{busy ? <LoaderCircle size={15} className="spin" /> : <FlaskConical size={15} />} Evaluate preview</button></form>
-    {error && <InlineNotice>{error}</InlineNotice>}{result && <pre className="preview-result">{JSON.stringify(result, null, 2)}</pre>}
-  </section>;
+  return (
+    <section className="policy-preview"><div className="preview-heading"><div><h3>Preview “{policy.name}”</h3><p>This uses the policy preview API. It does not call live providers or create a verification record.</p></div><button className="icon-button" onClick={onClose} aria-label="Close policy preview"><X size={16} /></button></div>
+      <form className="preview-form" onSubmit={(event) => void submit(event)}><label className="field-group"><span className="field-label">Sample claim</span><input required maxLength={5000} value={claim} onChange={(event) => setClaim(event.target.value)} placeholder="Enter a claim to evaluate against this policy" /></label>
+        <label className="field-group"><span className="field-label">Category</span><select required value={category} onChange={(event) => setCategory(event.target.value)}>{policy.categories.map((item) => <option key={item} value={item}>{display(item)}</option>)}</select></label>
+        <label className="field-group"><span className="field-label">Freshness score <span>OPTIONAL</span></span><input type="number" min="0" max="100" value={score} onChange={(event) => setScore(event.target.value)} placeholder="No score supplied" /></label>
+        <button className="secondary-button" disabled={busy || !claim.trim()}>{busy ? <LoaderCircle size={15} className="spin" /> : <FlaskConical size={15} />} Evaluate preview</button></form>
+      {error && <InlineNotice>{error}</InlineNotice>}{result && <pre className="preview-result">{JSON.stringify(result, null, 2)}</pre>}
+    </section>
+  );
 }
 
 function PolicyEditor({ policy, categories, busy, onCancel, onSubmit }: {
   policy: Policy | null; categories: Category[]; busy: boolean; onCancel: () => void; onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
 }) {
   const selected = policy?.categories ?? categories.filter((item) => item.volatile).map((item) => item.name);
-  return <form className="folio-panel policy-editor" onSubmit={onSubmit}>
-    <div className="panel-heading"><h2>{policy ? `Edit ${policy.name}` : "Create a policy"}</h2><button type="button" className="icon-button" onClick={onCancel} aria-label="Close policy editor"><X size={17} /></button></div>
-    <div className="editor-grid"><label className="field-group"><span className="field-label">Name</span><input name="name" required maxLength={120} defaultValue={policy?.name ?? ""} /></label>
-      <label className="field-group"><span className="field-label">Jurisdiction <span>OPTIONAL</span></span><input name="jurisdiction" defaultValue={policy?.jurisdiction ?? ""} /></label>
-      <label className="field-group span-two"><span className="field-label">Description</span><input name="description" maxLength={1000} defaultValue={policy?.description ?? ""} /></label>
-      <div className="field-group span-two"><span className="field-label">Claim categories</span><div className="category-options">{categories.map((category) => <label key={category.name} className="check-line"><input type="checkbox" name="categories" value={category.name} defaultChecked={selected.includes(category.name)} /><span>{display(category.name)}</span>{category.volatile && <small>volatile</small>}</label>)}</div></div>
-      <label className="field-group"><span className="field-label">Verification mode</span><select name="verification_mode" defaultValue={policy?.verification_mode ?? "warn"}><option value="shadow">Shadow</option><option value="warn">Warn</option><option value="enforce">Enforce</option></select></label>
-      <label className="field-group"><span className="field-label">Minimum source count</span><input name="minimum_source_count" type="number" min="0" max="10" defaultValue={policy?.minimum_source_count ?? ""} placeholder="Service default" /></label>
-      <label className="field-group"><span className="field-label">Minimum source authority</span><input name="minimum_source_authority" type="number" min="0" max="1" step="0.01" defaultValue={policy?.minimum_source_authority ?? ""} placeholder="Service default" /></label>
-      <label className="field-group"><span className="field-label">Minimum freshness score</span><input name="minimum_freshness_score" type="number" min="0" max="100" defaultValue={policy?.minimum_freshness_score ?? ""} placeholder="Service default" /></label>
-      <label className="field-group"><span className="field-label">Maximum evidence age <span>DAYS · OPTIONAL</span></span><input name="maximum_evidence_age_days" type="number" min="1" max="3650" defaultValue={policy?.maximum_evidence_age_days ?? ""} /></label>
-      <label className="field-group span-two"><span className="field-label">Preferred source domains</span><input name="preferred_domains" defaultValue={policy?.preferred_domains.join(", ") ?? ""} placeholder="Comma-separated domains" /></label>
-      <label className="field-group span-two"><span className="field-label">Allowed source domains</span><input name="allowed_domains" defaultValue={policy?.allowed_domains.join(", ") ?? ""} placeholder="Leave blank to allow any eligible domain" /></label>
-      <label className="field-group span-two"><span className="field-label">Blocked source domains</span><input name="blocked_domains" defaultValue={policy?.blocked_domains.join(", ") ?? ""} placeholder="domain-to-exclude.example" /></label>
-      <label className="field-group span-two"><span className="field-label">Cache TTL by category <span>JSON · OPTIONAL</span></span><textarea name="cache_ttl_seconds" rows={2} defaultValue={policy?.cache_ttl_seconds && Object.keys(policy.cache_ttl_seconds).length ? JSON.stringify(policy.cache_ttl_seconds, null, 2) : ""} placeholder="Service defaults" /></label>
-      <label className="check-line"><input type="checkbox" name="enabled" defaultChecked={policy?.enabled ?? true} /><span>Policy enabled</span></label>
-      <label className="check-line"><input type="checkbox" name="cache_enabled" defaultChecked={policy?.cache_enabled ?? true} /><span>Cache eligible results</span></label>
-    </div>
-    <div className="editor-actions"><button type="button" className="secondary-button" onClick={onCancel}>Cancel</button><button className="primary-button" disabled={busy}>{busy ? <LoaderCircle size={15} className="spin" /> : <Check size={15} />}{policy ? "Save changes" : "Create policy"}</button></div>
-  </form>;
+  return (
+    <form className="folio-panel policy-editor" onSubmit={onSubmit}>
+      <div className="panel-heading"><h2>{policy ? `Edit ${policy.name}` : "Create a policy"}</h2><button type="button" className="icon-button" onClick={onCancel} aria-label="Close policy editor"><X size={17} /></button></div>
+      <div className="editor-grid"><label className="field-group"><span className="field-label">Name</span><input name="name" required maxLength={120} defaultValue={policy?.name ?? ""} /></label>
+        <label className="field-group"><span className="field-label">Jurisdiction <span>OPTIONAL</span></span><input name="jurisdiction" defaultValue={policy?.jurisdiction ?? ""} /></label>
+        <label className="field-group span-two"><span className="field-label">Description</span><input name="description" maxLength={1000} defaultValue={policy?.description ?? ""} /></label>
+        <div className="field-group span-two"><span className="field-label">Claim categories</span><div className="category-options">{categories.map((category) => <label key={category.name} className="check-line"><input type="checkbox" name="categories" value={category.name} defaultChecked={selected.includes(category.name)} /><span>{display(category.name)}</span>{category.volatile && <small>volatile</small>}</label>)}</div></div>
+        <label className="field-group"><span className="field-label">Verification mode</span><select name="verification_mode" defaultValue={policy?.verification_mode ?? "warn"}><option value="shadow">Shadow</option><option value="warn">Warn</option><option value="enforce">Enforce</option></select></label>
+        <label className="field-group"><span className="field-label">Minimum source count</span><input name="minimum_source_count" type="number" min="0" max="10" defaultValue={policy?.minimum_source_count ?? ""} placeholder="Service default" /></label>
+        <label className="field-group"><span className="field-label">Minimum source authority</span><input name="minimum_source_authority" type="number" min="0" max="1" step="0.01" defaultValue={policy?.minimum_source_authority ?? ""} placeholder="Service default" /></label>
+        <label className="field-group"><span className="field-label">Minimum freshness score</span><input name="minimum_freshness_score" type="number" min="0" max="100" defaultValue={policy?.minimum_freshness_score ?? ""} placeholder="Service default" /></label>
+        <label className="field-group"><span className="field-label">Maximum evidence age <span>DAYS · OPTIONAL</span></span><input name="maximum_evidence_age_days" type="number" min="1" max="3650" defaultValue={policy?.maximum_evidence_age_days ?? ""} /></label>
+        <label className="field-group span-two"><span className="field-label">Preferred source domains</span><input name="preferred_domains" defaultValue={policy?.preferred_domains.join(", ") ?? ""} placeholder="Comma-separated domains" /></label>
+        <label className="field-group span-two"><span className="field-label">Allowed source domains</span><input name="allowed_domains" defaultValue={policy?.allowed_domains.join(", ") ?? ""} placeholder="Leave blank to allow any eligible domain" /></label>
+        <label className="field-group span-two"><span className="field-label">Blocked source domains</span><input name="blocked_domains" defaultValue={policy?.blocked_domains.join(", ") ?? ""} placeholder="domain-to-exclude.example" /></label>
+        <label className="field-group span-two"><span className="field-label">Cache TTL by category <span>JSON · OPTIONAL</span></span><textarea name="cache_ttl_seconds" rows={2} defaultValue={policy?.cache_ttl_seconds && Object.keys(policy.cache_ttl_seconds).length ? JSON.stringify(policy.cache_ttl_seconds, null, 2) : ""} placeholder="Service defaults" /></label>
+        <label className="check-line"><input type="checkbox" name="enabled" defaultChecked={policy?.enabled ?? true} /><span>Policy enabled</span></label>
+        <label className="check-line"><input type="checkbox" name="cache_enabled" defaultChecked={policy?.cache_enabled ?? true} /><span>Cache eligible results</span></label>
+      </div>
+      <div className="editor-actions"><button type="button" className="secondary-button" onClick={onCancel}>Cancel</button><button className="primary-button" disabled={busy}>{busy ? <LoaderCircle size={15} className="spin" /> : <Check size={15} />}{policy ? "Save changes" : "Create policy"}</button></div>
+    </form>
+  );
 }
 
-function WatchtowerView({ claims, alerts, categories, policies, onRefresh, onError }: { claims: WatchClaim[]; alerts: WatchAlert[]; categories: Category[]; policies: Policy[]; onRefresh: () => Promise<void>; onError: (message: string | null) => void }) {
+function WatchtowerView({ claims, alerts, categories, policies, onRefresh, onError, onOpenReplay }: {
+  claims: WatchClaim[];
+  alerts: WatchAlert[];
+  categories: Category[];
+  policies: Policy[];
+  onRefresh: () => Promise<void>;
+  onError: (message: string | null) => void;
+  onOpenReplay?: (fingerprint: string) => void;
+}) {
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
@@ -693,10 +1378,14 @@ function WatchtowerView({ claims, alerts, categories, policies, onRefresh, onErr
   const [category, setCategory] = useState(() => categories.find((item) => item.volatile)?.name ?? "");
   const [interval, setInterval] = useState("86400");
   const [policyId, setPolicyId] = useState("");
+  const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null);
+
   const volatileCategories = useMemo(() => categories.filter((item) => item.volatile), [categories]);
+
   useEffect(() => {
     if (!category && volatileCategories.length) setCategory(volatileCategories[0].name);
   }, [category, volatileCategories]);
+
   const addClaim = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault(); setBusy("adding"); onError(null); setNotice(null);
     try {
@@ -705,71 +1394,216 @@ function WatchtowerView({ claims, alerts, categories, policies, onRefresh, onErr
     } catch (cause) { onError(cause instanceof Error ? cause.message : "This claim could not be added to Watchtower."); }
     finally { setBusy(null); }
   };
+
   const check = async (claim: WatchClaim) => {
     setBusy(claim.id); onError(null); setNotice(null);
     try { await api(`/api/watchtower/claims/${encodeURIComponent(claim.id)}/check`, { method: "POST" }); await onRefresh(); setNotice("Claim checked. The latest result is now shown."); }
     catch (cause) { onError(cause instanceof Error ? cause.message : "The claim could not be checked. Try again when providers are available."); }
     finally { setBusy(null); }
   };
+
   const toggle = async (claim: WatchClaim) => {
     setBusy(claim.id); onError(null);
     try { await api(`/api/watchtower/claims/${encodeURIComponent(claim.id)}`, patchBody({ enabled: !claim.enabled })); await onRefresh(); }
     catch (cause) { onError(cause instanceof Error ? cause.message : "The monitoring state could not be changed."); }
     finally { setBusy(null); }
   };
+
+  const removeClaim = async (id: string) => {
+    setBusy(id);
+    onError(null);
+    setNotice(null);
+    try {
+      await api(`/api/watchtower/claims/${encodeURIComponent(id)}`, deleteReq);
+      await onRefresh();
+      setConfirmRemoveId(null);
+      setNotice("Claim removed from Watchtower.");
+    } catch (cause) {
+      onError(cause instanceof Error ? cause.message : "Could not remove claim.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const acknowledge = async (alert: WatchAlert) => {
     setBusy(alert.id); onError(null);
     try { await api(`/api/watchtower/alerts/${encodeURIComponent(alert.id)}/acknowledge`, { method: "POST" }); await onRefresh(); }
     catch (cause) { onError(cause instanceof Error ? cause.message : "This alert could not be acknowledged."); }
     finally { setBusy(null); }
   };
-  return <>
-    <SectionHeading title="Watchtower" detail="Scheduled rechecks surface changes in claims you choose to monitor." action={<button className="secondary-button" disabled={busy !== null} onClick={() => void onRefresh()}><RefreshCw size={15} /> Refresh</button>} />
-    {notice && <InlineNotice variant="success" onDismiss={() => setNotice(null)}>{notice}</InlineNotice>}
-    <section className="folio-panel watch-panel"><div className="list-heading"><h2>Claims under watch</h2><div className="watch-heading-actions"><span className="table-count">{claims.length} saved</span><button className="primary-button" type="button" onClick={() => setShowAddForm((open) => !open)}><Plus size={15} />{showAddForm ? "Close form" : "Add claim"}</button></div></div>
-      {showAddForm && <form className="watch-add-form" onSubmit={(event) => void addClaim(event)}>
-        <label className="field-group"><span className="field-label">Claim to monitor</span><textarea value={claimText} onChange={(event) => setClaimText(event.target.value)} maxLength={5000} placeholder="Enter a factual claim to check over time" required /></label>
-        <div className="watch-add-fields">
-          <label className="field-group"><span className="field-label">Category</span><select value={category} onChange={(event) => setCategory(event.target.value)} required><option value="" disabled>Select a volatile category</option>{volatileCategories.map((item) => <option key={item.name} value={item.name}>{display(item.name)}</option>)}</select></label>
-          <label className="field-group"><span className="field-label">Check interval</span><select value={interval} onChange={(event) => setInterval(event.target.value)}><option value="86400">Daily</option><option value="604800">Weekly</option><option value="2592000">Monthly</option></select></label>
-          <label className="field-group"><span className="field-label">Policy <span>OPTIONAL</span></span><select value={policyId} onChange={(event) => setPolicyId(event.target.value)}><option value="">No policy</option>{policies.filter((item) => item.enabled && (!category || item.categories.includes(category))).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-          <button className="primary-button" type="submit" disabled={busy !== null || !claimText.trim() || !category}>{busy === "adding" ? <LoaderCircle size={15} className="spin" /> : <Plus size={15} />} Add to Watchtower</button>
+
+  // Filter out orphaned alerts whose claim no longer exists
+  const visibleAlerts = alerts.filter((alert) =>
+    claims.some((c) => c.id === alert.monitored_claim_id)
+  );
+
+  return (
+    <>
+      <SectionHeading title="Watchtower" detail="Scheduled rechecks surface changes in claims you choose to monitor." action={<button className="secondary-button" disabled={busy !== null} onClick={() => void onRefresh()}><RefreshCw size={15} /> Refresh</button>} />
+      {notice && <InlineNotice variant="success" onDismiss={() => setNotice(null)}>{notice}</InlineNotice>}
+      <section className="folio-panel watch-panel">
+        <div className="list-heading">
+          <h2>Claims under watch</h2>
+          <div className="watch-heading-actions">
+            <span className="table-count">{claims.length} saved</span>
+            <button className="primary-button" type="button" onClick={() => setShowAddForm((open) => !open)}>
+              <Plus size={15} />{showAddForm ? "Close form" : "Add claim"}
+            </button>
+          </div>
         </div>
-      </form>}
-      {!claims.length ? <EmptyState title="No claims monitored" detail="Add a claim above, or choose Monitor claim after verifying a response." /> : <div className="watch-list">{claims.map((claim) => <article className="watch-row" key={claim.id}>
-        <div className="watch-claim"><span className={`watch-pulse ${claim.enabled ? "enabled" : "disabled"}`} /><div><h3>{claim.claim_text}</h3><span>{display(claim.category)} · Next check {dateTime(claim.next_check_at)}</span></div></div>
-        <div className="watch-state"><StatusMark value={claim.last_error ? "failed" : claim.last_verdict ?? (claim.enabled ? "pending" : "paused")} /><span>Score {claim.last_score ?? "—"}</span></div>
-        {claim.last_error && <p className="watch-error">{claim.last_error}</p>}
-        <div className="watch-actions"><button className="text-button" onClick={() => void check(claim)} disabled={busy !== null}><RefreshCw size={14} className={busy === claim.id ? "spin" : ""} /> Check now</button><button className="text-button" onClick={() => void toggle(claim)} disabled={busy !== null}>{claim.enabled ? "Pause" : "Resume"}</button></div>
-      </article>)}</div>}
-    </section>
-    <section className="folio-panel watch-panel alerts-panel"><div className="list-heading"><h2>Unacknowledged alerts</h2><span className="table-count">{alerts.length} open</span></div>
-      {!alerts.length ? <EmptyState title="No detected changes" detail="When a monitored claim changes verdict, its alert will appear here." /> : <div className="alert-list">{alerts.map((alert) => {
-        const watchedClaim = claims.find((claim) => claim.id === alert.monitored_claim_id);
-        return <article className="alert-row" key={alert.id}>
-        <div className="alert-sign"><AlertTriangle size={17} /></div><div className="alert-copy"><strong>{alert.claim_text ?? watchedClaim?.claim_text ?? `Claim ${alert.monitored_claim_id}`}</strong><span>{display(alert.previous_verdict)} <ArrowDownRight size={13} /> {display(alert.current_verdict)} · {dateTime(alert.created_at)}</span></div>
-        <button className="text-button" onClick={() => void acknowledge(alert)} disabled={busy !== null}>{busy === alert.id ? <LoaderCircle size={14} className="spin" /> : <Check size={14} />} Acknowledge</button>
-      </article>})}</div>}
-    </section>
-  </>;
+
+        {showAddForm && (
+          <form className="watch-add-form" onSubmit={(event) => void addClaim(event)}>
+            <label className="field-group"><span className="field-label">Claim to monitor</span><textarea value={claimText} onChange={(event) => setClaimText(event.target.value)} maxLength={5000} placeholder="Enter a factual claim to check over time" required /></label>
+            <div className="watch-add-fields">
+              <label className="field-group"><span className="field-label">Category</span><select value={category} onChange={(event) => setCategory(event.target.value)} required><option value="" disabled>Select a volatile category</option>{volatileCategories.map((item) => <option key={item.name} value={item.name}>{display(item.name)}</option>)}</select></label>
+              <label className="field-group"><span className="field-label">Check interval</span><select value={interval} onChange={(event) => setInterval(event.target.value)}><option value="86400">Daily</option><option value="604800">Weekly</option><option value="2592000">Monthly</option></select></label>
+              <label className="field-group"><span className="field-label">Policy <span>OPTIONAL</span></span><select value={policyId} onChange={(event) => setPolicyId(event.target.value)}><option value="">No policy</option>{policies.filter((item) => item.enabled && (!category || item.categories.includes(category))).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+              <button className="primary-button" type="submit" disabled={busy !== null || !claimText.trim() || !category}>{busy === "adding" ? <LoaderCircle size={15} className="spin" /> : <Plus size={15} />} Add to Watchtower</button>
+            </div>
+          </form>
+        )}
+
+        {!claims.length ? (
+          <EmptyState title="No claims monitored" detail="Add a claim above, or choose Monitor claim after verifying a response." />
+        ) : (
+          <div className="watch-list">
+            {claims.map((claim) => (
+              <article className="watch-row" key={claim.id}>
+                <div className="watch-claim">
+                  <span className={`watch-pulse ${claim.enabled ? "enabled" : "disabled"}`} />
+                  <div>
+                    <h3>{claim.claim_text}</h3>
+                    <span>{display(claim.category)} · Next check {dateTime(claim.next_check_at)}</span>
+                  </div>
+                </div>
+                <div className="watch-state">
+                  <StatusMark value={claim.last_error ? "failed" : claim.last_verdict ?? (claim.enabled ? "pending" : "paused")} />
+                  <span>Score {claim.last_error ? "—" : (claim.last_score ?? "—")}</span>
+                </div>
+                {claim.last_error && (
+                  <p className="watch-error">
+                    {claim.last_error.split("\n")[0]}
+                    {claim.last_error.startsWith("Add your AI provider") && (
+                      <> · <a href="#profile" className="fix-profile-link">Fix in Profile</a></>
+                    )}
+                  </p>
+                )}
+                <div className="watch-actions">
+                  <button className="text-button" onClick={() => void check(claim)} disabled={busy !== null}>
+                    <RefreshCw size={14} className={busy === claim.id ? "spin" : ""} /> Check now
+                  </button>
+                  <button className="text-button" onClick={() => void toggle(claim)} disabled={busy !== null}>
+                    {claim.enabled ? "Pause" : "Resume"}
+                  </button>
+                  {onOpenReplay && (
+                    <button className="text-button" type="button" onClick={() => onOpenReplay(claim.claim_fingerprint)}>
+                      <History size={14} /> Replay
+                    </button>
+                  )}
+                  {confirmRemoveId === claim.id ? (
+                    <span className="inline-confirm">
+                      <span className="confirm-prompt">Remove?</span>
+                      <button
+                        type="button"
+                        className="text-button danger-action"
+                        disabled={busy !== null}
+                        onClick={() => void removeClaim(claim.id)}
+                      >
+                        Yes, remove
+                      </button>
+                      <button
+                        type="button"
+                        className="text-button"
+                        onClick={() => setConfirmRemoveId(null)}
+                      >
+                        Cancel
+                      </button>
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      className="text-button remove-btn"
+                      disabled={busy !== null}
+                      onClick={() => setConfirmRemoveId(claim.id)}
+                    >
+                      <Trash2 size={14} /> Remove
+                    </button>
+                  )}
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section className="folio-panel watch-panel alerts-panel">
+        <div className="list-heading">
+          <h2>Unacknowledged alerts</h2>
+          <span className="table-count">{visibleAlerts.length} open</span>
+        </div>
+        {!visibleAlerts.length ? (
+          <EmptyState title="No detected changes" detail="When a monitored claim changes verdict, its alert will appear here." />
+        ) : (
+          <div className="alert-list">
+            {visibleAlerts.map((alert) => {
+              const watchedClaim = claims.find((claim) => claim.id === alert.monitored_claim_id);
+              return (
+                <article className="alert-row" key={alert.id}>
+                  <div className="alert-sign"><AlertTriangle size={17} /></div>
+                  <div className="alert-copy">
+                    <strong>{alert.claim_text ?? watchedClaim?.claim_text ?? `Claim ${alert.monitored_claim_id}`}</strong>
+                    <span>{display(alert.previous_verdict)} <ArrowDownRight size={13} /> {display(alert.current_verdict)} · {dateTime(alert.created_at)}</span>
+                  </div>
+                  <button className="text-button" onClick={() => void acknowledge(alert)} disabled={busy !== null}>
+                    {busy === alert.id ? <LoaderCircle size={14} className="spin" /> : <Check size={14} />} Acknowledge
+                  </button>
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </section>
+    </>
+  );
 }
 
-function ReplayView({ claims }: { claims: WatchClaim[] }) {
-  const [fingerprint, setFingerprint] = useState("");
+function ReplayView({ claims, initialFingerprint }: { claims: WatchClaim[]; initialFingerprint?: string }) {
+  const [fingerprint, setFingerprint] = useState(initialFingerprint ?? "");
   const [replay, setReplay] = useState<Replay | null>(null);
   const [comparison, setComparison] = useState<RecordValue | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [fromId, setFromId] = useState("");
   const [toId, setToId] = useState("");
-  const load = async (event?: React.FormEvent) => {
-    event?.preventDefault(); setError(null); setReplay(null); setComparison(null); setLoading(true);
+
+  const load = async (event?: React.FormEvent, targetFp?: string) => {
+    event?.preventDefault();
+    const fp = (targetFp ?? fingerprint).trim();
+    if (!fp) return;
+    setError(null); setReplay(null); setComparison(null); setLoading(true);
     try {
-      const data = await api<Replay>(`/api/replay/${encodeURIComponent(fingerprint.trim())}`);
+      const data = await api<Replay>(`/api/replay/${encodeURIComponent(fp)}`);
       setReplay(data); setFromId(""); setToId("");
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "Replay history could not be loaded."); }
-    finally { setLoading(false); }
+    } catch (cause) {
+      const msg = cause instanceof Error ? cause.message : "Replay history could not be loaded.";
+      if (msg.includes("not found") || msg.includes("404")) {
+        setReplay({ claim_fingerprint: fp, total: 0, snapshots: [] });
+      } else {
+        setError(msg);
+      }
+    } finally {
+      setLoading(false);
+    }
   };
+
+  useEffect(() => {
+    if (initialFingerprint) {
+      setFingerprint(initialFingerprint);
+      void load(undefined, initialFingerprint);
+    }
+  }, [initialFingerprint]);
+
   const compare = async () => {
     setError(null); setComparison(null); setLoading(true);
     try { setComparison(await api<RecordValue>(`/api/replay/${encodeURIComponent(fingerprint.trim())}/compare?from=${encodeURIComponent(fromId)}&to=${encodeURIComponent(toId)}`)); }
@@ -777,38 +1611,99 @@ function ReplayView({ claims }: { claims: WatchClaim[] }) {
     finally { setLoading(false); }
   };
   const snapshots = replay?.snapshots ?? [];
-  return <>
-    <SectionHeading title="Replay" detail="Inspect immutable verification snapshots and compare how evidence changed over time." />
-    <form className="access-strip replay-search" onSubmit={(event) => void load(event)}><div className="access-icon"><History size={17} /></div><div className="access-copy"><strong>Find a claim history</strong><span>Choose a monitored claim or paste a 64-character claim fingerprint.</span></div>
-      <select value={fingerprint} onChange={(event) => setFingerprint(event.target.value)} aria-label="Select monitored claim"><option value="">Select monitored claim</option>{claims.map((claim) => <option key={claim.id} value={claim.claim_fingerprint}>{claim.claim_text.slice(0, 90)}</option>)}</select>
-      <input value={fingerprint} onChange={(event) => setFingerprint(event.target.value)} aria-label="Claim fingerprint" placeholder="Claim fingerprint" />
-      <button className="secondary-button" disabled={loading || !fingerprint.trim()}>{loading ? <LoaderCircle size={15} className="spin" /> : <Search size={15} />} Load history</button>
-    </form>
-    {error && <InlineNotice>{error}</InlineNotice>}
-    {replay && <><section className="folio-panel replay-history"><div className="list-heading"><h2>Verification history</h2><span className="table-count">{replay.total} records</span></div>
-      {!snapshots.length ? <EmptyState title="No verification history exists for this claim yet" detail="Snapshots will appear after this claim has been checked and recorded." /> : <>
-        <div className="table-wrap"><table><thead><tr><th>Checked</th><th>Verdict</th><th>Freshness</th><th>Policy</th><th>Snapshot</th></tr></thead><tbody>{snapshots.map((snapshot) => <tr key={snapshot.id}>
-          <td>{dateTime(snapshot.checked_at)}</td><td><StatusMark value={snapshot.verdict} /></td><td>{snapshot.freshness_score ?? "—"}</td><td>{snapshot.policy_id ?? "—"}</td><td className="tabular">{snapshot.id}</td>
-        </tr>)}</tbody></table></div>
-        {snapshots.length > 1 && <div className="compare-controls"><div><p>Compare two immutable snapshots without changing either record.</p></div><select value={fromId} onChange={(event) => setFromId(event.target.value)} aria-label="Earlier snapshot"><option value="">Earlier snapshot</option>{snapshots.map((item) => <option key={item.id} value={item.id}>{dateTime(item.checked_at)} · {item.verdict}</option>)}</select><select value={toId} onChange={(event) => setToId(event.target.value)} aria-label="Later snapshot"><option value="">Later snapshot</option>{snapshots.map((item) => <option key={item.id} value={item.id}>{dateTime(item.checked_at)} · {item.verdict}</option>)}</select><button className="secondary-button" onClick={() => void compare()} disabled={loading || !fromId || !toId || fromId === toId}>{loading ? <LoaderCircle size={15} className="spin" /> : <ArrowUpRight size={15} />} Compare</button></div>}
-      </>}</section>
-      {comparison && <ComparisonView value={comparison} />}
-    </>}
-  </>;
+  return (
+    <>
+      <SectionHeading title="Replay" detail="Inspect immutable verification snapshots and compare how evidence changed over time." />
+      <form className="access-strip replay-search" onSubmit={(event) => void load(event)}>
+        <div className="access-icon"><History size={17} /></div>
+        <div className="access-copy"><strong>Find a claim history</strong><span>Choose a monitored claim or paste a 64-character claim fingerprint.</span></div>
+        <select
+          value={fingerprint}
+          onChange={(event) => {
+            setFingerprint(event.target.value);
+            if (event.target.value) void load(undefined, event.target.value);
+          }}
+          aria-label="Select monitored claim"
+        >
+          <option value="">Select monitored claim</option>
+          {claims.map((claim) => (
+            <option key={claim.id} value={claim.claim_fingerprint}>{claim.claim_text.slice(0, 90)}</option>
+          ))}
+        </select>
+        <input value={fingerprint} onChange={(event) => setFingerprint(event.target.value)} aria-label="Claim fingerprint" placeholder="Claim fingerprint" />
+        <button className="secondary-button" disabled={loading || !fingerprint.trim()}>{loading ? <LoaderCircle size={15} className="spin" /> : <Search size={15} />} Load history</button>
+      </form>
+      {error && <InlineNotice>{error}</InlineNotice>}
+      {replay && (
+        <>
+          <section className="folio-panel replay-history">
+            <div className="list-heading"><h2>Verification history</h2><span className="table-count">{replay.total} records</span></div>
+            {!snapshots.length ? (
+              <EmptyState title="No verification history exists for this claim yet" detail="Snapshots will appear after this claim has been checked and recorded." />
+            ) : (
+              <>
+                <div className="table-wrap">
+                  <table>
+                    <thead><tr><th>Checked</th><th>Verdict</th><th>Freshness</th><th>Policy</th><th>Snapshot</th></tr></thead>
+                    <tbody>{snapshots.map((snapshot) => (
+                      <tr key={snapshot.id}>
+                        <td>{dateTime(snapshot.checked_at)}</td><td><StatusMark value={snapshot.verdict} /></td><td>{snapshot.freshness_score ?? "—"}</td><td>{snapshot.policy_id ?? "—"}</td><td className="tabular">{snapshot.id}</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+                {snapshots.length > 1 && (
+                  <div className="compare-controls">
+                    <div><p>Compare two immutable snapshots without changing either record.</p></div>
+                    <select value={fromId} onChange={(event) => setFromId(event.target.value)} aria-label="Earlier snapshot">
+                      <option value="">Earlier snapshot</option>
+                      {snapshots.map((item) => <option key={item.id} value={item.id}>{dateTime(item.checked_at)} · {item.verdict}</option>)}
+                    </select>
+                    <select value={toId} onChange={(event) => setToId(event.target.value)} aria-label="Later snapshot">
+                      <option value="">Later snapshot</option>
+                      {snapshots.map((item) => <option key={item.id} value={item.id}>{dateTime(item.checked_at)} · {item.verdict}</option>)}
+                    </select>
+                    <button className="secondary-button" onClick={() => void compare()} disabled={loading || !fromId || !toId || fromId === toId}>
+                      {loading ? <LoaderCircle size={15} className="spin" /> : <ArrowUpRight size={15} />} Compare
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
+          </section>
+          {comparison && <ComparisonView value={comparison} />}
+        </>
+      )}
+    </>
+  );
 }
 
 function ComparisonView({ value }: { value: RecordValue }) {
   const verdict = value.verdict as RecordValue | undefined;
   const score = value.freshness_score as RecordValue | undefined;
   const sources = value.sources as RecordValue | undefined;
-  return <section className="folio-panel comparison-panel"><div className="panel-heading"><h2>What changed</h2><History size={18} className="panel-symbol" /></div>
-    <div className="comparison-grid"><div><span>Verdict</span><p><StatusMark value={String(verdict?.previous ?? "unknown")} /> <ArrowDownRight size={13} /> <StatusMark value={String(verdict?.current ?? "unknown")} /></p></div>
-      <div><span>Freshness score</span><p>{display(score?.previous)} <ArrowDownRight size={13} /> {display(score?.current)}{score?.delta !== null && score?.delta !== undefined && <small className={Number(score.delta) >= 0 ? "good-text" : "bad-text"}> ({Number(score.delta) > 0 ? "+" : ""}{display(score.delta)})</small>}</p></div>
-      <div><span>Evidence changed</span><p><StatusMark value={String(value.evidence_changed)} /></p></div>
-      <div><span>Policy changed</span><p><StatusMark value={String((value.policy as RecordValue | undefined)?.changed)} /></p></div></div>
-    {sources && <div className="change-list">{(["added", "removed", "changed"] as const).map((key) => {
-      const records = Array.isArray(sources[key]) ? sources[key] as RecordValue[] : [];
-      return <div key={key}><h3>{key} sources <span>{records.length}</span></h3>{records.length ? records.map((row, index) => <pre key={index}>{JSON.stringify(row, null, 2)}</pre>) : <p>No {key} sources.</p>}</div>;
-    })}</div>}
-  </section>;
+  return (
+    <section className="folio-panel comparison-panel">
+      <div className="panel-heading"><h2>What changed</h2><History size={18} className="panel-symbol" /></div>
+      <div className="comparison-grid">
+        <div><span>Verdict</span><p><StatusMark value={String(verdict?.previous ?? "unknown")} /> <ArrowDownRight size={13} /> <StatusMark value={String(verdict?.current ?? "unknown")} /></p></div>
+        <div><span>Freshness score</span><p>{display(score?.previous)} <ArrowDownRight size={13} /> {display(score?.current)}{score?.delta !== null && score?.delta !== undefined && <small className={Number(score.delta) >= 0 ? "good-text" : "bad-text"}> ({Number(score.delta) > 0 ? "+" : ""}{display(score.delta)})</small>}</p></div>
+        <div><span>Evidence changed</span><p><StatusMark value={String(value.evidence_changed)} /></p></div>
+        <div><span>Policy changed</span><p><StatusMark value={String((value.policy as RecordValue | undefined)?.changed)} /></p></div>
+      </div>
+      {sources && (
+        <div className="change-list">
+          {(["added", "removed", "changed"] as const).map((key) => {
+            const records = Array.isArray(sources[key]) ? (sources[key] as RecordValue[]) : [];
+            return (
+              <div key={key}>
+                <h3>{key} sources <span>{records.length}</span></h3>
+                {records.length ? records.map((row, index) => <pre key={index}>{JSON.stringify(row, null, 2)}</pre>) : <p>No {key} sources.</p>}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
 }

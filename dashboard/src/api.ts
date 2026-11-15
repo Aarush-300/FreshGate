@@ -7,6 +7,11 @@ export class ApiError extends Error {
   }
 }
 
+let onUnauthorized: (() => void) | null = null;
+export const setUnauthorizedHandler = (fn: (() => void) | null) => {
+  onUnauthorized = fn;
+};
+
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(path, {
     ...init,
@@ -21,6 +26,9 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
     ? await response.json()
     : await response.text();
   if (!response.ok) {
+    if (response.status === 401 && !path.startsWith("/api/auth/")) {
+      onUnauthorized?.();
+    }
     const detail = typeof payload === "object" && payload !== null && "detail" in payload
       ? String((payload as { detail: unknown }).detail)
       : typeof payload === "string" && payload.trim()
@@ -39,4 +47,11 @@ export const jsonBody = (value: unknown): RequestInit => ({
 export const patchBody = (value: unknown): RequestInit => ({
   method: "PATCH",
   body: JSON.stringify(value),
+});
+
+export const deleteReq: RequestInit = { method: "DELETE" };
+
+export const putBody = (v: unknown): RequestInit => ({
+  method: "PUT",
+  body: JSON.stringify(v),
 });

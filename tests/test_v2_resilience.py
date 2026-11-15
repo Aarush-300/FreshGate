@@ -17,6 +17,7 @@ Tests:
 14. Operational provider status endpoint
 """
 
+import os
 import json
 import asyncio
 import time
@@ -366,7 +367,8 @@ async def test_token_usage_tracking():
 
 def test_api_provider_status_endpoint():
     """Verify GET /api/provider/status returns LLM, circuit breakers, cache, and metrics metadata."""
-    client = TestClient(app)
+    admin_key = os.environ.get("FRESHGATE_ADMIN_KEY", "test-admin-secret-key-at-least-24-chars-long")
+    client = TestClient(app, headers={"X-Admin-Key": admin_key})
     resp = client.get("/api/provider/status")
 
     assert resp.status_code == 200

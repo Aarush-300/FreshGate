@@ -4,6 +4,9 @@ export type ProviderOption = {
   id: string;
   name: string;
   base_url: string;
+  editable_base_url?: boolean;
+  offline?: boolean;
+  key_required?: boolean;
   default_model: string;
   models: string[];
   credential_hint: string;
@@ -60,3 +63,17 @@ export type Benchmark = {
 };
 export type MetricsData = Record<string, number | string | boolean | null>;
 export type RecordValue = Record<string, unknown>;
+export type UserSettings = {
+  provider: string;
+  model: string;
+  base_url: string;
+  has_api_key: boolean;
+  api_key_hint: string;
+  has_tavily_key: boolean;
+  tavily_key_hint: string;
+  is_complete: boolean;
+};
+export type User = {
+  email: string;
+  settings: UserSettings;
+};

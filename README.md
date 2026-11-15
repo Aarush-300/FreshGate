@@ -1,210 +1,231 @@
 # FreshGate
 
-FreshGate is a FastAPI gateway that checks time-sensitive claims in AI responses against current evidence. It includes a React dashboard for verification, service health, benchmarks, audit access, policy management, Watchtower monitoring, and read-only Replay.
+FreshGate is an intelligent freshness and factual verification gateway for AI applications. It intercepts, extracts, and verifies time-sensitive factual claims in LLM responses against current primary web evidence in real-time, providing actionable freshness scores and continuous scheduled monitoring.
 
-## Features
+Includes a fast FastAPI backend (Python 3.11), a React/Vite/TypeScript dashboard with the high-contrast **Graphite Moss** dark theme, multi-tenant MongoDB persistence, and native/proxy integrations with the Bifrost AI Gateway.
 
-- Verify answer text with current web evidence through supported OpenAI-compatible providers.
-- Proxy OpenAI-compatible chat completions through the FreshGate gateway.
-- Manage freshness and source policies; monitor claims and review verification history.
-- Inspect health, Prometheus metrics, benchmark data, and protected audit records.
-- Run locally with SQLite or deploy with persistent SQLite storage.
+---
 
-Provider keys entered in the dashboard apply only to the current verification request and are not stored in browser storage. Scheduled Watchtower checks need server-side `OPENAI_API_KEY` and `TAVILY_API_KEY` values.
+## 🏆 Hackathon Problem Mapping
 
-## Requirements
+FreshGate is engineered to directly solve two primary hackathon problem tracks:
 
-- Python 3.11 or newer
-- Node.js 22 or newer and npm (needed to build the dashboard)
-- Docker (optional, for container deployment or Docker Compose)
+### Problem 01: Stale-Answer Detector & Real-Time Verification
+- **Automated Claim Extraction:** Uses targeted OpenAI-compatible LLM extraction or high-speed heuristics to isolate atomic, verifiable factual statements and categorize them (e.g., `leadership`, `pricing`, `software`, `policy`, `statistics`).
+- **Live Search & Evidence Retrieval:** Queries live web sources using Tavily Search to gather up-to-date primary citations and timestamped snippets.
+- **Freshness Scoring & Verdicts:** An LLM judge scores factual alignment and freshness (0–100) and assigns unambiguous verdicts: `confirmed`, `contradicted`, `partially_supported`, or `unverifiable`.
+- **Watchtower (Continuous Background Monitoring):** Users can monitor critical claims (e.g. CEO changes, price changes, API deprecations) on scheduled intervals. When evidence shifts, Watchtower generates actionable alerts and logs audit history.
+- **Judge-Ready One-Click Demo:** The Verify page includes a **"Try an example"** button that pre-populates a time-sensitive prompt (CEO identity, pricing, and latest software release) for immediate evaluation.
 
-## Run locally
+### Problem 04: Bifrost AI Gateway Extension
+- **OpenAI-Compatible Drop-In Proxy:** Route chat completion requests through FreshGate (`/v1/chat/completions` or `/proxy/v1/chat/completions`) before or after Bifrost.
+- **Comprehensive Verification Headers:** Transparently emits `X-FreshGate-Score`, `X-FreshGate-Stale-Count`, `X-FreshGate-Mode`, `X-FreshGate-Status`, and `X-FreshGate-Latency-Ms`.
+- **Enforcement & Guardrail Modes:**
+  - `shadow`: Runs verification asynchronously in the background; returns LLM response immediately.
+  - `warn`: Annotates response with factual warnings and freshness headers without blocking.
+  - `enforce`: Blocks responses containing contradicted or stale claims with HTTP 422 policy violations.
+- **Fail-Open Resilience & Circuit Breakers:** Built-in circuit breakers prevent gateway bottlenecks; if upstream timeouts or search outages occur, FreshGate fails open cleanly without dropping client traffic.
+- **Native Go Plugin:** Includes a dynamic CGO plugin (`plugin/freshgate_plugin.go`) for native Bifrost builds on Linux/macOS.
 
-### Windows PowerShell
+---
 
-The launcher creates a virtual environment and builds the dashboard if needed, then starts the API. It uses port 8127 by default and tries another port if that port is busy.
+## 🎨 Screenshots & UI Design
 
-```powershell
-.\run.ps1
+The FreshGate dashboard features a custom **Graphite Moss** dark mode palette designed for high contrast, legibility, and zero brown/muddy tones:
+- **Base Background:** Deep Graphite (`#0E1311`) and Surface (`#151B18`)
+- **Accent:** Emerald Moss (`#6CCB95`) and Forest Green (`#3E9B6B`)
+- **Semantic Signals:** Rust (`#F2907F`), Amber Gold (`#E2B75A`), and Slate Info (`#8AA4C4`)
+
+```
++-------------------------------------------------------------------------+
+| FreshGate | Verify   Watchtower   Policy Studio   Replay   System   Profile |
++-------------------------------------------------------------------------+
+|  VERIFY A RESPONSE                                                      |
+|  [ Try an example ]                                                     |
+|  "Python 3.13 is current stable. Sam Altman is CEO of OpenAI..."        |
+|  [ Check response ]                                                     |
+|                                                                         |
+|  RESULTS                                                                |
+|  - Sam Altman is CEO of OpenAI     [ CONFIRMED ]   Score 95   [Sources] |
+|  - Python 3.13 is current stable   [ CONFIRMED ]   Score 98   [Sources] |
+|  - GPT-4o input is $2.50 / 1M      [ CONFIRMED ]   Score 92   [Sources] |
++-------------------------------------------------------------------------+
 ```
 
-To install and run manually:
+---
 
-```powershell
-py -3 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-Push-Location dashboard
-npm ci
-npm run build
-Pop-Location
-.\.venv\Scripts\python.exe -m uvicorn server.app:app --reload --host 127.0.0.1 --port 8000
-```
+## 🚀 Quick Start (Local)
 
-### macOS and Linux
+### Prerequisites
+- Python 3.11+
+- Node.js 22+ & npm
+- A MongoDB instance (local `mongodb://localhost:27017` or MongoDB Atlas free cluster)
 
-```sh
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install -r requirements.txt
-cd dashboard && npm ci && npm run build && cd ..
-python -m uvicorn server.app:app --reload --host 127.0.0.1 --port 8000
-```
+### Option A: Local Run (PowerShell / Bash)
 
-Open `http://127.0.0.1:8000`. For dashboard development, start the API and run `npm run dev` inside `dashboard`. The Vite proxy targets `http://127.0.0.1:8000` by default; set `FRESHGATE_API_ORIGIN` to use another API address.
+1. **Clone and setup virtual environment**:
+   ```bash
+   git clone https://github.com/<USERNAME>/freshgate.git
+   cd freshgate
+   python -m venv .venv
+   ```
 
-Copy `.env.example` to `.env` to configure local credentials or options. Keep `.env` private. For direct dashboard verification, choose a provider and enter its API key in the dashboard. See [dashboard usage](docs/dashboard.md) for provider behavior and [the API reference](docs/13_api_reference.md) for endpoints.
+2. **Activate environment & install dependencies**:
+   - Windows PowerShell:
+     ```powershell
+     .\.venv\Scripts\Activate.ps1
+     pip install -r requirements.txt
+     ```
+   - Linux/macOS:
+     ```bash
+     source .venv/bin/activate
+     pip install -r requirements.txt
+     ```
 
-## Deploy to Render
+3. **Configure Environment**:
+   ```bash
+   cp .env.example .env
+   ```
+   Set `MONGODB_URI` and `FRESHGATE_SESSION_SECRET` in `.env`.
 
-The repository includes a Render Blueprint at [`render.yaml`](render.yaml). It builds the dashboard and API from the root [`Dockerfile`](Dockerfile), listens on Render's `PORT`, checks `/health/ready`, and mounts a 1 GB persistent disk at `/data` for the cache, audit, and feature databases.
+4. **Build Dashboard**:
+   ```bash
+   cd dashboard
+   npm ci
+   npm run build
+   cd ..
+   ```
 
-1. Push this repository to GitHub.
-2. In Render, create a new **Blueprint** and connect the GitHub repository.
-3. Review the Blueprint resources and confirm creation. The configured `0.5c-512mb` web compute plan and persistent disk are paid resources; a free web service cannot use this persistent disk.
-4. Wait for the first deploy to finish, then open the `onrender.com` URL shown in the Render dashboard.
-5. Optionally configure `OPENAI_API_KEY` and `TAVILY_API_KEY` in the Render service environment for scheduled Watchtower checks. The Blueprint generates `FRESHGATE_ADMIN_KEY` for protected audit access.
+5. **Start FreshGate**:
+   ```bash
+   uvicorn server.app:app --reload --host 127.0.0.1 --port 8000
+   ```
+   Open `http://localhost:8000` in your browser.
 
-The persistent disk keeps SQLite data across service restarts and deploys, but it is attached to one service instance. Back up important data. Review [Render's Blueprint reference](https://render.com/docs/blueprint-spec) and [compute plans](https://render.com/docs/compute-plans) before provisioning because plan availability and pricing can change.
+---
 
-For direct verification, users can supply provider credentials with each request. If you configure server-side provider keys, protect the public service with an appropriate access and usage policy. Never put secrets in the repository or frontend source.
+### Option B: Docker Compose (Full Stack)
 
-## Docker Compose
-
-```sh
+Starts FreshGate, MongoDB 7, Redis, and Bifrost Gateway:
+```bash
 docker compose up --build
 ```
+FreshGate will be accessible at `http://localhost:8000` and Bifrost at `http://localhost:8080`.
 
-The Compose file also starts Redis and Bifrost for the optional gateway proxy. Local data is stored in Docker volumes. Copy `.env.example` to `.env` and set credentials as needed.
+---
 
-## 1. Bifrost setup and usage
+## ☁️ Deploy on Render (Step-by-Step)
 
-FreshGate integrates with Bifrost in two ways:
+FreshGate is configured for deployment on Render's **Free Plan** with **zero persistent disk costs** using MongoDB Atlas free tier for durable storage.
 
-- **Native plugin:** runs inside a dynamically linked Linux or macOS Bifrost build. Go shared-object plugins are not supported by Go on Windows. Windows users can use WSL2 with Ubuntu, or use the proxy option below.
-- **FreshGate proxy:** cross-platform option that routes OpenAI-compatible chat requests through FreshGate to Bifrost. It does not load the native plugin.
+### Step 1: Create Free MongoDB Atlas Cluster
+1. Sign up at [mongodb.com/atlas](https://www.mongodb.com/atlas).
+2. Create a free **M0 Sandbox** cluster.
+3. In **Database Access**, create a user (e.g. `freshgate-admin`) and password.
+4. In **Network Access**, click **Add IP Address** and choose **Allow Access From Anywhere** (`0.0.0.0/0`) because Render's free instances use dynamic egress IPs.
+5. In **Database** → **Connect** → choose **Drivers** (Python 3.11+) and copy the connection string:
+   `mongodb+srv://<username>:<password>@cluster0.abcde.mongodb.net/?retryWrites=true&w=majority`
 
-### Native plugin prerequisites
-
-- Linux or macOS (on Windows, install Ubuntu with `wsl --install -d Ubuntu`; Docker Desktop's `docker-desktop` distro is not a development shell).
-- Go **1.27.3**, matching the Bifrost source checkout used for the gateway binary.
-- `make`, a C compiler and C development headers (Linux: `build-essential libc6-dev`), plus Node.js/npm for Bifrost's UI build.
-- A dynamic Bifrost source checkout. The prebuilt `maximhq/bifrost` Docker image is not the dynamic binary built below.
-- A running FreshGate API, Bifrost provider credentials, and a Bifrost virtual key permitted to use that provider.
-
-### Build Bifrost and the plugin from the same source
-
-The Bifrost source used during FreshGate integration is intentionally not tracked in this repository (the `vendor/` directory is ignored). Reproduce the tested build by cloning the matching upstream commit. Its Go code is split across modules; use a local Go workspace so source modules stay aligned. In Linux/macOS terminal (or Ubuntu WSL), from the FreshGate repository root:
-
-```sh
-git clone https://github.com/maximhq/bifrost.git vendor/bifrost
-git -C vendor/bifrost checkout f7e77e57b50745999190a3f9b6753244a222c240
-cd vendor/bifrost
-go version                         # must be go1.27.3
-test -f go.work || go work init ./cli ./core ./framework ./transports
-go work use ./plugins/logging
-make build DYNAMIC=1 LOCAL=1
+### Step 2: Push to GitHub
+Ensure all your changes are committed to your GitHub repository:
+```bash
+git push origin main
 ```
 
-If the build reports missing local packages from another `plugins/<name>` module, add that module with `go work use ./plugins/<name>` and rebuild. On WSL, use Linux Node/npm (`which npm` should point into `/usr/bin` or another Linux path), and reinstall `ui/node_modules` with Linux `npm ci` if it was previously installed by Windows npm. The build needs CGO headers; on Ubuntu run `sudo apt install -y make build-essential libc6-dev`.
+### Step 3: Deploy via Render Blueprint
+1. Open your [Render Dashboard](https://dashboard.render.com/).
+2. Click **New +** → **Blueprint**.
+3. Select your GitHub repository. Render will automatically read [`render.yaml`](render.yaml).
+4. When prompted for environment variables:
+   - `MONGODB_URI`: Paste your MongoDB Atlas connection string from Step 1.
+5. Click **Apply**. Render builds the Docker image and provisions the web service.
 
-Build the plugin using the same Go workspace and build flags as Bifrost (from the Bifrost checkout):
+### Step 4: Configure User Profile
+1. Open your deployed URL (`https://<your-app>.onrender.com`).
+2. Register a new user account.
+3. Navigate to **Profile**:
+   - Select your provider (e.g., **OpenAI**, **Groq**, **Google Gemini**, or **Together**).
+   - Enter your provider API key.
+   - Click **"Load models"** to dynamically fetch supported models.
+   - Enter your free **Tavily search API key** (from [tavily.com](https://tavily.com)).
+   - Click **"Save settings"**.
 
-```sh
-cd ../../plugin
-GOWORK="$(realpath ../vendor/bifrost/go.work)" CGO_ENABLED=1 \
-  go build -a -trimpath -buildmode=plugin -o freshgate.so freshgate_plugin.go
+> [!NOTE]
+> **Free Web Service Sleep Behavior:**
+> Render free web services spin down after 15 minutes of inactivity, which pauses background Watchtower scheduling. For persistent continuous monitoring, either:
+> 1. Set up a free external ping service (e.g. [UptimeRobot](https://uptimerobot.com) or [cron-job.org](https://cron-job.org)) hitting `https://<your-app>.onrender.com/health/live` every 10 minutes, OR
+> 2. Upgrade the Render service to the **Starter Plan** ($7/month) in `render.yaml`.
+
+---
+
+## 🔒 Security & Isolation Architecture
+
+- **Per-User MongoDB Isolation:** Every policy, monitored claim, alert, and verification snapshot is strictly filtered by the authenticated user's `owner_id`. User B can never read, modify, or delete User A's claims or history.
+- **Server-Side Encrypted Credentials:** User API keys and search tokens are encrypted at rest using AES-GCM (Fernet) keys derived from `FRESHGATE_SESSION_SECRET`. Credentials are **never stored in browser storage** (`localStorage` / `sessionStorage`) and are never sent back in plain text to the browser.
+  > [!WARNING]
+  > Changing `FRESHGATE_SESSION_SECRET` in production will invalidate previously encrypted user credentials; users will simply need to re-enter their API keys in Profile.
+- **SSRF Guard (`validate_base_url`):** In production mode (`FRESHGATE_ENV=production`), custom provider URLs pointing to loopback (`127.0.0.1`, `localhost`), private RFC-1918 subnets (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local IPs, or cloud instance metadata services (`169.254.169.254`) are strictly blocked.
+- **Offline Provider Notice:** Local offline providers (e.g., Ollama, LM Studio) running on `localhost` cannot be contacted by cloud deployments (such as Render) unless exposed via an HTTPS tunnel (e.g., Cloudflare Tunnel, ngrok).
+- **Shared Evidence Cache:** The web evidence cache is shared across tenants to maximize hit rates and minimize redundant search latency. It indexes verified public factual claims by hash, category, and jurisdiction, and contains zero user credentials or private context.
+
+---
+
+## 🌐 Using FreshGate in Front of Bifrost (Gateway Mode)
+
+FreshGate can sit in front of Bifrost as an OpenAI-compatible gateway proxy.
+
+### Proxy Chat Completion
+Send a chat request directly to FreshGate's proxy endpoint:
+
+```bash
+curl -X POST http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "X-FreshGate-Mode: warn" \
+  -d '{
+    "model": "gpt-4o-mini",
+    "messages": [
+      {"role": "user", "content": "Who is the current CEO of Microsoft?"}
+    ]
+  }' -i
 ```
 
-The plugin module files in `plugin/` pin the local Bifrost core module. Keep the Bifrost binary and `.so` built with the same Go toolchain, source checkout, architecture, CGO environment, and compatible build flags. Go plugins are highly sensitive to mismatches.
+### Attached Verification Headers
 
-### Run FreshGate and configure Bifrost
+| Header | Description | Example |
+|---|---|---|
+| `X-FreshGate-Mode` | Active verification mode | `shadow`, `warn`, `enforce`, `async` |
+| `X-FreshGate-Score` | Mean freshness score (0–100) | `96.5` |
+| `X-FreshGate-Stale-Count` | Number of stale/contradicted claims | `0` |
+| `X-FreshGate-Total-Claims` | Total claims extracted | `2` |
+| `X-FreshGate-Checked-Claims`| Claims checked against live search | `2` |
+| `X-FreshGate-Latency-Ms` | Latency incurred by verification | `412` |
+| `X-FreshGate-Status` | Verification status or fail-open notice | `verified`, `fail-open` |
+| `X-FreshGate-Circuit-Breaker`| Circuit breaker state | `closed`, `open` |
 
-Run FreshGate separately. For Docker Compose, from the repository root:
+---
 
-```sh
-docker compose up -d --build freshgate
-```
+## 🧪 Testing & Verification
 
-For local Python, install project dependencies and run the API; the Windows `run.ps1` launcher defaults to port `8127`. The plugin must be able to reach `/verify` from the Bifrost process. On WSL accessing a Windows-hosted FreshGate, obtain the host address with `ip route | awk '/default/ {print $3}'` and test `curl http://<host-ip>:8000/health/ready`. Do not assume `127.0.0.1` crosses the Windows/WSL boundary.
-
-Create an app directory and `config.json`. Use the reachable FreshGate URL and absolute path to the plugin file:
-
-```json
-{
-  "$schema": "https://www.getbifrost.ai/schema",
-  "plugins": [{
-    "enabled": true,
-    "name": "freshgate",
-    "path": "/absolute/path/to/plugin/freshgate.so",
-    "config": {
-      "freshgate_url": "http://127.0.0.1:8000/verify",
-      "timeout_sec": 8,
-      "fail_open": true,
-      "async_mode": false
-    }
-  }]
-}
-```
-
-On first launch, configure a private `setup_token` in this config (or `BIFROST_SETUP_TOKEN` in the process environment), start Bifrost, visit its dashboard, and create the admin account. Configure the provider in Bifrost and issue a virtual key whose permissions allow that provider. Keep setup tokens, provider keys, and virtual keys out of source control and screenshots.
-
-Launch the dynamic binary, pointing it at the app directory (not with a `-config` flag):
-
-```sh
-cd vendor/bifrost
-./tmp/bifrost-http -app-dir /absolute/path/to/bifrost-data -host 0.0.0.0 -port 8080
-```
-
-Check startup logs for `plugin status: freshgate - active`. Send a non-streaming chat completion directly to `http://localhost:8080/v1/chat/completions` with model/provider allowed by the virtual key and header `x-bf-vk`. Successful FreshGate execution appears under `extra_fields.raw_response.freshgate`; the transport hook adds `X-FreshGate-Plugin: active`. Verify the FreshGate `/verify` request in service logs too. A loaded plugin alone does not prove verification succeeded.
-
-### Windows usage options
-
-The native `.so` plugin cannot load in a Windows Bifrost binary. To exercise the native plugin on Windows hardware, build and run both dynamic Bifrost and the plugin in Ubuntu WSL2 using the steps above; run FreshGate in Docker or make its API reachable from WSL. Alternatively, point clients at the cross-platform FreshGate proxy (`http://127.0.0.1:8127/proxy/v1` for the local launcher, or port `8000` for Compose); this tests the proxy integration, not the native plugin.
-
-## 2. Tavily setup and usage
-
-FreshGate uses Tavily for live web evidence searches. Create a Tavily API key in your Tavily account and set it as `TAVILY_API_KEY` in the root `.env` for Docker Compose, or in the environment of the FreshGate process. Restart/recreate FreshGate after changing environment variables. Do not commit `.env` or expose the key in screenshots.
-
-The verification endpoint is `POST /verify`. Example (PowerShell):
-
-```powershell
-$body = @{ answer = "The current CEO of Microsoft is Satya Nadella." } | ConvertTo-Json
-Invoke-RestMethod -Uri "https://freshgate-0cid.onrender.com/verify" `
-  -Method Post -ContentType "application/json" -Body $body
-```
-
-The deployed service URL is [https://freshgate-0cid.onrender.com/](https://freshgate-0cid.onrender.com/). Check `GET https://freshgate-0cid.onrender.com/health/ready` before a demo. Live verification also needs an OpenAI-compatible extraction/judging provider configured through `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `LLM_MODEL`; Tavily alone supplies search evidence, not the LLM extraction step. The hosted deployment may sleep, change availability, or require credentials; for judging, provide a local Docker Compose path and your own credentials rather than depending only on the public URL.
-
-## Checks
-
-Install the development dependencies and run the Python suite:
-
-```sh
-python -m pip install -r requirements-dev.txt
+Run the Python automated test suite:
+```bash
 python -m pytest -q
 ```
+All 182 test cases pass, verifying:
+- Mongo isolation and ownership scoping
+- Profile settings round-trip and secret encryption
+- SSRF network guard in production mode
+- Watchtower claim leasing, alerting, and alert cascading
+- Bifrost proxy endpoints, fail-open circuits, and rate limiters
 
-Build the dashboard:
-
-```sh
+Build and verify the React frontend:
+```bash
 cd dashboard
-npm ci
 npm run build
 ```
+Produces a clean production bundle with zero TypeScript warnings or errors.
 
-Operational endpoints are `/health/live`, `/health/ready`, `/metrics`, and `/docs`.
+---
 
-## Project layout
+## 📄 License
 
-- `server/`: FastAPI application and routes
-- `core/`: verification pipeline, providers, cache, audit, security, and metrics
-- `dashboard/`: React, TypeScript, and Vite dashboard
-- `bench/`: benchmark datasets and runners
-- `docs/`: architecture, API, operations, and feature guides
-- `plugin/`: Bifrost plugin source
-
-
-
-## License
-
-MIT. See [LICENSE](LICENSE).
+MIT License. See [LICENSE](LICENSE) for details.

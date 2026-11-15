@@ -38,8 +38,8 @@ def test_dashboard_has_explicit_empty_error_and_request_scoped_credential_states
     assert "No claims monitored" in APP
     assert "No detected changes" in APP
     assert "No verification history exists for this claim yet" in APP
-    assert "X-LLM-API-Key" in APP and "X-Tavily-API-Key" in APP
-    assert 'setLlmKey(""); setSearchKey("")' in APP
+    assert "/api/profile/settings" in APP
+    assert "/api/profile/models" in APP
     assert 'localStorage.setItem("llmKey"' not in APP + API
     assert 'localStorage.setItem("searchKey"' not in APP + API
     assert "sessionStorage" not in APP + API

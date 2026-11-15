@@ -22,9 +22,11 @@ class OpenAILLMClient(LLMClient):
         timeout: float = 20.0,
         request_type: str = "general",
         manager: Optional[LLMProviderManager] = None,
+        allow_keyless: bool = False,
     ):
         self.timeout = timeout
         self.request_type = request_type
+        self.allow_keyless = allow_keyless
 
         if manager is not None:
             self.manager = manager
@@ -52,4 +54,5 @@ class OpenAILLMClient(LLMClient):
             api_key=self.api_key,
             base_url=self.base_url,
             model=self.model,
+            allow_keyless=self.allow_keyless,
         )

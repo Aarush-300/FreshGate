@@ -24,16 +24,16 @@ def policy_from_record(record: dict[str, Any]) -> PolicyConfig:
     return PolicyConfig.model_validate(values)
 
 
-def get_policy(policy_id: str, store: Optional[SQLiteFeatureStore] = None) -> Optional[PolicyConfig]:
+def get_policy(policy_id: str, store: Any = None) -> Optional[PolicyConfig]:
     record = (store or get_feature_store()).get_policy(policy_id)
     return policy_from_record(record) if record else None
 
 
-def list_policies(store: Optional[SQLiteFeatureStore] = None, limit: int = 100, offset: int = 0) -> list[PolicyConfig]:
+def list_policies(store: Any = None, limit: int = 100, offset: int = 0) -> list[PolicyConfig]:
     return [policy_from_record(row) for row in (store or get_feature_store()).list_policies(limit, offset)]
 
 
-def create_policy(values: dict[str, Any], store: Optional[SQLiteFeatureStore] = None) -> PolicyConfig:
+def create_policy(values: dict[str, Any], store: Any = None) -> PolicyConfig:
     policy = PolicyConfig.model_validate(values)
     repository = store or get_feature_store()
     record = repository.create_policy({
@@ -48,7 +48,7 @@ def create_policy(values: dict[str, Any], store: Optional[SQLiteFeatureStore] = 
     return policy_from_record(record)
 
 
-def update_policy(policy_id: str, values: dict[str, Any], store: Optional[SQLiteFeatureStore] = None) -> Optional[PolicyConfig]:
+def update_policy(policy_id: str, values: dict[str, Any], store: Any = None) -> Optional[PolicyConfig]:
     repository = store or get_feature_store()
     current_record = repository.get_policy(policy_id)
     if current_record is None:

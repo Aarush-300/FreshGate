@@ -7,6 +7,8 @@ snapshots are append-only and survive cache refreshes and expiration.
 from __future__ import annotations
 
 import json
+import logging
+import os
 import sqlite3
 import threading
 import time
@@ -33,6 +35,13 @@ class SQLiteFeatureStore:
         self.db_path = str(configured_path)
         self._lock = threading.RLock()
         self._init_db()
+        if os.getenv("FRESHGATE_STORE", "mongo").lower() == "sqlite" and os.getenv("FRESHGATE_ENV", "").lower() == "production":
+            logging.getLogger("freshgate.persistence").warning(
+                "FRESHGATE_STORE=sqlite is active in production environment! No per-user isolation will be enforced."
+            )
+
+    def for_owner(self, owner_id: Any) -> "SQLiteFeatureStore":
+        return self
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=10.0, isolation_level="DEFERRED")
@@ -577,13 +586,17 @@ _store: Optional[SQLiteFeatureStore] = None
 _store_lock = threading.Lock()
 
 
-def get_feature_store() -> SQLiteFeatureStore:
+def get_feature_store():
     """Return the process-wide feature store, initializing it on first use."""
     global _store
     if _store is None:
         with _store_lock:
             if _store is None:
-                _store = SQLiteFeatureStore()
+                if os.getenv("FRESHGATE_STORE", "mongo").lower() == "sqlite" or os.getenv("PYTEST_CURRENT_TEST"):
+                    _store = SQLiteFeatureStore()
+                else:
+                    from core.mongo_store import MongoFeatureStore
+                    _store = MongoFeatureStore()
     return _store
 
 

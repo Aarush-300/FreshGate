@@ -187,7 +187,8 @@ def test_favicon_endpoint_returns_200():
 # --- 6. Provider Status Endpoint Diagnostic Data ---
 
 def test_api_provider_status_contract():
-    client = TestClient(app)
+    admin_key = os.environ.get("FRESHGATE_ADMIN_KEY", "test-admin-secret-key-at-least-24-chars-long")
+    client = TestClient(app, headers={"X-Admin-Key": admin_key})
     response = client.get("/api/provider/status")
     assert response.status_code == 200
     data = response.json()
