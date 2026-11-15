@@ -2,8 +2,9 @@ import os
 import pytest
 from httpx import AsyncClient, ASGITransport
 from unittest.mock import patch, AsyncMock
+from types import SimpleNamespace
 
-from server.app import app
+from server.app import app, get_request_pipeline
 from core.security import is_safe_url, sanitize_error_detail, rate_limiter
 from core.models import VerificationResult, Claim, Source, Summary
 
@@ -74,7 +75,12 @@ async def test_rate_limiting_enforcement():
         summary=Summary(total=0, checked=0, stale=0, avg_score=100)
     )
 
-    with patch("server.app.pipeline.verify", new=AsyncMock(return_value=mock_result)):
+    mock_pipeline = SimpleNamespace(
+        verify=AsyncMock(return_value=mock_result),
+        verifier=SimpleNamespace(tavily_client=SimpleNamespace(aclose=AsyncMock())),
+    )
+    app.dependency_overrides[get_request_pipeline] = lambda: mock_pipeline
+    try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             r1 = await ac.post("/verify", json={"answer": "Test 1"})
             assert r1.status_code == 200
@@ -87,6 +93,8 @@ async def test_rate_limiting_enforcement():
             assert r3.status_code == 429
             assert r3.json()["error"]["type"] == "rate_limit_exceeded"
             assert "Retry-After" in r3.headers
+    finally:
+        app.dependency_overrides.pop(get_request_pipeline, None)
 
 
 # --- 5. URL Safety Validation Tests ---

@@ -14,6 +14,7 @@ import hmac
 import time
 import re
 import threading
+import asyncio
 from typing import Optional, Dict, Tuple
 from urllib.parse import urlparse
 from collections import defaultdict
@@ -29,9 +30,13 @@ def get_configured_api_key() -> Optional[str]:
     return key if key else None
 
 
+_PLACEHOLDER_ADMIN = {"your_admin_secret_token_here", "changeme", "admin", "test"}
+
 def get_configured_admin_key() -> Optional[str]:
     key = os.getenv("FRESHGATE_ADMIN_KEY", "").strip()
-    return key if key else None
+    if not key or key.lower() in _PLACEHOLDER_ADMIN or key.lower().startswith("your_"):
+        return None   # treated as "not configured" -> admin routes return 403
+    return key
 
 
 def extract_token_from_request(request: Request) -> Optional[str]:
@@ -62,7 +67,7 @@ def verify_api_key(request: Request) -> bool:
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    if not hmac.compare_digest(provided, expected):
+    if not hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8")):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Forbidden: invalid API key",
@@ -90,7 +95,7 @@ def verify_admin_key(request: Request) -> bool:
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    if not hmac.compare_digest(provided, expected):
+    if not hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8")):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Forbidden: invalid admin token",
@@ -157,7 +162,12 @@ class DistributedRateLimiter:
         if url:
             try:
                 import redis
-                client = redis.Redis.from_url(url, decode_responses=True)
+                client = redis.Redis.from_url(
+                    url,
+                    decode_responses=True,
+                    socket_timeout=0.2,
+                    socket_connect_timeout=0.5,
+                )
                 client.ping()
                 self.redis_client = client
             except Exception:
@@ -182,13 +192,22 @@ class DistributedRateLimiter:
             key = f"ratelimit:{client_id}"
             pipe = self.redis_client.pipeline()
             pipe.zremrangebyscore(key, 0, cutoff)
-            pipe.zadd(key, {str(now): now})
             pipe.zcard(key)
-            pipe.expire(key, int(self.window_size_seconds) + 5)
-            _, _, count, _ = pipe.execute()
+            pipe.zrange(key, 0, 0, withscores=True)
+            _, count, oldest = pipe.execute()
 
-            if count > self.requests_per_minute:
-                return False, max(1, int(self.window_size_seconds / self.requests_per_minute))
+            if count >= self.requests_per_minute:
+                if oldest and len(oldest) > 0:
+                    oldest_ts = float(oldest[0][1])
+                    retry_after = max(1, int(self.window_size_seconds - (now - oldest_ts)))
+                else:
+                    retry_after = max(1, int(self.window_size_seconds / self.requests_per_minute))
+                return False, retry_after
+
+            pipe = self.redis_client.pipeline()
+            pipe.zadd(key, {str(now): now})
+            pipe.expire(key, int(self.window_size_seconds) + 5)
+            pipe.execute()
             return True, 0
         except Exception:
             return self.local_limiter.is_allowed(client_id)
@@ -240,33 +259,73 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
-class RequestBodySizeLimitMiddleware(BaseHTTPMiddleware):
+class RequestBodySizeLimitMiddleware:
     """Enforce request body size limits to prevent unbounded memory allocation and DoS."""
 
     def __init__(self, app, max_body_bytes: int = 1048576):
-        super().__init__(app)
+        self.app = app
         self.max_body_bytes = max_body_bytes
 
-    async def dispatch(self, request: Request, call_next):
-        if request.method in ("POST", "PUT", "PATCH"):
-            content_length = request.headers.get("content-length")
-            if content_length:
-                try:
-                    length = int(content_length)
-                    if length > self.max_body_bytes:
-                        return JSONResponse(
-                            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-                            content={
-                                "error": {
-                                    "message": f"Payload Too Large: Maximum allowed size is {self.max_body_bytes} bytes.",
-                                    "type": "payload_too_large",
-                                }
-                            },
-                        )
-                except ValueError:
-                    pass
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope["method"] not in ("POST", "PUT", "PATCH"):
+            return await self.app(scope, receive, send)
 
-        return await call_next(request)
+        headers = dict(scope.get("headers", []))
+        content_length_header = headers.get(b"content-length")
+        if content_length_header:
+            try:
+                if int(content_length_header) > self.max_body_bytes:
+                    response = JSONResponse(
+                        status_code=413,
+                        content={
+                            "error": {
+                                "message": f"Payload Too Large: Maximum allowed size is {self.max_body_bytes} bytes.",
+                                "type": "payload_too_large",
+                            }
+                        },
+                    )
+                    return await response(scope, receive, send)
+            except ValueError:
+                pass
+
+        received_bytes = 0
+        exceeded = False
+
+        async def limited_receive():
+            nonlocal received_bytes, exceeded
+            message = await receive()
+            if message["type"] == "http.request":
+                body = message.get("body", b"")
+                received_bytes += len(body)
+                if received_bytes > self.max_body_bytes:
+                    exceeded = True
+                    raise HTTPException(status_code=413, detail=f"Payload Too Large: Maximum allowed size is {self.max_body_bytes} bytes.")
+            return message
+
+        async def wrapped_send(message):
+            if exceeded:
+                return
+            await send(message)
+
+        try:
+            await self.app(scope, limited_receive, wrapped_send)
+        except HTTPException as exc:
+            if exc.status_code == 413:
+                exceeded = True
+            else:
+                raise
+
+        if exceeded:
+            response = JSONResponse(
+                status_code=413,
+                content={
+                    "error": {
+                        "message": f"Payload Too Large: Maximum allowed size is {self.max_body_bytes} bytes.",
+                        "type": "payload_too_large",
+                    }
+                },
+            )
+            return await response(scope, receive, send)
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
@@ -284,7 +343,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             token = extract_token_from_request(request)
             client_id = f"token:{token}" if token else f"ip:{client_ip}"
 
-            allowed, retry_after = self.limiter.is_allowed(client_id)
+            allowed, retry_after = await asyncio.to_thread(self.limiter.is_allowed, client_id)
             if not allowed:
                 return JSONResponse(
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,

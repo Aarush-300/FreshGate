@@ -14,6 +14,7 @@ from core.history import save_claim_snapshot
 from core.persistence import SQLiteFeatureStore, get_feature_store
 from core.pipeline import FreshGatePipeline
 from core.policies import get_policy
+from core.audit_helpers import write_audit
 
 logger = logging.getLogger(__name__)
 
@@ -182,7 +183,10 @@ class WatchtowerService:
                 if row.get("policy_id") and (policy is None or not policy.enabled):
                     raise RuntimeError("The associated policy no longer exists or is disabled")
                 active_pipeline, is_ephemeral = await self._get_pipeline(owner_id)
-                result = await active_pipeline.verify(row["claim_text"], policy=policy)
+                try:
+                    result = await active_pipeline.verify(row["claim_text"], policy=policy, owner_id=owner_id)
+                except TypeError:
+                    result = await active_pipeline.verify(row["claim_text"], policy=policy)
             failure = self._transient_failure(result)
             target = next((claim for claim in result.claims if claim.type == row["category"]), None)
             if target is None and result.claims:
@@ -251,6 +255,16 @@ class WatchtowerService:
                 successful_at=checked_at,
                 next_check_at=checked_at + int(row["monitoring_interval"]),
                 verdict=current_verdict, score=target.score, metadata=metadata, retry_count=0,
+            )
+            latency_ms = int((time.perf_counter() - started) * 1000)
+            await write_audit(
+                result,
+                text=row["claim_text"],
+                source="watchtower",
+                mode=None,
+                latency_ms=latency_ms,
+                corr_id=None,
+                owner_id=owner_id,
             )
             return {"claim_id": row["id"], "status": "completed", "verdict": current_verdict, "alert": bool(reason)}
         except _InsufficientEvidence as exc:

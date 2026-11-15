@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-import os
+import tempfile, os
+_TMP = tempfile.mkdtemp(prefix="freshgate-tests-")
+os.environ["FRESHGATE_AUDIT_DB"]   = os.path.join(_TMP, "audit.db")
+os.environ["FRESHGATE_CACHE_DB"]   = os.path.join(_TMP, "cache.db")
+os.environ["CACHE_DB_PATH"]        = os.path.join(_TMP, "cache.db")
+os.environ["FRESHGATE_FEATURE_DB"] = os.path.join(_TMP, "features.db")
 os.environ["FRESHGATE_STORE"] = "sqlite"
 os.environ.setdefault("FRESHGATE_SESSION_SECRET", "freshgate-test-session-secret-at-least-24-chars-long")
 os.environ.setdefault("FRESHGATE_ADMIN_KEY", "test-admin-secret-key-at-least-24-chars-long")
@@ -25,8 +30,18 @@ TEST_USER_EMAIL = "test@example.com"
 @pytest.fixture(autouse=True)
 def isolate_global_rate_limiter():
     rate_limiter.reset()
+    try:
+        from server.app import _login_attempts
+        _login_attempts.clear()
+    except Exception:
+        pass
     yield
     rate_limiter.reset()
+    try:
+        from server.app import _login_attempts
+        _login_attempts.clear()
+    except Exception:
+        pass
 
 
 @pytest.fixture(autouse=True)

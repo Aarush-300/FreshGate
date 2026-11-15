@@ -156,7 +156,7 @@ async def test_streaming_preserves_tool_calls():
 # --- 4. Streaming Async Verification Retrieval ---
 
 @pytest.mark.asyncio
-async def test_streaming_async_verification_retrieval():
+async def test_streaming_async_verification_retrieval(admin_headers):
     chunks = [
         'data: {"id":"chatcmpl-stream-retrieval-1","choices":[{"delta":{"role":"assistant","content":"PostgreSQL 16 is released."},"index":0}]}\n\n',
         'data: [DONE]\n\n',
@@ -202,7 +202,7 @@ async def test_streaming_async_verification_retrieval():
                 assert stream_resp.status_code == 200
 
                 # Background tasks in Starlette ASGI transport run upon response completion
-                res_resp = await ac.get("/api/stream/verification/chatcmpl-stream-retrieval-1")
+                res_resp = await ac.get("/api/stream/verification/chatcmpl-stream-retrieval-1", headers=admin_headers)
                 assert res_resp.status_code == 200
                 res_data = res_resp.json()
                 assert res_data["status"] == "completed"

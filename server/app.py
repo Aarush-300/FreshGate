@@ -6,10 +6,11 @@ import logging
 import re
 import threading
 import uuid
+import codecs
 from typing import Optional, Dict, Any, Tuple
 from pathlib import Path
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Request, Response, BackgroundTasks, Depends, status
+from fastapi import FastAPI, HTTPException, Request, Response, BackgroundTasks, Depends, status, Query
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
@@ -17,6 +18,7 @@ import httpx
 from dotenv import load_dotenv
 from pymongo.errors import DuplicateKeyError
 from core.mongo import ensure_indexes, ping as mongo_ping
+from core.audit_helpers import write_audit
 from server.routes.profile import router as profile_router
 from server.pipeline_factory import get_shared_pipeline, build_user_pipeline
 from server.netguard import validate_base_url
@@ -51,6 +53,7 @@ from core.security import (
     RequestBodySizeLimitMiddleware,
     RateLimitMiddleware,
     rate_limiter,
+    verify_api_key,
     verify_admin_key,
     sanitize_error_detail,
 )
@@ -147,12 +150,12 @@ _login_attempts: dict[str, list[float]] = {}
 _login_lock = threading.Lock()
 
 
-def _check_login_attempts(key: str) -> None:
+def _check_login_attempts(key: str, max_attempts: int = 10) -> None:
     now = time.time()
     cutoff = now - 900  # 15 minutes
     with _login_lock:
         timestamps = [t for t in _login_attempts.get(key, []) if t > cutoff]
-        if len(timestamps) >= 10:
+        if len(timestamps) >= max_attempts:
             raise HTTPException(
                 status.HTTP_429_TOO_MANY_REQUESTS,
                 "Too many attempts. Try again later.",
@@ -185,11 +188,12 @@ async def register(body: AuthBody, response: Response):
     signer = serializer()
     email = body.email
     uid = uuid.uuid4().hex
+    pw_hash = await asyncio.to_thread(password_hash, body.password)
     try:
         users_collection().insert_one({
             "_id": uid,
             "email": email,
-            "password_hash": password_hash(body.password),
+            "password_hash": pw_hash,
             "settings": {},
             "created_at": time.time(),
         })
@@ -215,7 +219,9 @@ async def register(body: AuthBody, response: Response):
 async def login(body: AuthBody, request: Request, response: Response):
     client_ip = request.client.host if request.client else "unknown"
     rate_key = f"{client_ip}:{body.email}"
-    _check_login_attempts(rate_key)
+    ip_key = f"ip:{client_ip}"
+    _check_login_attempts(rate_key, max_attempts=10)
+    _check_login_attempts(ip_key, max_attempts=30)
 
     email = body.email
     try:
@@ -223,8 +229,16 @@ async def login(body: AuthBody, request: Request, response: Response):
     except Exception as exc:
         logger.error("Login database error: %s", exc)
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Database connection error.")
-    if not user or not check_password(body.password, user.get("password_hash", "")):
+
+    if user:
+        is_valid = await asyncio.to_thread(check_password, body.password, user.get("password_hash", ""))
+    else:
+        await asyncio.to_thread(check_password, body.password, "pbkdf2:sha256:310000$dummy$00000000000000000000000000000000")
+        is_valid = False
+
+    if not user or not is_valid:
         _record_failed_login(rate_key)
+        _record_failed_login(ip_key)
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Email or password is incorrect.")
     _clear_login_attempts(rate_key)
 
@@ -254,6 +268,11 @@ async def me(request: Request):
 
 _shared_pipeline_instance = get_shared_pipeline()
 pipeline = _shared_pipeline_instance
+
+
+def get_request_pipeline() -> Optional[FreshGatePipeline]:
+    """Dependency for injecting or overriding the verification pipeline (e.g. in tests)."""
+    return None
 
 
 class VerifyRequest(BaseModel):
@@ -345,18 +364,29 @@ async def run_streaming_verification(completion_id: str, text: str):
     try:
         t0 = time.perf_counter()
         result = await pipeline.verify(text)
-        duration_ms = (time.perf_counter() - t0) * 1000
+        duration_ms = int((time.perf_counter() - t0) * 1000)
         stream_verifications[completion_id] = {
             "status": "completed",
             "result": result.model_dump(),
             "duration_ms": duration_ms,
             "timestamp": time.time(),
         }
+        now = time.time()
+        for old_k in [k for k, v in stream_verifications.items() if now - v.get("timestamp", 0) > 900]:
+            stream_verifications.pop(old_k, None)
         if len(stream_verifications) > 500:
             oldest_keys = sorted(stream_verifications, key=lambda k: stream_verifications[k].get("timestamp", 0))[:50]
             for old_key in oldest_keys:
                 stream_verifications.pop(old_key, None)
-        logger.info("Streaming verification for %s finished in %.1fms", completion_id, duration_ms)
+        logger.info("Streaming verification for %s finished in %dms", completion_id, duration_ms)
+        await write_audit(
+            result,
+            text=text,
+            source="proxy_stream",
+            mode=None,
+            latency_ms=duration_ms,
+            audit_id=completion_id,
+        )
     except Exception as e:
         safe_err = sanitize_error_detail(e)
         stream_verifications[completion_id] = {
@@ -364,6 +394,9 @@ async def run_streaming_verification(completion_id: str, text: str):
             "error": safe_err,
             "timestamp": time.time(),
         }
+        now = time.time()
+        for old_k in [k for k, v in stream_verifications.items() if now - v.get("timestamp", 0) > 900]:
+            stream_verifications.pop(old_k, None)
         if len(stream_verifications) > 500:
             oldest_keys = sorted(stream_verifications, key=lambda k: stream_verifications[k].get("timestamp", 0))[:50]
             for old_key in oldest_keys:
@@ -371,18 +404,27 @@ async def run_streaming_verification(completion_id: str, text: str):
         logger.error("Streaming verification for %s failed: %s", completion_id, safe_err)
 
 
-async def run_async_verification(text: str):
+async def run_async_verification(text: str, corr_id: Optional[str] = None, mode: Optional[str] = None):
     """Run verification asynchronously in background and log findings."""
     try:
         t0 = time.perf_counter()
         result = await pipeline.verify(text)
-        duration_ms = (time.perf_counter() - t0) * 1000
+        duration_ms = int((time.perf_counter() - t0) * 1000)
         logger.info(
-            "Async verification complete in %.1fms. Stale=%d, AvgScore=%d",
+            "Async verification complete in %dms. Stale=%d, AvgScore=%s",
             duration_ms,
             result.summary.stale,
-            result.summary.avg_score,
+            str(result.summary.avg_score),
         )
+        await write_audit(
+            result,
+            text=text,
+            source="proxy_async",
+            mode=mode,
+            latency_ms=duration_ms,
+            corr_id=corr_id,
+        )
+        return result
     except Exception as e:
         logger.error("Async verification background task failed safely: %s", sanitize_error_detail(e))
 
@@ -464,36 +506,65 @@ async def get_metrics():
 
 
 @app.get("/api/audits/recent", dependencies=[Depends(verify_admin_key)])
-async def get_recent_audits(limit: int = 50):
+async def get_recent_audits(
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    source: Optional[str] = Query(None, max_length=32),
+):
     """Retrieve recent immutable verification audit logs for compliance monitoring."""
-    return {"audits": audit_store.get_recent_audits(limit=limit)}
+    rows = await audit_store.aget_recent_audits(limit=limit, offset=offset, source=source)
+    total = await asyncio.to_thread(audit_store.count_audits, source=source)
+    persistent = not str(getattr(audit_store, "db_path", "")).startswith("/tmp")
+    return {"audits": rows, "limit": limit, "offset": offset, "total": total, "persistent": persistent}
 
 
 @app.post("/verify", response_model=VerificationResult)
-async def verify_answer(req: VerifyRequest, request: Request):
+async def verify_answer(
+    req: VerifyRequest,
+    request: Request,
+    req_pipeline_dep: Optional[FreshGatePipeline] = Depends(get_request_pipeline),
+):
     """Direct verification endpoint for any answer text."""
     user = optional_current_user(request)
     req_pipeline: FreshGatePipeline
     is_ephemeral = False
     policy = None
 
-    if user:
+    if req_pipeline_dep is not None:
+        req_pipeline = req_pipeline_dep
+        is_ephemeral = False
+        if req.policy_id:
+            store = get_feature_store().for_owner(user["_id"]) if user else get_feature_store()
+            try:
+                policy = get_policy(req.policy_id, store=store)
+            except TypeError:
+                policy = get_policy(req.policy_id)
+            if policy is None:
+                raise HTTPException(status_code=404, detail="Policy not found")
+            if not policy.enabled:
+                raise HTTPException(status_code=409, detail="Selected policy is disabled")
+    elif pipeline is not _shared_pipeline_instance:
+        req_pipeline = pipeline
+        is_ephemeral = False
+        if req.policy_id:
+            store = get_feature_store().for_owner(user["_id"]) if user else get_feature_store()
+            try:
+                policy = get_policy(req.policy_id, store=store)
+            except TypeError:
+                policy = get_policy(req.policy_id)
+            if policy is None:
+                raise HTTPException(status_code=404, detail="Policy not found")
+            if not policy.enabled:
+                raise HTTPException(status_code=409, detail="Selected policy is disabled")
+    elif user:
         creds = load_credentials(user)
         if creds is None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Finish your Profile first: pick a provider and model, add your API key (if required) and your Tavily key.",
             )
-        is_mocked_pipeline = (
-            pipeline is not _shared_pipeline_instance
-            or getattr(pipeline.verify, "__class__", None).__name__ in ("AsyncMock", "MagicMock", "Mock")
-        )
-        if is_mocked_pipeline:
-            req_pipeline = pipeline
-            is_ephemeral = False
-        else:
-            req_pipeline = build_user_pipeline(creds, user["_id"], base=pipeline)
-            is_ephemeral = True
+        req_pipeline = build_user_pipeline(creds, user["_id"], base=pipeline)
+        is_ephemeral = True
         if req.policy_id:
             store = get_feature_store().for_owner(user["_id"])
             try:
@@ -505,11 +576,6 @@ async def verify_answer(req: VerifyRequest, request: Request):
             if not policy.enabled:
                 raise HTTPException(status_code=409, detail="Selected policy is disabled")
     else:
-        is_mocked_pipeline = (
-            pipeline is not _shared_pipeline_instance
-            or getattr(pipeline.verify, "__class__", None).__name__ in ("AsyncMock", "MagicMock", "Mock")
-        )
-
         header_provider = request.headers.get("X-LLM-Provider") or getattr(req, "provider", None)
         llm_key = (
             request.headers.get("X-LLM-API-Key")
@@ -523,26 +589,28 @@ async def verify_answer(req: VerifyRequest, request: Request):
         header_base_url = request.headers.get("X-LLM-Base-URL") or getattr(req, "base_url", None)
         header_model = request.headers.get("X-LLM-Model") or getattr(req, "model", None)
 
+        if header_base_url:
+            try:
+                header_base_url = validate_base_url(header_base_url)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+
         if header_provider is not None:
             if header_provider not in SUPPORTED_PROVIDER_IDS:
                 raise HTTPException(status_code=400, detail="Choose a supported AI provider.")
             if header_provider != "ollama" and (not llm_key or not is_valid_credential(llm_key)):
                 raise HTTPException(status_code=400, detail="The selected AI provider API key is invalid or missing.")
 
-        if is_mocked_pipeline and not llm_key and not tavily_key and not header_provider:
-            req_pipeline = pipeline
-            is_ephemeral = False
-        else:
-            if not llm_key and header_provider != "ollama" and not tavily_key:
-                raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Please log in.")
+        if not llm_key and header_provider != "ollama" and not tavily_key:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Please log in.")
 
-            req_pipeline = build_request_pipeline(
-                llm_key,
-                tavily_key,
-                header_base_url,
-                header_model,
-            )
-            is_ephemeral = True
+        req_pipeline = build_request_pipeline(
+            llm_key,
+            tavily_key,
+            header_base_url,
+            header_model,
+        )
+        is_ephemeral = True
 
         if req.policy_id:
             try:
@@ -554,11 +622,24 @@ async def verify_answer(req: VerifyRequest, request: Request):
             if not policy.enabled:
                 raise HTTPException(status_code=409, detail="Selected policy is disabled")
     try:
-        return await req_pipeline.verify(
+        t0 = time.perf_counter()
+        result = await req_pipeline.verify(
             req.answer,
             single_flight_scope=getattr(request.state, "correlation_id", None),
             policy=policy,
+            owner_id=(user["_id"] if user else None),
         )
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        await write_audit(
+            result,
+            text=req.answer,
+            source="verify",
+            mode=None,
+            latency_ms=latency_ms,
+            corr_id=getattr(request.state, "correlation_id", None),
+            owner_id=(user["_id"] if user else None),
+        )
+        return result
     except Exception as e:
         safe_msg = sanitize_error_detail(e)
         logger.error("Direct verification failed: %s", safe_msg)
@@ -608,12 +689,17 @@ async def proxy_chat_completions(request: Request, background_tasks: BackgroundT
             accumulated_chunks = []
             accumulated_chars = 0
             completion_id = None
+            decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+            buffer = ""
             try:
                 async for chunk in stream_resp.aiter_bytes():
                     yield chunk
                     try:
-                        text_chunk = chunk.decode("utf-8", errors="ignore")
-                        for line in text_chunk.splitlines():
+                        text_chunk = decoder.decode(chunk)
+                        buffer += text_chunk
+                        lines = buffer.split("\n")
+                        buffer = lines.pop()
+                        for line in lines:
                             line = line.strip()
                             if line.startswith("data: ") and not line.endswith("[DONE]"):
                                 data_str = line[6:]
@@ -630,6 +716,27 @@ async def proxy_chat_completions(request: Request, background_tasks: BackgroundT
                     except Exception:
                         pass
             finally:
+                try:
+                    remaining = decoder.decode(b"", final=True)
+                    buffer += remaining
+                    if buffer.strip():
+                        for line in buffer.split("\n"):
+                            line = line.strip()
+                            if line.startswith("data: ") and not line.endswith("[DONE]"):
+                                data_str = line[6:]
+                                parsed = json.loads(data_str)
+                                if not completion_id and parsed.get("id"):
+                                    completion_id = parsed.get("id")
+                                choices = parsed.get("choices", [])
+                                if choices and isinstance(choices, list):
+                                    delta = choices[0].get("delta", {})
+                                    content_piece = delta.get("content")
+                                    if content_piece and accumulated_chars < 50000:
+                                        accumulated_chunks.append(content_piece)
+                                        accumulated_chars += len(content_piece)
+                except Exception:
+                    pass
+
                 if hasattr(stream_resp, "aclose"):
                     await stream_resp.aclose()
 
@@ -682,7 +789,8 @@ async def proxy_chat_completions(request: Request, background_tasks: BackgroundT
     ).lower()
 
     if active_mode in ("async", "shadow"):
-        background_tasks.add_task(run_async_verification, assistant_content)
+        corr_id = getattr(request.state, "correlation_id", "req-unknown")
+        background_tasks.add_task(run_async_verification, assistant_content, corr_id=corr_id, mode=active_mode)
         resp_headers = {"X-FreshGate-Mode": active_mode}
         return JSONResponse(status_code=200, content=upstream_data, headers=resp_headers)
 
@@ -704,66 +812,6 @@ async def proxy_chat_completions(request: Request, background_tasks: BackgroundT
             timeout=FRESHGATE_TIMEOUT,
         )
         circuit_breaker.record_success()
-        latency_ms = int((time.perf_counter() - t0) * 1000)
-
-        headers_to_add = {
-            "X-FreshGate-Score": str(verification.summary.avg_score if verification.summary.avg_score is not None else "unavailable"),
-            "X-FreshGate-Stale-Count": str(verification.summary.stale),
-            "X-FreshGate-Total-Claims": str(verification.summary.total),
-            "X-FreshGate-Checked-Claims": str(verification.summary.checked),
-            "X-FreshGate-Latency-Ms": str(latency_ms),
-            "X-FreshGate-Status": str(verification.summary.status or "verified"),
-        }
-        # Record Prometheus latency and audit history
-        duration_sec = time.perf_counter() - t0
-        metrics.observe_latency(duration_sec)
-        corr_id = getattr(request.state, "correlation_id", "req-unknown")
-        background_tasks.add_task(
-            audit_store.record_audit,
-            audit_id=upstream_data.get("id") or f"audit-{int(time.time() * 1000)}",
-            correlation_id=corr_id,
-            input_text=assistant_content,
-            claims_data=[c.model_dump() for c in verification.claims],
-            total_claims=verification.summary.total,
-            stale_claims=verification.summary.stale,
-            avg_score=verification.summary.avg_score,
-            latency_ms=latency_ms,
-            status=str(verification.summary.status or "verified"),
-        )
-
-        # Policy enforcement check
-        if active_mode == "enforce" and FRESHGATE_BLOCK_STALE and (
-            verification.summary.stale > 0
-            or (verification.summary.avg_score is not None and verification.summary.avg_score < FRESHGATE_MIN_SCORE)
-        ):
-            logger.warning(
-                "FreshGate policy violation: stale count=%d, avg_score=%s",
-                verification.summary.stale,
-                str(verification.summary.avg_score),
-            )
-            return JSONResponse(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                content={
-                    "error": "FreshGate Policy Violation: Response contains outdated factual claims.",
-                    "freshgate": verification.model_dump(),
-                },
-                headers={
-                    "X-FreshGate-Policy": "violated",
-                    "X-FreshGate-Score": str(verification.summary.avg_score if verification.summary.avg_score is not None else "unavailable"),
-                    "X-FreshGate-Stale-Count": str(verification.summary.stale),
-                },
-            )
-
-        if active_mode == "warn":
-            # Return metadata in HTTP headers only, do not modify body JSON
-            headers_to_add["X-FreshGate-Mode"] = "warn"
-            return JSONResponse(status_code=200, content=upstream_data, headers=headers_to_add)
-
-        # Mode: enforce - enrich JSON body
-        upstream_data["freshgate"] = verification.model_dump()
-        headers_to_add["X-FreshGate-Mode"] = "enforce"
-        return JSONResponse(status_code=200, content=upstream_data, headers=headers_to_add)
-
     except (asyncio.TimeoutError, Exception) as e:
         circuit_breaker.record_failure()
         safe_msg = sanitize_error_detail(e)
@@ -777,14 +825,91 @@ async def proxy_chat_completions(request: Request, background_tasks: BackgroundT
         }
         return JSONResponse(status_code=200, content=upstream_data, headers=headers_to_add)
 
+    latency_ms = int((time.perf_counter() - t0) * 1000)
 
-@app.get("/api/stream/verification/{completion_id}")
+    headers_to_add = {
+        "X-FreshGate-Score": str(verification.summary.avg_score if verification.summary.avg_score is not None else "unavailable"),
+        "X-FreshGate-Stale-Count": str(verification.summary.stale),
+        "X-FreshGate-Total-Claims": str(verification.summary.total),
+        "X-FreshGate-Checked-Claims": str(verification.summary.checked),
+        "X-FreshGate-Latency-Ms": str(latency_ms),
+        "X-FreshGate-Status": str(verification.summary.status or "verified"),
+    }
+    # Record Prometheus latency and audit history
+    duration_sec = time.perf_counter() - t0
+    metrics.observe_latency(duration_sec)
+    corr_id = getattr(request.state, "correlation_id", "req-unknown")
+    upstream_id = str(upstream_data.get("id") or "upstream")
+    audit_id = f"{upstream_id}:{uuid.uuid4().hex[:8]}"
+    background_tasks.add_task(
+        write_audit,
+        verification,
+        text=assistant_content,
+        source="proxy",
+        mode=active_mode,
+        latency_ms=latency_ms,
+        corr_id=corr_id,
+        audit_id=audit_id,
+    )
+
+    # Policy enforcement check
+    if active_mode == "enforce" and FRESHGATE_BLOCK_STALE and (
+        verification.summary.stale > 0
+        or (verification.summary.avg_score is not None and verification.summary.avg_score < FRESHGATE_MIN_SCORE)
+    ):
+        logger.warning(
+            "FreshGate policy violation: stale count=%d, avg_score=%s",
+            verification.summary.stale,
+            str(verification.summary.avg_score),
+        )
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": "FreshGate Policy Violation: Response contains outdated factual claims.",
+                "freshgate": verification.model_dump(),
+            },
+            headers={
+                "X-FreshGate-Policy": "violated",
+                "X-FreshGate-Score": str(verification.summary.avg_score if verification.summary.avg_score is not None else "unavailable"),
+                "X-FreshGate-Stale-Count": str(verification.summary.stale),
+            },
+        )
+
+    if active_mode == "warn":
+        # Return metadata in HTTP headers only, do not modify body JSON
+        headers_to_add["X-FreshGate-Mode"] = "warn"
+        return JSONResponse(status_code=200, content=upstream_data, headers=headers_to_add)
+
+    # Mode: enforce - enrich JSON body
+    upstream_data["freshgate"] = verification.model_dump()
+    headers_to_add["X-FreshGate-Mode"] = "enforce"
+    return JSONResponse(status_code=200, content=upstream_data, headers=headers_to_add)
+
+
+@app.get("/api/stream/verification/{completion_id}", dependencies=[Depends(require_user_or_admin)])
 async def get_stream_verification(completion_id: str):
     """Retrieve async fact-checking verification result for a completed SSE stream."""
     entry = stream_verifications.get(completion_id)
     if not entry:
         raise HTTPException(status_code=404, detail="Verification not found or still in progress")
     return entry
+
+
+@app.post("/api/plugin/verify", response_model=VerificationResult, dependencies=[Depends(verify_api_key)])
+async def plugin_verify(req: VerifyRequest, request: Request):
+    """Dedicated verification endpoint for the native Go plugin."""
+    t0 = time.perf_counter()
+    result = await pipeline.verify(req.answer)
+    duration_ms = int((time.perf_counter() - t0) * 1000)
+    await write_audit(
+        result,
+        text=req.answer,
+        source="plugin",
+        mode=None,
+        latency_ms=duration_ms,
+        corr_id=getattr(request.state, "correlation_id", None),
+    )
+    return result
 
 
 @app.get("/api/provider/status")

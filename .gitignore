@@ -44,6 +44,11 @@ vendor/
 # Local assistant and design-tool state
 .gemini/
 .impeccable/
+.codex/
+
+# Test directories and temporary test artifacts
+.freshgate-test-*/
+.freshgate-integration-*
 
 # Render / editors
 .render/

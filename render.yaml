@@ -21,7 +21,7 @@ services:
       - key: FRESHGATE_STORE
         value: mongo
       - key: FRESHGATE_MODE
-        value: shadow
+        value: warn
       - key: FRESHGATE_FAIL_OPEN
         value: "true"
       - key: FRESHGATE_CACHE_DB

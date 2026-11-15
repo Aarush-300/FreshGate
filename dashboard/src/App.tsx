@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import { api, jsonBody, patchBody, putBody, deleteReq, setUnauthorizedHandler } from "./api";
 import type {
-  ApiStatus, Benchmark, Category, Claim, Health, Policy, RecordValue, Replay,
+  ApiStatus, AuditRecord, Benchmark, Category, Claim, Health, Policy, RecordValue, Replay,
   ProviderOption, Source, VerificationResult, WatchAlert, WatchClaim, User, UserSettings,
 } from "./types";
 
@@ -71,7 +71,7 @@ function display(value: unknown): string {
 
 function tone(value?: string | null): string {
   const normalized = value?.toLowerCase().replaceAll("_", "-") ?? "unknown";
-  if (["confirmed", "ready", "connected", "healthy", "closed", "ok", "completed", "success", "enabled", "acknowledged", "true"].includes(normalized)) return "good";
+  if (["verified", "confirmed", "ready", "connected", "healthy", "closed", "ok", "completed", "success", "enabled", "acknowledged", "true"].includes(normalized)) return "good";
   if (["contradicted", "failed", "unhealthy", "unavailable", "error", "not-ready", "verification-failed", "extraction-failed", "missing-credentials", "quota-exhausted", "false"].includes(normalized)) return "bad";
   if (["partial", "partially-verified", "completed-with-warnings", "warning", "stale", "degraded", "open", "rate-limited"].includes(normalized)) return "caution";
   return "neutral";
@@ -276,7 +276,9 @@ export function App() {
           try {
             const u = await api<User>("/api/auth/me");
             setUser(u);
-          } catch {}
+          } catch (cause) {
+            console.error("Failed to load user profile after authentication:", cause);
+          }
         }}
       />
     );
@@ -330,7 +332,9 @@ export function App() {
               onClick={async () => {
                 try {
                   await api("/api/auth/logout", { method: "POST" });
-                } catch {}
+                } catch (cause) {
+                  console.error("Logout request failed:", cause);
+                }
                 resetWorkspace();
                 setUser(null);
                 window.location.hash = "verify";
@@ -630,7 +634,8 @@ function ProfileView({ user, onSaved }: { user: User; onSaved: (settings: UserSe
           setError("Base URL must be a complete http or https URL without embedded credentials.");
           return;
         }
-      } catch {
+      } catch (cause) {
+        console.error("Invalid base URL entered:", cause);
         setError("Base URL must be a complete valid URL (e.g. http://localhost:11434/v1).");
         return;
       }
@@ -1096,7 +1101,7 @@ function ClaimFolio({ claim, onMonitor }: { claim: Claim; onMonitor: () => void 
 
 function SourceNote({ source, index }: { source: Source; index: number }) {
   return (
-    <article className="source-note" style={{ animationDelay: `${Math.min(index - 1, 5) * 70}ms` }}>
+    <article className="source-note">
       <span className="source-number">{new Intl.NumberFormat(undefined, { minimumIntegerDigits: 2, useGrouping: false }).format(index)}</span>
       <div className="source-body"><a href={source.url} target="_blank" rel="noreferrer">{source.domain || source.url}<ArrowUpRight size={13} /></a>
         <p>{source.snippet || "No source excerpt was returned."}</p>
@@ -1194,15 +1199,26 @@ function BenchmarkView({ data, setData }: { data: LoadState<Benchmark>; setData:
 
 function AuditView() {
   const [key, setKey] = useState("");
-  const [audits, setAudits] = useState<RecordValue[] | null>(null);
+  const [audits, setAudits] = useState<AuditRecord[] | null>(null);
+  const [persistent, setPersistent] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [query, setQuery] = useState("");
   const load = async (event?: React.FormEvent) => {
-    event?.preventDefault(); setBusy(true); setError(null); setAudits(null);
-    try { const data = await api<{ audits: RecordValue[] }>("/api/audits/recent", { headers: key ? { "X-Admin-Key": key } : {} }); setAudits(data.audits); }
+    event?.preventDefault();
+    if (!key.trim()) {
+      setError("Enter the admin key to load audit records.");
+      return;
+    }
+    setBusy(true); setError(null); setAudits(null);
+    try {
+      const data = await api<{ audits: AuditRecord[]; persistent?: boolean }>("/api/audits/recent", { headers: { "X-Admin-Key": key.trim() } });
+      setAudits(data.audits);
+      if (data.persistent !== undefined) setPersistent(data.persistent);
+      setKey("");
+    }
     catch (cause) { setError(cause instanceof Error ? cause.message : "Audit records could not be loaded."); }
-    finally { setBusy(false); setKey(""); }
+    finally { setBusy(false); }
   };
   const filtered = (audits ?? []).filter((row) => JSON.stringify(row).toLowerCase().includes(query.toLowerCase()));
   return (
@@ -1212,18 +1228,39 @@ function AuditView() {
         <div className="access-icon"><LockKeyhole size={17} /></div>
         <div className="access-copy"><strong>Protected audit access</strong><span>Enter the admin key for this request. It is held in memory only and cleared after the request.</span></div>
         <input type="password" autoComplete="off" value={key} onChange={(event) => setKey(event.target.value)} aria-label="Admin key" placeholder="Admin key" />
-        <button className="secondary-button" disabled={busy}>{busy ? <LoaderCircle size={15} className="spin" /> : <Search size={15} />} Load records</button>
+        <button type="submit" className="secondary-button" disabled={busy}>{busy ? <LoaderCircle size={15} className="spin" /> : <Search size={15} />} Load records</button>
       </form>
       {error && <InlineNotice>{error}</InlineNotice>}
+      {persistent === false && (
+        <InlineNotice variant="info">Audit records are stored on ephemeral storage on this deployment and reset on redeploy.</InlineNotice>
+      )}
       {audits && (
         <section className="folio-panel data-panel"><div className="panel-heading"><h2>Recent verification activity</h2><span className="table-count">{filtered.length} records</span></div>
           <label className="search-field"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filter audit records" aria-label="Filter audit records" /></label>
           <DataTable rows={filtered} columns={[
             { key: "created_at", label: "Recorded", format: (value) => dateTime(value as string | number | null) },
+            { key: "source", label: "Source", format: (value) => String(value ?? "proxy") },
             { key: "status", label: "Status", format: (value) => <StatusMark value={String(value ?? "unknown")} /> },
-            { key: "request_id", label: "Request" }, { key: "summary", label: "Summary" },
-            { key: "details", label: "Record", format: (value) => value && typeof value === "object" ? <details><summary>Inspect record <ChevronDown size={13} /></summary><pre>{JSON.stringify(value, null, 2)}</pre></details> : display(value) },
-          ]} empty="No recent audit records were returned." />
+            { key: "correlation_id", label: "Request", format: (value) => {
+              const str = String(value ?? "—");
+              return <span title={str}>{str.length > 8 ? `${str.slice(0, 8)}…` : str}</span>;
+            }},
+            { key: "summary", label: "Summary", format: (_, row) => `${(row as AuditRecord).total_claims ?? 0} claims, ${(row as AuditRecord).stale_claims ?? 0} stale` },
+            { key: "avg_score", label: "Score", format: (value) => value !== null && value !== undefined ? `${value}` : "—" },
+            { key: "latency_ms", label: "Latency", format: (value) => `${value ?? 0} ms` },
+            { key: "details", label: "Record", format: (_, row) => {
+              const rec = row as AuditRecord;
+              return (
+                <details>
+                  <summary>Inspect record <ChevronDown size={13} /></summary>
+                  <div className="audit-detail-body">
+                    <p className="muted-line"><strong>Input:</strong> {rec.input_text}</p>
+                    <pre>{JSON.stringify(rec.claims ?? [], null, 2)}</pre>
+                  </div>
+                </details>
+              );
+            }},
+          ]} empty="No audit records yet. Run a verification from the Verify tab, then reload." />
         </section>
       )}
     </>
@@ -1698,7 +1735,7 @@ function ComparisonView({ value }: { value: RecordValue }) {
             return (
               <div key={key}>
                 <h3>{key} sources <span>{records.length}</span></h3>
-                {records.length ? records.map((row, index) => <pre key={index}>{JSON.stringify(row, null, 2)}</pre>) : <p>No {key} sources.</p>}
+                {records.length ? records.map((row, index) => <pre key={String(row.url ?? row.id ?? index)}>{JSON.stringify(row, null, 2)}</pre>) : <p>No {key} sources.</p>}
               </div>
             );
           })}

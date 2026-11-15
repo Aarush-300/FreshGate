@@ -29,14 +29,14 @@ def users_collection():
 
 
 def serializer():
-    secret = os.getenv("FRESHGATE_SESSION_SECRET") or os.getenv("FRESHGATE_ADMIN_KEY") or ""
+    secret = os.getenv("FRESHGATE_SESSION_SECRET") or ""
     if len(secret) < 24:
         raise HTTPException(503, "Configure FRESHGATE_SESSION_SECRET with at least 24 characters.")
     return URLSafeTimedSerializer(secret, salt="freshgate-session")
 
 
 def _fernet() -> Fernet:
-    secret = os.getenv("FRESHGATE_SESSION_SECRET") or os.getenv("FRESHGATE_ADMIN_KEY") or ""
+    secret = os.getenv("FRESHGATE_SESSION_SECRET") or ""
     if len(secret) < 24:
         raise HTTPException(503, "Configure FRESHGATE_SESSION_SECRET with at least 24 characters.")
     key = base64.urlsafe_b64encode(hashlib.sha256(secret.encode()).digest())
@@ -82,7 +82,7 @@ def optional_current_user(request: Request) -> dict[str, Any] | None:
     try:
         user_id = serializer().loads(token, max_age=60 * 60 * 24 * 30)
         return users_collection().find_one({"_id": user_id}, {"password_hash": 0})
-    except (BadSignature, PyMongoError):
+    except (BadSignature, PyMongoError, HTTPException):
         return None
 
 

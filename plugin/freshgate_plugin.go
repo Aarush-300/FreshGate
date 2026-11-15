@@ -24,6 +24,7 @@ import (
 
 type Config struct {
 	FreshGateURL string `json:"freshgate_url"`
+	APIKey       string `json:"api_key"`
 	TimeoutSec   int    `json:"timeout_sec"`
 	FailOpen     bool   `json:"fail_open"`
 	AsyncMode    bool   `json:"async_mode"`
@@ -31,7 +32,8 @@ type Config struct {
 
 var (
 	pluginConfig = Config{
-		FreshGateURL: "http://127.0.0.1:8000/verify",
+		FreshGateURL: "http://127.0.0.1:8000/api/plugin/verify",
+		APIKey:       "",
 		TimeoutSec:   4,
 		FailOpen:     true,
 		AsyncMode:    false,
@@ -85,9 +87,15 @@ func Init(config any) error {
 		if asyncMode, ok := values["async_mode"].(bool); ok {
 			pluginConfig.AsyncMode = asyncMode
 		}
+		if apiKey, ok := values["api_key"].(string); ok && apiKey != "" {
+			pluginConfig.APIKey = apiKey
+		}
 	}
 	if url := os.Getenv("FRESHGATE_URL"); url != "" {
 		pluginConfig.FreshGateURL = url
+	}
+	if key := os.Getenv("FRESHGATE_API_KEY"); key != "" {
+		pluginConfig.APIKey = key
 	}
 	if raw := os.Getenv("FRESHGATE_ASYNC_MODE"); raw != "" {
 		if value, err := strconv.ParseBool(raw); err == nil {
@@ -130,7 +138,16 @@ func verifyWithFreshGate(text string) (*VerificationResult, error) {
 		return nil, err
 	}
 
-	resp, err := httpClient.Post(pluginConfig.FreshGateURL, "application/json", bytes.NewBuffer(reqPayload))
+	req, err := http.NewRequest("POST", pluginConfig.FreshGateURL, bytes.NewBuffer(reqPayload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if pluginConfig.APIKey != "" {
+		req.Header.Set("X-API-Key", pluginConfig.APIKey)
+	}
+
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

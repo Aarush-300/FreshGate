@@ -166,7 +166,17 @@ git push origin main
   > Changing `FRESHGATE_SESSION_SECRET` in production will invalidate previously encrypted user credentials; users will simply need to re-enter their API keys in Profile.
 - **SSRF Guard (`validate_base_url`):** In production mode (`FRESHGATE_ENV=production`), custom provider URLs pointing to loopback (`127.0.0.1`, `localhost`), private RFC-1918 subnets (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local IPs, or cloud instance metadata services (`169.254.169.254`) are strictly blocked.
 - **Offline Provider Notice:** Local offline providers (e.g., Ollama, LM Studio) running on `localhost` cannot be contacted by cloud deployments (such as Render) unless exposed via an HTTPS tunnel (e.g., Cloudflare Tunnel, ngrok).
-- **Shared Evidence Cache:** The web evidence cache is shared across tenants to maximize hit rates and minimize redundant search latency. It indexes verified public factual claims by hash, category, and jurisdiction, and contains zero user credentials or private context.
+- **Shared Evidence Cache:** The web evidence cache is shared across tenants to maximize hit rates and minimize redundant search latency on public facts. It indexes verified public factual claims by hash, category, and jurisdiction, and contains zero user credentials or private context.
+
+### Where audit records come from
+
+All verifications across the platform write immutable, append-only records to the audit store with one of the following `source` tags:
+- `verify`: Direct verifications submitted via the dashboard Verify view or `POST /verify`.
+- `proxy`: Synchronous proxy chat completions via `/v1/chat/completions` or `/proxy/v1/chat/completions`.
+- `proxy_stream`: SSE streaming completions where verification completes asynchronously once all tokens are received.
+- `proxy_async`: Shadow-mode completions executed as background tasks (`FRESHGATE_MODE=shadow`).
+- `watchtower`: Scheduled continuous background checks performed by the Watchtower service.
+- `plugin`: Dedicated verifications received from the native Bifrost Go plugin via `POST /api/plugin/verify`.
 
 ---
 
@@ -210,19 +220,23 @@ Run the Python automated test suite:
 ```bash
 python -m pytest -q
 ```
-All 182 test cases pass, verifying:
-- Mongo isolation and ownership scoping
-- Profile settings round-trip and secret encryption
+All 197 test cases pass, verifying:
+- Mongo multi-tenant isolation and ownership scoping
+- Profile settings round-trip and Fernet secret encryption
+- Append-only audit log recording across `/verify`, proxy modes (`shadow`, `warn`, `enforce`), streaming SSE, and Watchtower
+- Zero SQLite database pollution in repo root during test runs
+- Chunked transfer body size limits and pure ASGI middleware handling
 - SSRF network guard in production mode
+- Password hashing offloaded from the event loop and user enumeration protections
 - Watchtower claim leasing, alerting, and alert cascading
-- Bifrost proxy endpoints, fail-open circuits, and rate limiters
+- Bifrost proxy endpoints, fail-open circuits, and distributed sliding-window rate limiters
 
 Build and verify the React frontend:
 ```bash
 cd dashboard
 npm run build
 ```
-Produces a clean production bundle with zero TypeScript warnings or errors.
+Produces a clean production bundle with zero TypeScript warnings or errors, compliant with strict CSP (`style-src 'self'`).
 
 ---
 

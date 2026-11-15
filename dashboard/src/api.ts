@@ -26,7 +26,8 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
     ? await response.json()
     : await response.text();
   if (!response.ok) {
-    if (response.status === 401 && !path.startsWith("/api/auth/")) {
+    const isAdminCall = !!(init.headers && ("X-Admin-Key" in (init.headers as Record<string, string>)));
+    if (response.status === 401 && !path.startsWith("/api/auth/") && !isAdminCall) {
       onUnauthorized?.();
     }
     const detail = typeof payload === "object" && payload !== null && "detail" in payload

@@ -63,6 +63,11 @@ export type Benchmark = {
 };
 export type MetricsData = Record<string, number | string | boolean | null>;
 export type RecordValue = Record<string, unknown>;
+export type AuditRecord = {
+  id: string; correlation_id: string; created_at: number; input_text: string;
+  claims: Claim[]; total_claims: number; stale_claims: number; avg_score: number | null;
+  latency_ms: number; status: string; source?: string | null; mode?: string | null; owner_id?: string | null;
+};
 export type UserSettings = {
   provider: string;
   model: string;

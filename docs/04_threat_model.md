@@ -22,7 +22,7 @@ This threat model analyzes the FreshGate AI Gateway middleware, including the un
 
 ### 2.3 Repudiation
 - **Threat:** Unaccountable modification or suppression of LLM outputs by the middleware.
-  - **Mitigation:** All verification decisions are logged to an append-only `verification_audit` database with `audit_id`, `correlation_id`, original text, claims list, freshness score, and latency.
+  - **Mitigation:** All verification decisions are logged to an append-only `verification_audit` database with `audit_id`, `correlation_id`, original text, claims list, freshness score, source, and latency. Records are immutable and insert-only (duplicate IDs are disambiguated rather than overwritten). Note that while the audit store is append-only, it does not currently provide cryptographic tamper-evidence or hash-chaining, which can be layered on top via an external SIEM or cryptographic forwarder.
 
 ### 2.4 Information Disclosure
 - **Threat:** Gateway crashes or network errors leak API tokens, filesystem paths, or database schemas in HTTP response headers.

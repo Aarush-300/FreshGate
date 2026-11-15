@@ -49,6 +49,7 @@ class FreshGatePipeline:
         answer_text: str,
         single_flight_scope: Optional[str] = None,
         policy: Optional[PolicyConfig] = None,
+        owner_id: Optional[str] = None,
     ) -> VerificationResult:
         """Execute full FreshGate verification pipeline on an answer string."""
         verification_started = time.perf_counter()
@@ -259,7 +260,7 @@ class FreshGatePipeline:
             try:
                 tasks = [
                     single_flight.do(
-                        f"{single_flight_scope or 'default'}:{c.type}:{c.text.strip().lower()}",
+                        f"{single_flight_scope or 'default'}:{owner_id or '-'}:{policy.id if policy else '-'}:{c.type}:{c.text.strip().lower()}",
                         _verify_single_coalesced,
                         c,
                     )

@@ -27,9 +27,13 @@ def build_user_pipeline(
 ) -> FreshGatePipeline:
     base = base or get_shared_pipeline()
     mgr = get_llm_manager()
+    base_url = creds.get("base_url")
+    if base_url:
+        from server.netguard import validate_base_url
+        base_url = validate_base_url(base_url)
     kw = dict(
         api_key=creds["api_key"],
-        base_url=creds["base_url"],
+        base_url=base_url,
         model=creds["model"],
         manager=mgr,
         allow_keyless=creds["keyless_ok"],
@@ -40,7 +44,7 @@ def build_user_pipeline(
         tavily_client=TavilySearchClient(api_key=creds["tavily_key"]),
         judge_llm=judge,
     )
-    verifier._semaphore = base.verifier._semaphore
+    verifier._semaphore = getattr(base.verifier, "_semaphore", None)
     return FreshGatePipeline(
         extractor=ClaimExtractor(llm_client=extraction),
         verifier=verifier,

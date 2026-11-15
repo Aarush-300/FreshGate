@@ -1,8 +1,6 @@
-version: "3.8"
-
 services:
   bifrost:
-    image: maximhq/bifrost:latest
+    image: maximhq/bifrost:v1.3.1
     container_name: bifrost-gateway
     ports:
       - "8080:8080"
@@ -23,15 +21,15 @@ services:
       - LLM_MODEL=${LLM_MODEL:-gpt-4o-mini}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - TAVILY_API_KEY=${TAVILY_API_KEY:-}
+      - FRESHGATE_API_KEY=${FRESHGATE_API_KEY:-}
       - FRESHGATE_ADMIN_KEY=${FRESHGATE_ADMIN_KEY:-}
       - FRESHGATE_TIMEOUT=4.0
       - FRESHGATE_FAIL_OPEN=true
       - FRESHGATE_STORE=mongo
       - MONGODB_URI=mongodb://mongo:27017
       - MONGODB_DATABASE=freshgate
-      - FRESHGATE_SESSION_SECRET=${FRESHGATE_SESSION_SECRET:-dev-secret-change-me-at-least-32-chars}
+      - FRESHGATE_SESSION_SECRET=${FRESHGATE_SESSION_SECRET:?FRESHGATE_SESSION_SECRET must be set}
       - FRESHGATE_CACHE_DB=/data/freshgate_cache.db
-      - CACHE_DB_PATH=/data/freshgate_cache.db
       - FRESHGATE_AUDIT_DB=/data/freshgate_audit.db
       - FRESHGATE_FEATURE_DB=/data/freshgate_features.db
       - FRESHGATE_WATCHTOWER_ENABLED=${FRESHGATE_WATCHTOWER_ENABLED:-true}
@@ -62,8 +60,6 @@ services:
   mongo:
     image: mongo:7
     container_name: freshgate-mongo
-    ports:
-      - "27017:27017"
     volumes:
       - mongo_data:/data/db
     restart: unless-stopped
@@ -71,8 +67,6 @@ services:
   redis:
     image: redis:7-alpine
     container_name: freshgate-redis
-    ports:
-      - "6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:

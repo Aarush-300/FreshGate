@@ -297,6 +297,11 @@ tbody tr:last-child td { border-bottom: 0; }
 .notes-heading h4 { margin: 0; font: 540 16px var(--serif); }
 .notes-heading span { padding-top: 4px; color: var(--ink-faint); font-size: 9px; }
 .source-note { display: grid; grid-template-columns: 24px minmax(0,1fr); gap: 10px; padding: 12px 0; border-top: 1px solid var(--rule-light); animation: note-file 380ms cubic-bezier(.2,.8,.2,1) both; }
+.source-note:nth-child(2) { animation-delay: 70ms; }
+.source-note:nth-child(3) { animation-delay: 140ms; }
+.source-note:nth-child(4) { animation-delay: 210ms; }
+.source-note:nth-child(5) { animation-delay: 280ms; }
+.source-note:nth-child(n+6) { animation-delay: 350ms; }
 @keyframes note-file { from { opacity: 0; transform: translateX(7px); } to { opacity: 1; transform: translateX(0); } }
 .source-number { color: var(--rust); font: 15px var(--serif); }
 .source-body { min-width: 0; }

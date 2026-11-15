@@ -222,5 +222,62 @@ Clears all cached claims. Returns `{"status": "cleared"}`.
 ### `POST /api/circuit-breaker/reset`
 Resets circuit breaker from `OPEN` to `CLOSED`. Returns `{"status": "reset", "circuit_breaker": {...}}`.
 
-### `GET /api/audits/recent?limit=50`
-Returns recent immutable verification audit records.
+### `GET /api/audits/recent`
+Returns recent immutable verification audit records from the append-only audit store.
+
+**Headers:**
+- `X-Admin-Key`: Administrative token (required).
+
+**Query Parameters:**
+- `limit` (int, default: 50, min: 1, max: 500): Maximum records to retrieve.
+- `offset` (int, default: 0, min: 0): Number of records to skip for pagination.
+- `source` (string, optional, max 32 chars): Filter by record source (`verify`, `proxy`, `proxy_stream`, `proxy_async`, `watchtower`, `plugin`).
+
+**Response Schema:**
+```json
+{
+  "audits": [
+    {
+      "id": "audit-uuid",
+      "correlation_id": "req-uuid",
+      "created_at": 1731600000.0,
+      "input_text": "The verified text",
+      "claims": [],
+      "total_claims": 1,
+      "stale_claims": 0,
+      "avg_score": 95,
+      "latency_ms": 142,
+      "status": "verified",
+      "owner_id": "user-id-or-null",
+      "source": "verify",
+      "mode": "warn"
+    }
+  ],
+  "limit": 50,
+  "offset": 0,
+  "total": 125,
+  "persistent": true
+}
+```
+
+*Note: Audit records are append-only. Duplicate IDs are disambiguated with a unique suffix, preserving immutable history.*
+
+### `POST /api/plugin/verify`
+Dedicated verification endpoint for the native Bifrost Go plugin.
+
+**Headers:**
+- `X-API-Key`: Pre-shared API key matching `FRESHGATE_API_KEY`.
+
+**Request Body:**
+```json
+{
+  "answer": "Assistant answer text to verify"
+}
+```
+
+**Response:** `VerificationResult` model dump. Records an audit entry with `source: "plugin"`.
+
+---
+
+## Caching Behavior
+Fact claim cache is global and shared across users for performance and efficiency on public factual claims. If custom entity or per-user policy isolation is required, policies may configure dedicated `jurisdiction` or `cache_scope`.
