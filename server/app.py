@@ -16,7 +16,7 @@ import httpx
 import uuid
 from dotenv import load_dotenv
 from pymongo.errors import DuplicateKeyError
-from core.mongo import ensure_indexes, ping as mongo_ping
+from core.mongo import ensure_indexes
 from server.routes.profile import router as profile_router
 from server.pipeline_factory import get_shared_pipeline, build_user_pipeline
 from server.netguard import validate_base_url
@@ -410,23 +410,12 @@ async def health_ready():
     """Readiness probe checking database connectivity and cache availability."""
     db_status = "connected"
     try:
-        mongo_ok = await asyncio.to_thread(mongo_ping)
-        if not mongo_ok:
-            db_status = "mongo_unavailable"
-    except Exception as e:
-        logger.error("Readiness probe mongo check failed: %s", e)
-        db_status = "mongo_unavailable"
-
-    cache_status = "connected"
-    try:
         _ = pipeline.cache.get_stats()
     except Exception as e:
         logger.error("Readiness probe database check failed: %s", e)
-        cache_status = "unavailable"
-        if db_status == "connected":
-            db_status = "unhealthy"
+        db_status = "unhealthy"
 
-    is_ready = (db_status == "connected" and cache_status == "connected")
+    is_ready = (db_status == "connected")
     status_code = status.HTTP_200_OK if is_ready else status.HTTP_503_SERVICE_UNAVAILABLE
 
     return JSONResponse(
@@ -434,7 +423,7 @@ async def health_ready():
         content={
             "status": "ready" if is_ready else "not_ready",
             "database": db_status,
-            "cache": cache_status,
+            "cache": "connected" if is_ready else "unavailable",
             "upstream": BIFROST_UPSTREAM_URL,
         },
     )

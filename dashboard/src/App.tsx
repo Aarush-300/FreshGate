@@ -1067,7 +1067,7 @@ function VerificationEvidence({ result, selectedClaim, onSelect, onMonitor }: {
                   onClick={() => onSelect(claim.id)}
                   className={`selectable-row ${selectedClaim?.id === claim.id ? "chosen" : ""}`}
                 >
-                  <td className="claim-text">{claim.text}</td><td>{display(claim.type)}</td><td><StatusMark value={claim.verdict} /></td><td className="tabular">{claim.score != null ? claim.score : "Not scored"}</td>
+                  <td className="claim-text">{claim.text}</td><td>{display(claim.type)}</td><td><StatusMark value={claim.verdict} /></td><td className="tabular">{claim.score ?? "—"}</td>
                 </tr>
               ))}</tbody></table></div>
           </div>
@@ -1084,7 +1084,7 @@ function ClaimFolio({ claim, onMonitor }: { claim: Claim; onMonitor: () => void 
     <section className="claim-folio">
       <div className="folio-margin"><span className="folio-caption">SELECTED CLAIM</span><span className="folio-id">{claim.id.slice(0, 8)}</span></div>
       <div className="folio-main"><div className="claim-folio-head"><h3>{claim.text}</h3><button className="text-button" onClick={onMonitor}><Clock3 size={15} /> Monitor claim</button></div>
-        <div className="claim-meta"><span>{display(claim.type)}</span><StatusMark value={claim.verdict} /><span>Score {claim.score != null ? claim.score : "Not scored"}</span><span>Checked {dateTime(claim.verification_timestamp)}</span></div>
+        <div className="claim-meta"><span>{display(claim.type)}</span><StatusMark value={claim.verdict} /><span>Score {claim.score ?? "—"}</span><span>Checked {dateTime(claim.verification_timestamp)}</span></div>
         {claim.explanation && <p className="claim-explanation">{claim.explanation}</p>}
         <div className="source-notes"><div className="notes-heading"><h4>Source notes</h4><span>{sources.length ? `${sources.length} ${sources.length === 1 ? "source" : "sources"}` : "No sources returned"}</span></div>
           {sources.length ? sources.map((source, index) => <SourceNote key={`${source.url}-${index}`} source={source} index={index + 1} />) : <p className="muted-line">The verification returned no source citations for this claim.</p>}
