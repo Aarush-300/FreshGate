@@ -16,17 +16,10 @@ from core.models import Source
 from core.persistence import get_feature_store
 from core.policies import get_policy
 from core.watchtower import WatchtowerService
-<<<<<<< HEAD
 from server.pipeline_factory import pipeline_for_owner
 from server.users import current_user
 
 logger = logging.getLogger("freshgate.watchtower")
-=======
-from core.models import Source
-from server.users import current_user, users_collection
-from fastapi import Depends
-import uuid
->>>>>>> 60d76df5e69c81f6f854d8a8b8e6cd8999a981ab
 
 router = APIRouter(prefix="/api/watchtower", tags=["watchtower"])
 watchtower_service = WatchtowerService(pipeline_resolver=pipeline_for_owner)
@@ -81,13 +74,8 @@ class MonitorPatch(BaseModel):
 
 
 @router.post("/monitor", status_code=status.HTTP_201_CREATED)
-<<<<<<< HEAD
 async def monitor_claim(request: MonitorRequest, req: Request):
     user, store = _scoped(req)
-=======
-async def monitor_claim(request: MonitorRequest, user: dict = Depends(current_user)):
-    store = get_feature_store()
->>>>>>> 60d76df5e69c81f6f854d8a8b8e6cd8999a981ab
     policy = None
     if request.policy_id:
         policy = await asyncio.to_thread(get_policy, request.policy_id, store=store)
@@ -105,7 +93,6 @@ async def monitor_claim(request: MonitorRequest, user: dict = Depends(current_us
         "alert_score_threshold": request.alert_score_threshold,
         "last_evidence": [source.model_dump() for source in baseline.sources] if baseline else [],
     }
-<<<<<<< HEAD
     try:
         row = await asyncio.to_thread(
             store.save_monitored_claim,
@@ -130,33 +117,10 @@ async def monitor_claim(request: MonitorRequest, user: dict = Depends(current_us
         raise HTTPException(status_code=429, detail=str(exc)) from exc
     except (sqlite3.IntegrityError, DuplicateKeyError) as exc:
         raise HTTPException(status_code=409, detail="Could not register monitored claim") from exc
-
-=======
-    row = {
-            "id": uuid.uuid4().hex,
-            "claim_text": request.claim_text,
-            "category": request.category,
-            "monitoring_interval": request.monitoring_interval,
-            "policy_id": request.policy_id,
-            "enabled": request.enabled,
-            "claim_fingerprint": __import__("hashlib").sha256(request.claim_text.strip().lower().encode()).hexdigest(),
-            "last_error": None,
-            "last_verdict": baseline.verdict if baseline else None,
-            "last_score": baseline.score if baseline else None,
-            "last_checked_at": now if baseline else None,
-            "last_successful_at": now if baseline and baseline.verdict != "unverifiable" else None,
-            "next_check_at": now + request.monitoring_interval,
-            "metadata": metadata,
-            "entities": request.entities,
-            "jurisdiction": jurisdiction,
-        }
-    users_collection().update_one({"_id": user["_id"]}, {"$push": {"claims": row}})
->>>>>>> 60d76df5e69c81f6f854d8a8b8e6cd8999a981ab
     return row
 
 
 @router.get("/claims")
-<<<<<<< HEAD
 async def list_claims(
     req: Request,
     limit: int = Query(default=100, ge=1, le=1000),
@@ -167,27 +131,15 @@ async def list_claims(
     alerts = await asyncio.to_thread(store.list_alerts, 1000, 0, True)
     total_count = await asyncio.to_thread(store.count_monitored_claims)
     now = time.time()
-=======
-async def list_claims(user: dict = Depends(current_user), limit: int = Query(default=100, ge=1, le=1000), offset: int = Query(default=0, ge=0)):
-    rows = user.get("claims", [])[offset:offset+limit]
-    alerts = user.get("alerts", [])
->>>>>>> 60d76df5e69c81f6f854d8a8b8e6cd8999a981ab
     return {
         "claims": rows,
         "limit": limit,
         "offset": offset,
         "overview": {
-<<<<<<< HEAD
             "total": total_count,
             "healthy": sum(1 for row in rows if row.get("enabled") and row.get("last_error") is None),
             "changed": sum(1 for alert in alerts if alert.get("monitored_claim_id")),
             "pending": sum(1 for row in rows if row.get("enabled") and (row.get("next_check_at") or 0) <= now),
-=======
-            "total": len(user.get("claims", [])),
-            "healthy": sum(1 for row in rows if row.get("enabled") and row.get("last_error") is None),
-            "changed": sum(1 for alert in alerts if alert.get("monitored_claim_id")),
-            "pending": sum(1 for row in rows if row.get("enabled") and row.get("next_check_at", 0) <= time.time()),
->>>>>>> 60d76df5e69c81f6f854d8a8b8e6cd8999a981ab
             "failed": sum(1 for row in rows if row.get("last_error") is not None),
         },
     }

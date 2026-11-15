@@ -3,10 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-<<<<<<< HEAD
 import logging
-=======
->>>>>>> 60d76df5e69c81f6f854d8a8b8e6cd8999a981ab
 import os
 import secrets
 import time
@@ -19,7 +16,6 @@ from itsdangerous import BadSignature, URLSafeTimedSerializer
 from pymongo import MongoClient
 from pymongo.errors import DuplicateKeyError, PyMongoError
 from cryptography.fernet import Fernet
-<<<<<<< HEAD
 from dotenv import load_dotenv
 
 from core.mongo import get_db
@@ -30,18 +26,6 @@ load_dotenv()
 
 def users_collection():
     return get_db()["users"]
-=======
-
-_client: MongoClient | None = None
-
-
-def users_collection():
-    global _client
-    uri = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
-    if _client is None:
-        _client = MongoClient(uri, serverSelectionTimeoutMS=2500)
-    return _client[os.getenv("MONGODB_DATABASE", "freshgate")]["users"]
->>>>>>> 60d76df5e69c81f6f854d8a8b8e6cd8999a981ab
 
 
 def serializer():
@@ -66,7 +50,6 @@ def encrypt_secret(value: str) -> str:
 def decrypt_secret(value: str) -> str:
     if not value:
         return ""
-<<<<<<< HEAD
     if not value.startswith("gAAAA"):  # legacy plaintext (pre-encryption installs)
         return value
     try:
@@ -76,13 +59,6 @@ def decrypt_secret(value: str) -> str:
             "Stored secret could not be decrypted (session secret changed?). Ask the user to re-enter it."
         )
         return ""
-=======
-    try:
-        return _fernet().decrypt(value.encode()).decode()
-    except Exception:
-        # Existing installations may have stored credentials before at-rest encryption.
-        return value
->>>>>>> 60d76df5e69c81f6f854d8a8b8e6cd8999a981ab
 
 
 def password_hash(password: str, salt: bytes | None = None) -> str:
@@ -99,7 +75,6 @@ def check_password(password: str, stored: str) -> bool:
         return False
 
 
-<<<<<<< HEAD
 def optional_current_user(request: Request) -> dict[str, Any] | None:
     token = request.cookies.get("freshgate_session")
     if not token:
@@ -181,27 +156,6 @@ def load_credentials(user: dict | None) -> dict[str, Any] | None:
         "tavily_key": decrypt_secret(settings.get("tavily_key", "")),
         "keyless_ok": bool(not p["key_required"]),
     }
-=======
-def current_user(request: Request) -> dict[str, Any]:
-    token = request.cookies.get("freshgate_session")
-    if not token:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Please log in.")
-    try:
-        user_id = serializer().loads(token, max_age=60 * 60 * 24 * 30)
-        user = users_collection().find_one({"_id": user_id}, {"password_hash": 0})
-    except (BadSignature, PyMongoError) as exc:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Session is invalid or expired.") from exc
-    if not user:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Session is invalid or expired.")
-    return user
-
-
-def public_settings(user: dict[str, Any]) -> dict[str, Any]:
-    settings = user.get("settings", {})
-    return {"provider": settings.get("provider", "openai"), "model": settings.get("model", ""),
-            "base_url": settings.get("base_url", ""), "has_api_key": bool(settings.get("api_key")),
-            "has_tavily_key": bool(settings.get("tavily_key"))}
->>>>>>> 60d76df5e69c81f6f854d8a8b8e6cd8999a981ab
 
 
 def public_claim(claim: dict[str, Any]) -> dict[str, Any]:
