@@ -4,6 +4,10 @@ httpx>=0.27.0
 pydantic>=2.6.0
 python-dotenv>=1.0.0
 redis>=5.0.0
+<<<<<<< HEAD
 pymongo[srv]>=4.7.0
+=======
+pymongo>=4.7.0
+>>>>>>> 60d76df5e69c81f6f854d8a8b8e6cd8999a981ab
 itsdangerous>=2.1.2
 cryptography>=42.0.0

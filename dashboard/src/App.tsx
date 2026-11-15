@@ -34,6 +34,7 @@ const navigation: { id: Section; label: string; icon: typeof Activity; group?: s
   { id: "policies", label: "Policy Studio", icon: Settings2, group: "Evidence" },
   { id: "watchtower", label: "Watchtower", icon: Search },
   { id: "replay", label: "Replay", icon: History },
+<<<<<<< HEAD
   { id: "profile", label: "Profile", icon: Settings2 },
 ];
 
@@ -46,6 +47,15 @@ const titleFor: Record<Section, string> = {
   watchtower: "Watchtower",
   replay: "Replay",
   profile: "Profile & credentials",
+=======
+  { id: "profile", label: "Profile settings", icon: Settings2 },
+];
+
+const titleFor: Record<Section, string> = {
+  verify: "Verify a response", system: "System health", benchmarks: "Benchmarks",
+  audits: "Audit log", policies: "Policy Studio", watchtower: "Watchtower", replay: "Replay",
+  profile: "Profile settings",
+>>>>>>> 60d76df5e69c81f6f854d8a8b8e6cd8999a981ab
 };
 
 function asSection(value: string): Section {
@@ -110,9 +120,14 @@ function DataTable({ rows, columns, empty, onSelect }: {
 }
 
 export function App() {
+<<<<<<< HEAD
   const [user, setUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [replayFingerprint, setReplayFingerprint] = useState("");
+=======
+  const [user, setUser] = useState<any>(null);
+  const [authReady, setAuthReady] = useState(false);
+>>>>>>> 60d76df5e69c81f6f854d8a8b8e6cd8999a981ab
   const [section, setSection] = useState<Section>(() => asSection(window.location.hash.slice(1)));
   const [theme, setTheme] = useState<"light" | "dark">(initialTheme);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -180,6 +195,7 @@ export function App() {
   useEffect(() => {
     const sync = () => setSection(asSection(window.location.hash.slice(1)));
     window.addEventListener("hashchange", sync);
+<<<<<<< HEAD
     api<User>("/api/auth/me")
       .then((data) => {
         setUser(data);
@@ -193,6 +209,12 @@ export function App() {
       window.removeEventListener("hashchange", sync);
     };
   }, []);
+=======
+    api<any>("/api/auth/me").then((value) => { setUser(value); setAuthReady(true); void refreshWorkspace(); }).catch(() => setAuthReady(true));
+    const timer = window.setInterval(() => void refreshWorkspace(), 45_000);
+    return () => { window.removeEventListener("hashchange", sync); window.clearInterval(timer); };
+  }, [refreshWorkspace]);
+>>>>>>> 60d76df5e69c81f6f854d8a8b8e6cd8999a981ab
 
   // Workspace refresh when user logs in or changes
   useEffect(() => {
@@ -257,6 +279,7 @@ export function App() {
 
   const openAlerts = alerts.length;
 
+<<<<<<< HEAD
   if (!authReady) {
     return (
       <div className="auth-screen">
@@ -432,10 +455,75 @@ export function App() {
           <span>Provider and search credentials are saved to the signed-in user's profile, encrypted at rest on the server, and are never stored in browser storage.</span>
         </footer>
       </div>
+=======
+  if (!authReady) return <div className="auth-screen">Loading FreshGate…</div>;
+  if (!user) return <AuthView onDone={async () => { setUser(await api<any>("/api/auth/me")); setAuthReady(true); void refreshWorkspace(); }} />;
+
+  return <div className="app-shell">
+    <button className={`mobile-scrim ${menuOpen ? "visible" : ""}`} aria-label="Close navigation" onClick={() => setMenuOpen(false)} />
+    <aside className={`sidebar ${menuOpen ? "open" : ""}`}>
+      <a className="brand" href="#verify" onClick={() => navigate("verify")} aria-label="FreshGate home">
+        <span className="brand-mark"><Sprout size={20} strokeWidth={1.8} /></span><span>FreshGate</span>
+      </a>
+      <div className="workspace-label">VERIFICATION WORKSPACE</div>
+      <nav aria-label="Main navigation" className="primary-nav">
+        {navigation.map((item, index) => {
+          const Icon = item.icon;
+          return <div key={item.id}>
+            {item.group && <div className="nav-group">{item.group}</div>}
+            <a href={`#${item.id}`} onClick={(event) => { event.preventDefault(); navigate(item.id); }} className={`nav-link ${section === item.id ? "active" : ""}`} aria-current={section === item.id ? "page" : undefined}>
+              <Icon size={17} strokeWidth={1.8} /><span>{item.label}</span>
+              {item.id === "watchtower" && openAlerts > 0 && <span className="nav-count" aria-label={`${openAlerts} unacknowledged alerts`}>{openAlerts > 99 ? "99+" : openAlerts}</span>}
+              {section === item.id && <ChevronRight size={15} className="nav-chevron" />}
+            </a>
+            {index === 0 && <div className="nav-divider" />}
+          </div>;
+        })}
+      </nav>
+      <div className="sidebar-bottom">
+        <button className="nav-link" onClick={async () => { await api("/api/auth/logout", { method: "POST" }); setUser(null); }}><LockKeyhole size={16} /> Log out</button>
+        <div className="sidebar-foot"><Leaf size={14} /> Current evidence, clearly noted.</div>
+      </div>
+    </aside>
+
+    <div className="main-shell">
+      <header className="topbar">
+        <button className="icon-button mobile-menu" aria-label="Open navigation" onClick={() => setMenuOpen(true)}><Menu size={19} /></button>
+        <div className="breadcrumb"><span>FreshGate</span><ChevronRight size={14} /><strong>{titleFor[section]}</strong></div>
+        <div className="topbar-actions">
+          <button className="theme-switch" type="button" role="switch" aria-checked={theme === "dark"} aria-label="Dark mode" title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"} onClick={() => setTheme((current) => current === "dark" ? "light" : "dark")}>
+            <span className="theme-switch-icon" aria-hidden="true">{theme === "dark" ? <Moon size={14} /> : <Sun size={14} />}</span>
+            <span className="theme-switch-label">Dark mode</span>
+            <span className="theme-switch-track" aria-hidden="true"><i /></span>
+          </button>
+          <button className="icon-button" title="Refresh workspace" aria-label="Refresh workspace" onClick={() => void refreshWorkspace()}><RefreshCw size={16} className={refreshing ? "spin" : ""} /></button>
+        </div>
+      </header>
+      <main className="main-content" key={section}>
+        {globalError && <InlineNotice onDismiss={() => setGlobalError(null)}>{globalError}</InlineNotice>}
+        {section === "verify" && <VerifyView settings={user.settings} policies={policies} onMonitor={async (claim, result) => {
+          await api("/api/watchtower/monitor", jsonBody({
+            claim_text: claim.text,
+            category: claim.type,
+            ...(result ? { baseline: { verdict: claim.verdict ?? "unverifiable", score: claim.score ?? undefined, sources: claim.sources ?? [] } } : {}),
+          }));
+          await refreshWorkspace();
+        }} />}
+        {section === "system" && <SystemView health={health} readiness={readiness} provider={provider} deployment={deployment} refreshing={refreshing} onRefresh={() => void refreshWorkspace()} />}
+        {section === "benchmarks" && <BenchmarkView data={benchmark} setData={setBenchmark} />}
+        {section === "audits" && <AuditView />}
+        {section === "policies" && <PolicyView policies={policies} categories={categories} onChanged={refreshWorkspace} />}
+        {section === "watchtower" && <WatchtowerView claims={claims} alerts={alerts} categories={categories} policies={policies} onRefresh={refreshWorkspace} onError={setGlobalError} />}
+        {section === "replay" && <ReplayView claims={claims} />}
+        {section === "profile" && <ProfileView onSaved={(settings) => setUser({ ...user, settings })} />}
+      </main>
+      <footer className="app-footer"><span>FreshGate</span><span>Verification decisions stay attached to their evidence.</span></footer>
+>>>>>>> 60d76df5e69c81f6f854d8a8b8e6cd8999a981ab
     </div>
   );
 }
 
+<<<<<<< HEAD
 function AuthView({ theme, onToggleTheme, onAuthenticated }: { theme: "light" | "dark"; onToggleTheme: () => void; onAuthenticated: () => Promise<void> }) {
   const [mode, setMode] = useState<"login" | "register">("login");
   const [email, setEmail] = useState("");
@@ -528,6 +616,33 @@ function ProfileView({ user, onSaved }: { user: User; onSaved: (settings: UserSe
   const [showApiKey, setShowApiKey] = useState(false);
   const [tavilyKey, setTavilyKey] = useState("");
   const [showTavilyKey, setShowTavilyKey] = useState(false);
+=======
+function AuthView({ onDone }: { onDone: () => Promise<void> }) {
+  const [mode, setMode] = useState<"login" | "register">("login"); const [email,setEmail]=useState(""); const [password,setPassword]=useState(""); const [error,setError]=useState("");
+  return <div className="auth-screen"><form className="folio-panel auth-card" onSubmit={async (e)=>{e.preventDefault();try{await api(`/api/auth/${mode}`,jsonBody({email,password}));await onDone()}catch(err){setError(err instanceof Error?err.message:"Login failed")}}}>
+    <h1>FreshGate</h1><p>{mode === "login" ? "Sign in to your account" : "Create an account"}</p>
+    <label className="field-group"><span className="field-label">Email</span><input type="email" required value={email} onChange={e=>setEmail(e.target.value)}/></label>
+    <label className="field-group"><span className="field-label">Password</span><input type="password" minLength={10} required value={password} onChange={e=>setPassword(e.target.value)}/></label>
+    {error && <InlineNotice>{error}</InlineNotice>}<button className="primary-button">{mode === "login" ? "Log in" : "Register"}</button>
+    <button type="button" className="text-button" onClick={()=>setMode(mode === "login" ? "register" : "login")}>{mode === "login" ? "Create account" : "Back to login"}</button>
+  </form></div>;
+}
+
+function ProfileView({ onSaved }: { onSaved: (s:any)=>void }) {
+ const [v,setV]=useState({provider:"openai",api_key:"",model:"gpt-4o-mini",base_url:"https://api.openai.com/v1",tavily_key:""}); const [error,setError]=useState(""); const [ok,setOk]=useState("");
+ useEffect(()=>{api<any>("/api/auth/me").then(x=>setV({...v,provider:x.settings.provider,model:x.settings.model,base_url:x.settings.base_url}))},[]);
+ return <><SectionHeading title="Profile settings" detail="Saved securely to your account."/><form className="folio-panel profile-form" onSubmit={async e=>{e.preventDefault();try{const s=await api<any>("/api/profile/settings",{method:"PUT",body:JSON.stringify(v)});onSaved(s);setV({...v,api_key:"",tavily_key:""});setOk("Settings saved")}catch(x){setError(x instanceof Error?x.message:"Save failed")}}}>
+ <label className="field-group"><span className="field-label">Provider</span><select value={v.provider} onChange={e=>setV({...v,provider:e.target.value})}>{["openai","groq","gemini","ollama","openrouter","custom"].map(x=><option key={x}>{x}</option>)}</select></label>
+ <label className="field-group"><span className="field-label">API key</span><input type="password" value={v.api_key} onChange={e=>setV({...v,api_key:e.target.value})} placeholder="Leave blank to keep saved key"/></label>
+ <label className="field-group"><span className="field-label">Model</span><input required value={v.model} onChange={e=>setV({...v,model:e.target.value})}/></label><label className="field-group"><span className="field-label">Base URL</span><input required value={v.base_url} onChange={e=>setV({...v,base_url:e.target.value})}/></label>
+ <label className="field-group"><span className="field-label">Tavily key</span><input type="password" value={v.tavily_key} onChange={e=>setV({...v,tavily_key:e.target.value})} placeholder="Leave blank to keep saved key"/></label>
+ {error&&<InlineNotice>{error}</InlineNotice>}{ok&&<InlineNotice variant="success">{ok}</InlineNotice>}<button className="primary-button">Save settings</button></form></>;
+}
+
+function VerifyView({ settings, policies, onMonitor }: { settings: any; policies: Policy[]; onMonitor: (claim: Claim, result: VerificationResult) => Promise<void> }) {
+  const [answer, setAnswer] = useState("");
+  const [policyId, setPolicyId] = useState("");
+>>>>>>> 60d76df5e69c81f6f854d8a8b8e6cd8999a981ab
   const [providers, setProviders] = useState<ProviderOption[]>([]);
   const [models, setModels] = useState<string[]>([]);
   const [customModel, setCustomModel] = useState("");
@@ -881,8 +996,14 @@ function VerifyView({ user, policies, onMonitor }: { user?: User | null; policie
 
   const verify = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+<<<<<<< HEAD
     if (!user?.settings?.is_complete) {
       setError("Finish your Profile before checking responses.");
+=======
+    if (!answer.trim()) { setError("Paste a response before starting a check."); return; }
+    if (!settings?.has_api_key || !settings?.has_tavily_key) {
+      setError("Add your API and Tavily keys under Profile settings first.");
+>>>>>>> 60d76df5e69c81f6f854d8a8b8e6cd8999a981ab
       return;
     }
     if (!answer.trim()) {
@@ -895,10 +1016,18 @@ function VerifyView({ user, policies, onMonitor }: { user?: User | null; policie
     setResult(null);
     setSelectedClaimId(null);
     try {
+<<<<<<< HEAD
       const data = await api<VerificationResult>("/verify", jsonBody({
         answer,
         ...(policyId ? { policy_id: policyId } : {}),
       }));
+=======
+      const body = {
+        answer,
+        ...(policyId ? { policy_id: policyId } : {}),
+      };
+      const data = await api<VerificationResult>("/verify", jsonBody(body));
+>>>>>>> 60d76df5e69c81f6f854d8a8b8e6cd8999a981ab
       setResult(data);
       setSelectedClaimId(data.claims[0]?.id ?? null);
       setMessage(data.summary.message ?? "Verification finished.");
