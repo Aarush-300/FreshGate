@@ -858,23 +858,55 @@ async def clear_cache():
 
 # Mount dashboard directory for static UI serving
 dashboard_dir = Path(__file__).resolve().parent.parent / "dashboard" / "dist"
-if dashboard_dir.exists():
-    app.mount("/static", StaticFiles(directory=str(dashboard_dir)), name="static")
+dashboard_public_dir = Path(__file__).resolve().parent.parent / "dashboard" / "public"
+dashboard_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/static", StaticFiles(directory=str(dashboard_dir)), name="static")
 
-    @app.get("/favicon.ico", include_in_schema=False)
-    async def favicon():
-        ico_file = dashboard_dir / "favicon.ico"
-        if ico_file.exists():
-            from fastapi.responses import FileResponse
-            return FileResponse(str(ico_file), media_type="image/x-icon")
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
+DEFAULT_FAVICON_BYTES = (
+    b"\x00\x00\x01\x00\x01\x00  \x00\x00\x01\x00 \x00\xe2\x00\x00\x00\x16\x00\x00\x00"
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00 \x00\x00\x00 \x08\x06\x00\x00\x00szz\xf4"
+    b"\x00\x00\x00\xa9IDATx\xda\xed\x971\x0e\x80 \x0cE9\x91\xabg\xf0\xfewpvp\xd7\x15AI\xff\xff"
+    b"4\xd4\x04\x12\xb6\xa6\xef\x11\xa5\xb4)\xfdm-\xdbz\xb5\xf6\x10\xa8\xab\x0c\x0b\x97%T\xb0$"
+    b"\xd2\x1b\x0eIx\xc1\xcd\x12*\xe0<\xf6\xc7\x86\x04\x98\x84\xad\xd8\xafx\xe8\xe4\xd6\xa4oq"
+    b"\x90\x04\"P&m\xc1\xdd\x04\xf2\xc4(\xbc\x12@\xbfk\t@\xe1\x95\x84\"\xc0\xc2\xcd\x02\x8c\x04\\"
+    b"\x13\xd8;\xce\x82i\x01\xb6>\xb8\x08\xe4\x12rY\x9e\x02\xea\x7f\xd0\xe5U\x9c\x02\x8c\x84|"
+    b"\xffU\tF\xa0kG\xe4\"0\xbc)\r\xd1\x96\x87\x18L\xc2\x8cf!\x86S\xcfu\x03xy\xb3\x9c\xe3\xb6&"
+    b"\xd8\x00\x00\x00\x00IEND\xaeB`\x82"
+)
 
-    @app.get("/", response_class=HTMLResponse)
-    async def get_dashboard():
-        index_file = dashboard_dir / "index.html"
-        if index_file.exists():
-            return index_file.read_text(encoding="utf-8")
-        return "<h1>FreshGate Gateway</h1><p>Dashboard index.html not found</p>"
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    from fastapi.responses import FileResponse
+    ico_dist = dashboard_dir / "favicon.ico"
+    if ico_dist.exists():
+        return FileResponse(str(ico_dist), media_type="image/x-icon")
+    ico_public = dashboard_public_dir / "favicon.ico"
+    if ico_public.exists():
+        return FileResponse(str(ico_public), media_type="image/x-icon")
+    return Response(content=DEFAULT_FAVICON_BYTES, media_type="image/x-icon", status_code=status.HTTP_200_OK)
+
+
+@app.get("/", response_class=HTMLResponse)
+async def get_dashboard():
+    index_file = dashboard_dir / "index.html"
+    if index_file.exists():
+        return index_file.read_text(encoding="utf-8")
+    return HTMLResponse(
+        content="""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>FreshGate</title>
+    <link rel="stylesheet" href="/static/assets/index.css" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/static/assets/index.js"></script>
+  </body>
+</html>""",
+        status_code=200,
+    )
 
 
 @app.get("/sw.js")

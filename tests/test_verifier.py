@@ -138,8 +138,8 @@ async def test_verify_claims_concurrent_execution():
 @pytest.mark.asyncio
 async def test_live_outdated_claim_contradicted():
     api_key = os.getenv("TAVILY_API_KEY")
-    if not api_key:
-        pytest.skip("TAVILY_API_KEY not configured, skipping live test")
+    if not api_key or "test" in api_key or "mock" in api_key:
+        pytest.skip("TAVILY_API_KEY not configured with live key, skipping live test")
 
     verifier = ClaimVerifier()
     # Twitter CEO was changed from Jack Dorsey / Parag Agrawal to Linda Yaccarino

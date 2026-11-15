@@ -24,6 +24,8 @@ jobs:
           pip install -r requirements.txt -r requirements-dev.txt
 
       - name: Run Pytest
+        env:
+          OPENAI_API_KEY: sk-test-valid-mock-key-for-test-suite-runs
         run: |
           python -m pytest -q
 

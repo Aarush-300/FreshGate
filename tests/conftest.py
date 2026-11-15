@@ -4,6 +4,7 @@ import os
 os.environ["FRESHGATE_STORE"] = "sqlite"
 os.environ.setdefault("FRESHGATE_SESSION_SECRET", "freshgate-test-session-secret-at-least-24-chars-long")
 os.environ.setdefault("FRESHGATE_ADMIN_KEY", "test-admin-secret-key-at-least-24-chars-long")
+os.environ.setdefault("OPENAI_API_KEY", "sk-test-valid-mock-key-for-test-suite-runs")
 
 import uuid
 from pathlib import Path
