@@ -9,4 +9,4 @@ This Go shared-object plugin runs inside a dynamically linked Bifrost build on L
 The Go plugin authenticates against FreshGate's dedicated `/api/plugin/verify` endpoint:
 - **Endpoint:** `POST /api/plugin/verify`
 - **Authentication:** `X-API-Key` header verified against `FRESHGATE_API_KEY`.
-- **Configuration:** Set `FRESHGATE_API_KEY` in the environment or provide `"api_key": "<your-key>"` in the plugin's `config.json`. You can also configure the target verification endpoint via `freshgate_url` (defaults to `http://127.0.0.1:8000/api/plugin/verify`) or the `FRESHGATE_URL` environment variable.
+- **Configuration:** Set `FRESHGATE_API_KEY` in the environment. The key should come from the `FRESHGATE_API_KEY` environment variable rather than hardcoding it in the JSON config file. You can configure the target verification endpoint via `freshgate_url` (defaults to `http://127.0.0.1:8000/api/plugin/verify`) or the `FRESHGATE_URL` environment variable.

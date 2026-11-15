@@ -55,7 +55,7 @@ class FakePipeline:
         self.result = result
         self.policies = []
 
-    async def verify(self, answer_text, policy=None):
+    async def verify(self, answer_text, policy=None, **kwargs):
         assert answer_text == "Python 3.13 is the current stable release"
         self.policies.append(policy)
         return self.result

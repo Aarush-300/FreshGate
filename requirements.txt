@@ -4,7 +4,7 @@ uvicorn==0.54.0
 httpx==0.28.1
 pydantic==2.14.3
 python-dotenv==1.2.4
-redis>=5.0.0
+redis==8.1.0
 pymongo[srv]==4.20.0
 itsdangerous==2.2.0
 cryptography==50.0.2

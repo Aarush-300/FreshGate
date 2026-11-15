@@ -14,7 +14,7 @@ from core.persistence import SQLiteFeatureStore
 from core.pipeline import FreshGatePipeline
 from core.policies import get_policy
 from core.watchtower import WatchtowerService
-from server.app import app
+from server.app import app, get_request_pipeline
 
 
 def test_policy_verify_watchtower_alert_replay_and_cli_end_to_end(monkeypatch, auth_cookie):
@@ -62,6 +62,7 @@ def test_policy_verify_watchtower_alert_replay_and_cli_end_to_end(monkeypatch, a
         }),
     )
     monkeypatch.setattr("server.app.pipeline", pipeline)
+    app.dependency_overrides[get_request_pipeline] = lambda: pipeline
     monkeypatch.setattr("server.app.get_policy", lambda policy_id: get_policy(policy_id, store=store))
     monkeypatch.setattr(
         "core.llm_manager.get_llm_manager",
@@ -140,5 +141,6 @@ def test_policy_verify_watchtower_alert_replay_and_cli_end_to_end(monkeypatch, a
             assert cli_result["claims"][0]["verdict"] == "confirmed"
             assert cli_result["claims"][0]["verification_id"]
     finally:
+        app.dependency_overrides.pop(get_request_pipeline, None)
         for suffix in ("", "-wal", "-shm"):
             Path(f"{db_path}{suffix}").unlink(missing_ok=True)

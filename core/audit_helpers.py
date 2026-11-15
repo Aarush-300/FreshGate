@@ -45,3 +45,34 @@ async def write_audit(
         )
     except Exception:
         logger.exception("audit write failed")  # audit must never break a request
+
+
+async def write_audit_failure(
+    text: str,
+    *,
+    source: str,
+    mode: Optional[str] = None,
+    reason: str = "fail-open",
+    corr_id: Optional[str] = None,
+    owner_id: Optional[str] = None,
+    latency_ms: int = 0,
+) -> None:
+    try:
+        status_val = "fail-open" if ("fail" in reason.lower() or "timeout" in reason.lower()) else "error"
+        effective_mode = mode or reason
+        await audit_store.arecord_audit(
+            audit_id=f"audit-{uuid.uuid4().hex}",
+            correlation_id=corr_id or "req-unknown",
+            input_text=text,
+            claims_data=[],
+            total_claims=0,
+            stale_claims=0,
+            avg_score=None,
+            latency_ms=latency_ms,
+            status=status_val,
+            owner_id=owner_id,
+            source=source,
+            mode=effective_mode,
+        )
+    except Exception:
+        logger.exception("audit failure write failed")

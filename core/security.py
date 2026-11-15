@@ -11,6 +11,7 @@ Provides:
 
 import os
 import hmac
+import hashlib
 import time
 import re
 import threading
@@ -25,16 +26,30 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 # --- Secret Management & Auth ---
 
+def _is_placeholder_secret(val: str) -> bool:
+    v = (val or "").strip().lower()
+    return (
+        v.startswith("replace")
+        or v.startswith("your_")
+        or v.startswith("changeme")
+        or v.startswith("dev-secret")
+        or v.startswith("optional")
+        or v == "secret"
+    )
+
+
 def get_configured_api_key() -> Optional[str]:
     key = os.getenv("FRESHGATE_API_KEY", "").strip()
-    return key if key else None
+    if not key or _is_placeholder_secret(key):
+        return None
+    return key
 
 
 _PLACEHOLDER_ADMIN = {"your_admin_secret_token_here", "changeme", "admin", "test"}
 
 def get_configured_admin_key() -> Optional[str]:
     key = os.getenv("FRESHGATE_ADMIN_KEY", "").strip()
-    if not key or key.lower() in _PLACEHOLDER_ADMIN or key.lower().startswith("your_"):
+    if not key or key.lower() in _PLACEHOLDER_ADMIN or _is_placeholder_secret(key):
         return None   # treated as "not configured" -> admin routes return 403
     return key
 
@@ -75,6 +90,17 @@ def verify_api_key(request: Request) -> bool:
     return True
 
 
+def require_api_key_strict(request: Request) -> bool:
+    """Validate API key strictly; in production with no key set, return 503."""
+    env = os.getenv("FRESHGATE_ENV", "").strip().lower()
+    if env == "production" and not get_configured_api_key():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="FRESHGATE_API_KEY must be set for this endpoint",
+        )
+    return verify_api_key(request)
+
+
 def verify_admin_key(request: Request) -> bool:
     """Validate admin token with timing-safe comparison."""
     expected = get_configured_admin_key()
@@ -113,12 +139,22 @@ class SlidingWindowRateLimiter:
         self.window_size_seconds = 60.0
         self._history: Dict[str, list[float]] = defaultdict(list)
         self._lock = threading.Lock()
+        self._call_count = 0
 
     def is_allowed(self, client_id: str) -> Tuple[bool, int]:
         """Check if client request is within rate limit. Returns (is_allowed, retry_after)."""
         now = time.time()
         cutoff = now - self.window_size_seconds
         with self._lock:
+            self._call_count += 1
+            if self._call_count % 1000 == 0:
+                to_delete = [
+                    cid for cid, ts_list in self._history.items()
+                    if not ts_list or max(ts_list) <= cutoff
+                ]
+                for cid in to_delete:
+                    self._history.pop(cid, None)
+
             timestamps = self._history[client_id]
 
             # Prune expired timestamps
@@ -142,6 +178,7 @@ class SlidingWindowRateLimiter:
     def reset(self):
         with self._lock:
             self._history.clear()
+            self._call_count = 0
 
 
 # Default instance
@@ -288,62 +325,69 @@ class RequestBodySizeLimitMiddleware:
             except ValueError:
                 pass
 
-        received_bytes = 0
-        exceeded = False
-
-        async def limited_receive():
-            nonlocal received_bytes, exceeded
+        # For requests without Content-Length (or chunked), read up front into a buffer
+        messages = []
+        total_bytes = 0
+        while True:
             message = await receive()
             if message["type"] == "http.request":
                 body = message.get("body", b"")
-                received_bytes += len(body)
-                if received_bytes > self.max_body_bytes:
-                    exceeded = True
-                    raise HTTPException(status_code=413, detail=f"Payload Too Large: Maximum allowed size is {self.max_body_bytes} bytes.")
-            return message
-
-        async def wrapped_send(message):
-            if exceeded:
+                total_bytes += len(body)
+                if total_bytes > self.max_body_bytes:
+                    response = JSONResponse(
+                        status_code=413,
+                        content={
+                            "error": {
+                                "message": f"Payload Too Large: Maximum allowed size is {self.max_body_bytes} bytes.",
+                                "type": "payload_too_large",
+                            }
+                        },
+                    )
+                    return await response(scope, receive, send)
+                messages.append(message)
+                if not message.get("more_body", False):
+                    break
+            elif message["type"] == "http.disconnect":
                 return
-            await send(message)
-
-        try:
-            await self.app(scope, limited_receive, wrapped_send)
-        except HTTPException as exc:
-            if exc.status_code == 413:
-                exceeded = True
             else:
-                raise
+                messages.append(message)
+                break
 
-        if exceeded:
-            response = JSONResponse(
-                status_code=413,
-                content={
-                    "error": {
-                        "message": f"Payload Too Large: Maximum allowed size is {self.max_body_bytes} bytes.",
-                        "type": "payload_too_large",
-                    }
-                },
-            )
-            return await response(scope, receive, send)
+        # Replay the buffered messages
+        msg_idx = 0
+        async def replaying_receive():
+            nonlocal msg_idx
+            if msg_idx < len(messages):
+                msg = messages[msg_idx]
+                msg_idx += 1
+                return msg
+            return await receive()
+
+        return await self.app(scope, replaying_receive, send)
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
-    """Rate limit protected API endpoints per client IP."""
+    """Rate limit protected API endpoints per client IP and valid token."""
 
-    def __init__(self, app, limiter: SlidingWindowRateLimiter):
+    def __init__(
+        self,
+        app,
+        limiter: SlidingWindowRateLimiter,
+        token_limiter: Optional[SlidingWindowRateLimiter] = None,
+    ):
         super().__init__(app)
         self.limiter = limiter
+        rpm = getattr(limiter, "requests_per_minute", 60)
+        self.token_limiter = token_limiter or SlidingWindowRateLimiter(requests_per_minute=rpm * 2)
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
         # Only rate limit compute-heavy endpoints
-        if path.startswith(("/verify", "/proxy", "/v1/chat/completions")):
+        if path.startswith(("/verify", "/proxy", "/v1/chat/completions", "/api/plugin")):
             client_ip = request.client.host if request.client else "unknown"
-            token = extract_token_from_request(request)
-            client_id = f"token:{token}" if token else f"ip:{client_ip}"
+            ip_id = f"ip:{client_ip}"
 
-            allowed, retry_after = await asyncio.to_thread(self.limiter.is_allowed, client_id)
+            allowed, retry_after = await asyncio.to_thread(self.limiter.is_allowed, ip_id)
             if not allowed:
                 return JSONResponse(
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -356,6 +400,27 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                     },
                     headers={"Retry-After": str(retry_after)},
                 )
+
+            token = extract_token_from_request(request)
+            expected = get_configured_api_key()
+            if token and expected and hmac.compare_digest(token.encode("utf-8"), expected.encode("utf-8")):
+                rpm = getattr(self.limiter, "requests_per_minute", 60)
+                self.token_limiter.requests_per_minute = max(2, rpm * 2)
+                token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+                token_id = f"token:{token_hash}"
+                t_allowed, t_retry_after = await asyncio.to_thread(self.token_limiter.is_allowed, token_id)
+                if not t_allowed:
+                    return JSONResponse(
+                        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                        content={
+                            "error": {
+                                "message": f"Too Many Requests: Rate limit exceeded. Retry after {t_retry_after} seconds.",
+                                "type": "rate_limit_exceeded",
+                                "retry_after": t_retry_after,
+                            }
+                        },
+                        headers={"Retry-After": str(t_retry_after)},
+                    )
 
         return await call_next(request)
 

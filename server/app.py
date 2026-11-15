@@ -18,7 +18,7 @@ import httpx
 from dotenv import load_dotenv
 from pymongo.errors import DuplicateKeyError
 from core.mongo import ensure_indexes, ping as mongo_ping
-from core.audit_helpers import write_audit
+from core.audit_helpers import write_audit, write_audit_failure
 from server.routes.profile import router as profile_router
 from server.pipeline_factory import get_shared_pipeline, build_user_pipeline
 from server.netguard import validate_base_url
@@ -27,6 +27,7 @@ from server.users import (
     serializer,
     password_hash,
     check_password,
+    DUMMY_PASSWORD_HASH,
     current_user,
     optional_current_user,
     public_settings,
@@ -54,6 +55,7 @@ from core.security import (
     RateLimitMiddleware,
     rate_limiter,
     verify_api_key,
+    require_api_key_strict,
     verify_admin_key,
     sanitize_error_detail,
 )
@@ -83,6 +85,41 @@ FRESHGATE_MIN_SCORE = cfg.min_score
 FRESHGATE_BLOCK_STALE = cfg.block_stale
 MAX_BODY_SIZE = cfg.max_body_size_bytes
 
+_mongo_indexes_ready = False
+
+
+async def _ensure_indexes_with_backoff():
+    global _mongo_indexes_ready
+    delay = 1.0
+    while not _mongo_indexes_ready:
+        try:
+            await asyncio.to_thread(ensure_indexes)
+            _mongo_indexes_ready = True
+            logger.info("MongoDB indexes successfully created/verified.")
+            break
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            logger.error("MongoDB index setup failed (retrying in %.1fs): %s", delay, exc)
+            try:
+                await asyncio.sleep(delay)
+            except asyncio.CancelledError:
+                break
+            delay = min(delay * 2, 30.0)
+
+
+async def _periodic_cache_cleanup():
+    try:
+        # Run once at startup
+        await asyncio.to_thread(pipeline.cache.cleanup_expired)
+        while True:
+            await asyncio.sleep(1800)  # 30 minutes
+            await asyncio.to_thread(pipeline.cache.cleanup_expired)
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        logger.warning("Periodic cache cleanup sweep error: %s", e)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -90,13 +127,21 @@ async def lifespan(app: FastAPI):
     current_cfg = get_config()
     logger.info("Starting FreshGate Gateway (mode=%s, upstream=%s)", current_cfg.freshgate_mode, current_cfg.bifrost_upstream_url)
     _ = get_llm_manager()
-    try:
-        await asyncio.to_thread(ensure_indexes)
-    except Exception as exc:
-        logger.error("MongoDB index setup failed: %s", exc)
+    cache_task = asyncio.create_task(_periodic_cache_cleanup())
+    index_task = asyncio.create_task(_ensure_indexes_with_backoff())
     await watchtower_service.start()
     yield
     logger.info("Shutting down FreshGate Gateway connection pools...")
+    cache_task.cancel()
+    index_task.cancel()
+    try:
+        await cache_task
+    except (asyncio.CancelledError, Exception):
+        pass
+    try:
+        await index_task
+    except (asyncio.CancelledError, Exception):
+        pass
     try:
         await watchtower_service.stop()
     except Exception as exc:
@@ -150,10 +195,18 @@ _login_attempts: dict[str, list[float]] = {}
 _login_lock = threading.Lock()
 
 
+def _prune_login_attempts_if_needed(cutoff: float) -> None:
+    if len(_login_attempts) > 10000:
+        stale_keys = [k for k, ts in _login_attempts.items() if not ts or max(ts) <= cutoff]
+        for k in stale_keys:
+            _login_attempts.pop(k, None)
+
+
 def _check_login_attempts(key: str, max_attempts: int = 10) -> None:
     now = time.time()
     cutoff = now - 900  # 15 minutes
     with _login_lock:
+        _prune_login_attempts_if_needed(cutoff)
         timestamps = [t for t in _login_attempts.get(key, []) if t > cutoff]
         if len(timestamps) >= max_attempts:
             raise HTTPException(
@@ -167,6 +220,7 @@ def _record_failed_login(key: str) -> None:
     now = time.time()
     cutoff = now - 900
     with _login_lock:
+        _prune_login_attempts_if_needed(cutoff)
         timestamps = [t for t in _login_attempts.get(key, []) if t > cutoff]
         timestamps.append(now)
         _login_attempts[key] = timestamps
@@ -190,15 +244,23 @@ async def register(body: AuthBody, response: Response):
     uid = uuid.uuid4().hex
     pw_hash = await asyncio.to_thread(password_hash, body.password)
     try:
-        users_collection().insert_one({
-            "_id": uid,
-            "email": email,
-            "password_hash": pw_hash,
-            "settings": {},
-            "created_at": time.time(),
-        })
+        existing = await asyncio.to_thread(users_collection().find_one, {"email": email})
+        if existing:
+            raise HTTPException(status.HTTP_409_CONFLICT, "Email is already registered.")
+        await asyncio.to_thread(
+            users_collection().insert_one,
+            {
+                "_id": uid,
+                "email": email,
+                "password_hash": pw_hash,
+                "settings": {},
+                "created_at": time.time(),
+            },
+        )
     except DuplicateKeyError:
         raise HTTPException(status.HTTP_409_CONFLICT, "Email is already registered.")
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error("Registration database error: %s", exc)
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Database error during registration.")
@@ -233,7 +295,7 @@ async def login(body: AuthBody, request: Request, response: Response):
     if user:
         is_valid = await asyncio.to_thread(check_password, body.password, user.get("password_hash", ""))
     else:
-        await asyncio.to_thread(check_password, body.password, "pbkdf2:sha256:310000$dummy$00000000000000000000000000000000")
+        await asyncio.to_thread(check_password, body.password, DUMMY_PASSWORD_HASH)
         is_valid = False
 
     if not user or not is_valid:
@@ -300,6 +362,17 @@ def build_request_pipeline(
     return build_user_pipeline(creds, owner_id=None, base=pipeline)
 
 
+def _filter_upstream_headers(headers: Dict[str, str]) -> Dict[str, str]:
+    """Allow-list headers forwarded upstream to Bifrost."""
+    allowed_exact = {"authorization", "content-type", "accept", "x-request-id"}
+    forward_headers = {}
+    for k, v in headers.items():
+        k_lower = k.lower()
+        if k_lower in allowed_exact or k_lower.startswith("x-bf-"):
+            forward_headers[k] = v
+    return forward_headers
+
+
 async def forward_to_upstream(
     method: str,
     path: str,
@@ -309,12 +382,7 @@ async def forward_to_upstream(
 ) -> Tuple[int, Any, Dict[str, str]]:
     """Forward incoming request directly to upstream Bifrost gateway."""
     target_url = f"{BIFROST_UPSTREAM_URL}{path}"
-    # Filter out hop-by-hop headers
-    forward_headers = {
-        k: v
-        for k, v in headers.items()
-        if k.lower() not in ("host", "content-length", "connection")
-    }
+    forward_headers = _filter_upstream_headers(headers)
 
     async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.request(
@@ -341,11 +409,7 @@ async def stream_from_upstream(
 ):
     """Open streaming connection to upstream Bifrost gateway."""
     target_url = f"{BIFROST_UPSTREAM_URL}{path}"
-    forward_headers = {
-        k: v
-        for k, v in headers.items()
-        if k.lower() not in ("host", "content-length", "connection")
-    }
+    forward_headers = _filter_upstream_headers(headers)
     client = httpx.AsyncClient(timeout=timeout)
     req = client.build_request(
         method=method,
@@ -459,7 +523,7 @@ async def health_ready():
 
     cache_status = "connected"
     try:
-        _ = pipeline.cache.get_stats()
+        _ = await asyncio.to_thread(pipeline.cache.get_stats)
     except Exception as e:
         logger.error("Readiness probe database check failed: %s", e)
         cache_status = "unavailable"
@@ -475,6 +539,7 @@ async def health_ready():
             "status": "ready" if is_ready else "not_ready",
             "database": db_status,
             "cache": cache_status,
+            "indexes": _mongo_indexes_ready,
             "upstream": BIFROST_UPSTREAM_URL,
         },
     )
@@ -518,6 +583,25 @@ async def get_recent_audits(
     return {"audits": rows, "limit": limit, "offset": offset, "total": total, "persistent": persistent}
 
 
+def _load_policy(req: VerifyRequest, user: Optional[dict] = None):
+    if not req.policy_id:
+        return None
+    if user:
+        from core.policies import get_feature_store as get_policies_feature_store
+        store = get_policies_feature_store().for_owner(user["_id"])
+        try:
+            policy = get_policy(req.policy_id, store=store)
+        except TypeError:
+            policy = get_policy(req.policy_id)
+    else:
+        policy = get_policy(req.policy_id)
+    if policy is None:
+        raise HTTPException(status_code=404, detail="Policy not found")
+    if not policy.enabled:
+        raise HTTPException(status_code=409, detail="Selected policy is disabled")
+    return policy
+
+
 @app.post("/verify", response_model=VerificationResult)
 async def verify_answer(
     req: VerifyRequest,
@@ -528,34 +612,10 @@ async def verify_answer(
     user = optional_current_user(request)
     req_pipeline: FreshGatePipeline
     is_ephemeral = False
-    policy = None
 
     if req_pipeline_dep is not None:
         req_pipeline = req_pipeline_dep
         is_ephemeral = False
-        if req.policy_id:
-            store = get_feature_store().for_owner(user["_id"]) if user else get_feature_store()
-            try:
-                policy = get_policy(req.policy_id, store=store)
-            except TypeError:
-                policy = get_policy(req.policy_id)
-            if policy is None:
-                raise HTTPException(status_code=404, detail="Policy not found")
-            if not policy.enabled:
-                raise HTTPException(status_code=409, detail="Selected policy is disabled")
-    elif pipeline is not _shared_pipeline_instance:
-        req_pipeline = pipeline
-        is_ephemeral = False
-        if req.policy_id:
-            store = get_feature_store().for_owner(user["_id"]) if user else get_feature_store()
-            try:
-                policy = get_policy(req.policy_id, store=store)
-            except TypeError:
-                policy = get_policy(req.policy_id)
-            if policy is None:
-                raise HTTPException(status_code=404, detail="Policy not found")
-            if not policy.enabled:
-                raise HTTPException(status_code=409, detail="Selected policy is disabled")
     elif user:
         creds = load_credentials(user)
         if creds is None:
@@ -565,16 +625,6 @@ async def verify_answer(
             )
         req_pipeline = build_user_pipeline(creds, user["_id"], base=pipeline)
         is_ephemeral = True
-        if req.policy_id:
-            store = get_feature_store().for_owner(user["_id"])
-            try:
-                policy = get_policy(req.policy_id, store=store)
-            except TypeError:
-                policy = get_policy(req.policy_id)
-            if policy is None:
-                raise HTTPException(status_code=404, detail="Policy not found")
-            if not policy.enabled:
-                raise HTTPException(status_code=409, detail="Selected policy is disabled")
     else:
         header_provider = request.headers.get("X-LLM-Provider") or getattr(req, "provider", None)
         llm_key = (
@@ -612,15 +662,7 @@ async def verify_answer(
         )
         is_ephemeral = True
 
-        if req.policy_id:
-            try:
-                policy = get_policy(req.policy_id)
-            except Exception:
-                policy = None
-            if policy is None:
-                raise HTTPException(status_code=404, detail="Policy not found")
-            if not policy.enabled:
-                raise HTTPException(status_code=409, detail="Selected policy is disabled")
+    policy = _load_policy(req, user)
     try:
         t0 = time.perf_counter()
         result = await req_pipeline.verify(
@@ -643,14 +685,43 @@ async def verify_answer(
     except Exception as e:
         safe_msg = sanitize_error_detail(e)
         logger.error("Direct verification failed: %s", safe_msg)
+        await write_audit_failure(
+            req.answer,
+            source="verify",
+            mode=None,
+            reason=safe_msg,
+            corr_id=getattr(request.state, "correlation_id", None),
+            owner_id=(user["_id"] if user else None),
+        )
         raise HTTPException(status_code=500, detail=safe_msg)
     finally:
         if is_ephemeral and hasattr(req_pipeline, "verifier") and hasattr(req_pipeline.verifier, "tavily_client"):
             await req_pipeline.verifier.tavily_client.aclose()
 
 
-@app.post("/proxy/v1/chat/completions")
-@app.post("/v1/chat/completions")
+def _consume_sse_line(line: str, state: dict) -> None:
+    line = line.strip()
+    if not line.startswith("data:"):
+        return
+    data = line[5:].strip()
+    if not data or data == "[DONE]":
+        return
+    try:
+        parsed = json.loads(data)
+    except ValueError:
+        return
+    if not state.get("completion_id") and parsed.get("id"):
+        state["completion_id"] = parsed["id"]
+    choices = parsed.get("choices") or []
+    if choices and isinstance(choices, list):
+        piece = (choices[0].get("delta") or {}).get("content")
+        if piece and state["chars"] < 50000:
+            state["chunks"].append(piece)
+            state["chars"] += len(piece)
+
+
+@app.post("/proxy/v1/chat/completions", dependencies=[Depends(require_api_key_strict)])
+@app.post("/v1/chat/completions", dependencies=[Depends(require_api_key_strict)])
 async def proxy_chat_completions(request: Request, background_tasks: BackgroundTasks):
     """Drop-in OpenAI chat completions proxy in front of Bifrost.
 
@@ -686,9 +757,7 @@ async def proxy_chat_completions(request: Request, background_tasks: BackgroundT
             )
 
         async def event_generator():
-            accumulated_chunks = []
-            accumulated_chars = 0
-            completion_id = None
+            state = {"chunks": [], "chars": 0, "completion_id": None}
             decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
             buffer = ""
             try:
@@ -700,19 +769,7 @@ async def proxy_chat_completions(request: Request, background_tasks: BackgroundT
                         lines = buffer.split("\n")
                         buffer = lines.pop()
                         for line in lines:
-                            line = line.strip()
-                            if line.startswith("data: ") and not line.endswith("[DONE]"):
-                                data_str = line[6:]
-                                parsed = json.loads(data_str)
-                                if not completion_id and parsed.get("id"):
-                                    completion_id = parsed.get("id")
-                                choices = parsed.get("choices", [])
-                                if choices and isinstance(choices, list):
-                                    delta = choices[0].get("delta", {})
-                                    content_piece = delta.get("content")
-                                    if content_piece and accumulated_chars < 50000:
-                                        accumulated_chunks.append(content_piece)
-                                        accumulated_chars += len(content_piece)
+                            _consume_sse_line(line, state)
                     except Exception:
                         pass
             finally:
@@ -721,28 +778,16 @@ async def proxy_chat_completions(request: Request, background_tasks: BackgroundT
                     buffer += remaining
                     if buffer.strip():
                         for line in buffer.split("\n"):
-                            line = line.strip()
-                            if line.startswith("data: ") and not line.endswith("[DONE]"):
-                                data_str = line[6:]
-                                parsed = json.loads(data_str)
-                                if not completion_id and parsed.get("id"):
-                                    completion_id = parsed.get("id")
-                                choices = parsed.get("choices", [])
-                                if choices and isinstance(choices, list):
-                                    delta = choices[0].get("delta", {})
-                                    content_piece = delta.get("content")
-                                    if content_piece and accumulated_chars < 50000:
-                                        accumulated_chunks.append(content_piece)
-                                        accumulated_chars += len(content_piece)
+                            _consume_sse_line(line, state)
                 except Exception:
                     pass
 
                 if hasattr(stream_resp, "aclose"):
                     await stream_resp.aclose()
 
-                full_content = "".join(accumulated_chunks).strip()
-                if full_content and completion_id:
-                    background_tasks.add_task(run_streaming_verification, completion_id, full_content)
+                full_content = "".join(state["chunks"]).strip()
+                if full_content and state["completion_id"]:
+                    background_tasks.add_task(run_streaming_verification, state["completion_id"], full_content)
 
         return StreamingResponse(
             event_generator(),
@@ -797,6 +842,14 @@ async def proxy_chat_completions(request: Request, background_tasks: BackgroundT
     # 3b. Circuit breaker check
     if not circuit_breaker.can_execute():
         logger.warning("Circuit breaker is OPEN. Immediate fail-open pass-through.")
+        background_tasks.add_task(
+            write_audit_failure,
+            assistant_content,
+            source="proxy",
+            mode=active_mode,
+            reason="circuit_breaker_tripped",
+            corr_id=getattr(request.state, "correlation_id", "req-unknown"),
+        )
         headers_to_add = {
             "X-FreshGate-Status": "fail-open",
             "X-FreshGate-Circuit-Breaker": "open",
@@ -811,17 +864,30 @@ async def proxy_chat_completions(request: Request, background_tasks: BackgroundT
             pipeline.verify(assistant_content),
             timeout=FRESHGATE_TIMEOUT,
         )
-        circuit_breaker.record_success()
+        if getattr(getattr(verification, "summary", None), "status", None) in ("verification_failed", "extraction_failed"):
+            circuit_breaker.record_failure()
+        else:
+            circuit_breaker.record_success()
     except (asyncio.TimeoutError, Exception) as e:
         circuit_breaker.record_failure()
         safe_msg = sanitize_error_detail(e)
         logger.warning("FreshGate verification failed/timed out, failing open: %s", safe_msg)
         duration_sec = time.perf_counter() - t0
         metrics.observe_latency(duration_sec)
+        reason = "timeout" if isinstance(e, asyncio.TimeoutError) else "internal_error"
+        background_tasks.add_task(
+            write_audit_failure,
+            assistant_content,
+            source="proxy",
+            mode=active_mode,
+            reason=reason,
+            corr_id=getattr(request.state, "correlation_id", "req-unknown"),
+            latency_ms=int(duration_sec * 1000),
+        )
         # Never leak raw stack traces or internal exception details into HTTP headers
         headers_to_add = {
             "X-FreshGate-Status": "fail-open",
-            "X-FreshGate-Reason": "timeout" if isinstance(e, asyncio.TimeoutError) else "internal_error",
+            "X-FreshGate-Reason": reason,
         }
         return JSONResponse(status_code=200, content=upstream_data, headers=headers_to_add)
 
@@ -895,7 +961,7 @@ async def get_stream_verification(completion_id: str):
     return entry
 
 
-@app.post("/api/plugin/verify", response_model=VerificationResult, dependencies=[Depends(verify_api_key)])
+@app.post("/api/plugin/verify", response_model=VerificationResult, dependencies=[Depends(require_api_key_strict)])
 async def plugin_verify(req: VerifyRequest, request: Request):
     """Dedicated verification endpoint for the native Go plugin."""
     t0 = time.perf_counter()
@@ -925,7 +991,7 @@ async def get_provider_status(auth: dict[str, Any] = Depends(require_user_or_adm
         "openai": llm_stats,
         "tavily": tavily_stats,
         "circuit_breakers": circuit_breaker.get_all_states(),
-        "cache": pipeline.cache.get_stats(),
+        "cache": await asyncio.to_thread(pipeline.cache.get_stats),
         "metrics": metrics.get_summary(),
     }
     if auth.get("type") == "admin":
@@ -977,7 +1043,7 @@ async def get_benchmark_results():
 @app.post("/api/cache/clear", dependencies=[Depends(verify_admin_key)])
 async def clear_cache():
     """Clear SQLite cache. Protected by Admin Key."""
-    pipeline.cache.clear()
+    await asyncio.to_thread(pipeline.cache.clear)
     return {"status": "cleared"}
 
 

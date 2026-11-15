@@ -1,7 +1,7 @@
 """Historical Verification Audit Store (Phase 6).
 
 Provides immutable audit logging of all verified LLM claims and decisions across
-SQLite (default lightweight) and PostgreSQL (distributed production) backends.
+SQLite backend.
 """
 
 import os
@@ -12,6 +12,7 @@ import sqlite3
 import threading
 import logging
 import asyncio
+import hashlib
 from abc import ABC, abstractmethod
 from typing import Optional, Dict, Any, List
 
@@ -135,12 +136,19 @@ class SQLiteAuditStore(AuditStoreBase):
                     (id, correlation_id, created_at, input_text, claims_json, total_claims, stale_claims, avg_score, latency_ms, status, owner_id, source, mode)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """
+                redact = os.getenv("FRESHGATE_AUDIT_REDACT_INPUT", "").strip().lower() == "true"
+                if redact and input_text:
+                    sha = hashlib.sha256(input_text.encode("utf-8")).hexdigest()
+                    stored_input = f"[sha256:{sha}] {input_text[:120]}"
+                else:
+                    stored_input = input_text[:5000]
+
                 params = (
                     audit_id,
                     correlation_id,
                     now,
-                    input_text[:5000],
-                    json.dumps(claims_data),
+                    stored_input,
+                    json.dumps(claims_data, default=str),
                     total_claims,
                     stale_claims,
                     avg_score,
@@ -253,9 +261,6 @@ def get_audit_store() -> AuditStoreBase:
         logger.warning("PostgreSQL audit storage is not implemented; using SQLite. Configure FRESHGATE_AUDIT_DB for the active store.")
     db_file = os.getenv("FRESHGATE_AUDIT_DB", "freshgate_audit.db")
     return SQLiteAuditStore(db_path=db_file)
-
-
-audit_store = get_audit_store()
 
 
 audit_store = get_audit_store()

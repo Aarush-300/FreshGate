@@ -204,7 +204,8 @@ class FreshGatePipeline:
         for idx, claim in enumerate(volatile_claims):
             entity = claim.entities[0] if claim.entities else "general"
             cached_result = (
-                self.cache.get(
+                await asyncio.to_thread(
+                    self.cache.get,
                     claim.text, claim.type, jurisdiction=cache_jurisdiction, entity=entity, policy_scope=cache_scope
                 )
                 if cache_enabled else None
@@ -230,7 +231,8 @@ class FreshGatePipeline:
                 # Re-check cache inside coalesced call
                 entity_name = c.entities[0] if c.entities else "general"
                 cached_c = (
-                    self.cache.get(
+                    await asyncio.to_thread(
+                        self.cache.get,
                         c.text, c.type, jurisdiction=cache_jurisdiction, entity=entity_name, policy_scope=cache_scope
                     )
                     if cache_enabled else None
@@ -248,7 +250,8 @@ class FreshGatePipeline:
                 verified.cached = False
                 if cache_enabled:
                     ttl_override = policy.cache_ttl_seconds.get(c.type) if policy else None
-                    self.cache.set(
+                    await asyncio.to_thread(
+                        self.cache.set,
                         verified,
                         jurisdiction=cache_jurisdiction,
                         entity=entity_name,

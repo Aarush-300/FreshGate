@@ -53,7 +53,7 @@ def _run_watchtower_batch() -> dict[str, Any]:
             self.active = 0
             self.maximum_active = 0
 
-        async def verify(self, answer_text: str, policy=None):
+        async def verify(self, answer_text: str, policy=None, **kwargs):
             self.active += 1
             self.maximum_active = max(self.maximum_active, self.active)
             try:

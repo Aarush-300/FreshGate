@@ -467,17 +467,23 @@ class SingleFlightCoalescer:
                 is_leader = True
 
         if not is_leader:
-            return await fut
+            return await asyncio.shield(fut)
 
         try:
             result = await coroutine_func(*args, **kwargs)
             if not fut.done():
                 fut.set_result(result)
             return result
-        except BaseException as e:
+        except asyncio.CancelledError:
+            if not fut.done():
+                fut.set_exception(RuntimeError("coalesced verification was cancelled"))
+            fut.exception()  # mark retrieved
+            raise
+        except Exception as e:
             if not fut.done():
                 fut.set_exception(e)
-            raise e
+            fut.exception()
+            raise
         finally:
             async with self._lock:
                 self._in_flight.pop(key, None)

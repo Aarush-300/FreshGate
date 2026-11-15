@@ -21,7 +21,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY core/ ./core/
 COPY server/ ./server/
 COPY --from=dashboard-build /dashboard/dist/ ./dashboard/dist/
-COPY bench/ ./bench/
+COPY bench/results.md ./bench/results.md
+COPY bench/dataset_production.json ./bench/dataset_production.json
 COPY cli/ ./cli/
 
 # Set ownership to non-root user and create persistent data volume
@@ -34,4 +35,4 @@ ENV PYTHONUNBUFFERED=1
 
 EXPOSE 8000
 
-CMD ["sh", "-c", "uvicorn server.app:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers --forwarded-allow-ips='*'"]
+CMD ["sh", "-c", "uvicorn server.app:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers --forwarded-allow-ips=${FORWARDED_ALLOW_IPS:-127.0.0.1}"]

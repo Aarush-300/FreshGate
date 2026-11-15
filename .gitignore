@@ -49,12 +49,16 @@ vendor/
 # Test directories and temporary test artifacts
 .freshgate-test-*/
 .freshgate-integration-*
+.freshgate-*/
 
-# Render / editors
+# Render / editors / OS files
 .render/
 .vscode/
 .idea/
 .DS_Store
+Thumbs.db
+desktop.ini
+
 # Generated bench caches
 bench/eval_cache_*.db
 

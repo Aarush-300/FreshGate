@@ -1,245 +1,354 @@
 # FreshGate
 
-FreshGate is an intelligent freshness and factual verification gateway for AI applications. It intercepts, extracts, and verifies time-sensitive factual claims in LLM responses against current primary web evidence in real-time, providing actionable freshness scores and continuous scheduled monitoring.
+**Catch stale facts in LLM answers before your users do.**
 
-Includes a fast FastAPI backend (Python 3.11), a React/Vite/TypeScript dashboard with the high-contrast **Graphite Moss** dark theme, multi-tenant MongoDB persistence, and native/proxy integrations with the Bifrost AI Gateway.
+LLMs state facts that have quietly changed: a CEO who left, an API price that went up, a library version that is no longer current. FreshGate takes any LLM answer, extracts the time-sensitive claims, re-checks each one against live web sources, and returns a verdict and a freshness score per claim. It works as a standalone verifier (dashboard, REST API, CLI) and as a drop-in verification layer in front of the [Bifrost](https://github.com/maximhq/bifrost) AI gateway.
 
----
+Built for a hackathon, covering two tracks:
 
-## 🏆 Hackathon Problem Mapping
-
-FreshGate is engineered to directly solve two primary hackathon problem tracks:
-
-### Problem 01: Stale-Answer Detector & Real-Time Verification
-- **Automated Claim Extraction:** Uses targeted OpenAI-compatible LLM extraction or high-speed heuristics to isolate atomic, verifiable factual statements and categorize them (e.g., `leadership`, `pricing`, `software`, `policy`, `statistics`).
-- **Live Search & Evidence Retrieval:** Queries live web sources using Tavily Search to gather up-to-date primary citations and timestamped snippets.
-- **Freshness Scoring & Verdicts:** An LLM judge scores factual alignment and freshness (0–100) and assigns unambiguous verdicts: `confirmed`, `contradicted`, `partially_supported`, or `unverifiable`.
-- **Watchtower (Continuous Background Monitoring):** Users can monitor critical claims (e.g. CEO changes, price changes, API deprecations) on scheduled intervals. When evidence shifts, Watchtower generates actionable alerts and logs audit history.
-- **Judge-Ready One-Click Demo:** The Verify page includes a **"Try an example"** button that pre-populates a time-sensitive prompt (CEO identity, pricing, and latest software release) for immediate evaluation.
-
-### Problem 04: Bifrost AI Gateway Extension
-- **OpenAI-Compatible Drop-In Proxy:** Route chat completion requests through FreshGate (`/v1/chat/completions` or `/proxy/v1/chat/completions`) before or after Bifrost.
-- **Comprehensive Verification Headers:** Transparently emits `X-FreshGate-Score`, `X-FreshGate-Stale-Count`, `X-FreshGate-Mode`, `X-FreshGate-Status`, and `X-FreshGate-Latency-Ms`.
-- **Enforcement & Guardrail Modes:**
-  - `shadow`: Runs verification asynchronously in the background; returns LLM response immediately.
-  - `warn`: Annotates response with factual warnings and freshness headers without blocking.
-  - `enforce`: Blocks responses containing contradicted or stale claims with HTTP 422 policy violations.
-- **Fail-Open Resilience & Circuit Breakers:** Built-in circuit breakers prevent gateway bottlenecks; if upstream timeouts or search outages occur, FreshGate fails open cleanly without dropping client traffic.
-- **Native Go Plugin:** Includes a dynamic CGO plugin (`plugin/freshgate_plugin.go`) for native Bifrost builds on Linux/macOS.
+- **Track 01, Stale-answer detector:** claim extraction, live re-verification, per-claim freshness score.
+- **Track 04, Bifrost gateway extension:** an OpenAI-compatible proxy with `shadow` / `warn` / `enforce` modes, response headers, circuit breaker with fail-open, and a native Go plugin.
 
 ---
 
-## 🎨 Screenshots & UI Design
+## Contents
 
-The FreshGate dashboard features a custom **Graphite Moss** dark mode palette designed for high contrast, legibility, and zero brown/muddy tones:
-- **Base Background:** Deep Graphite (`#0E1311`) and Surface (`#151B18`)
-- **Accent:** Emerald Moss (`#6CCB95`) and Forest Green (`#3E9B6B`)
-- **Semantic Signals:** Rust (`#F2907F`), Amber Gold (`#E2B75A`), and Slate Info (`#8AA4C4`)
+- [How it works](#how-it-works)
+- [Features](#features)
+- [Quick start](#quick-start)
+- [Configuration](#configuration)
+- [Using FreshGate](#using-freshgate)
+- [Gateway proxy mode](#gateway-proxy-mode)
+- [Audit log](#audit-log)
+- [CLI](#cli)
+- [Go plugin for Bifrost](#go-plugin-for-bifrost)
+- [Deploying](#deploying)
+- [Testing and benchmarks](#testing-and-benchmarks)
+- [Security notes](#security-notes)
+- [Known limitations](#known-limitations)
+- [Project layout](#project-layout)
+- [License](#license)
+
+---
+
+## How it works
 
 ```
-+-------------------------------------------------------------------------+
-| FreshGate | Verify   Watchtower   Policy Studio   Replay   System   Profile |
-+-------------------------------------------------------------------------+
-|  VERIFY A RESPONSE                                                      |
-|  [ Try an example ]                                                     |
-|  "Python 3.13 is current stable. Sam Altman is CEO of OpenAI..."        |
-|  [ Check response ]                                                     |
-|                                                                         |
-|  RESULTS                                                                |
-|  - Sam Altman is CEO of OpenAI     [ CONFIRMED ]   Score 95   [Sources] |
-|  - Python 3.13 is current stable   [ CONFIRMED ]   Score 98   [Sources] |
-|  - GPT-4o input is $2.50 / 1M      [ CONFIRMED ]   Score 92   [Sources] |
-+-------------------------------------------------------------------------+
+ LLM answer text
+       │
+       ▼
+┌──────────────┐   ┌──────────┐   ┌───────────────┐   ┌──────────────┐
+│ 1. Extract   │──▶│ 2. Triage│──▶│ 3. Cache      │──▶│ 4. Verify    │
+│ atomic claims│   │ volatile │   │ lookup        │   │ Tavily search│
+│ (LLM or      │   │ vs       │   │ (SQLite/Redis,│   │ + LLM judge  │
+│  heuristics) │   │ evergreen│   │  per-category │   │ (single-     │
+└──────────────┘   └──────────┘   │  TTL)         │   │  flight)     │
+                                  └───────────────┘   └──────┬───────┘
+                                                             ▼
+                              ┌──────────────────────────────────────┐
+                              │ 5. Score + verdict per claim         │
+                              │    history snapshot + audit record   │
+                              └──────────────────────────────────────┘
 ```
+
+1. **Extract** the factual claims in the answer (an OpenAI-compatible LLM, with a heuristic fallback).
+2. **Triage** claims into volatile categories (pricing, versions, leadership, law, ...) and skip evergreen facts.
+3. **Cache** lookup with per-category TTLs. Identical in-flight claims are coalesced so one search serves many requests.
+4. **Verify** each remaining claim with Tavily web search plus an LLM judge that weighs source authority, recency and agreement.
+5. **Score** each claim (0 to 100) with a verdict: `confirmed`, `contradicted`, `partially_supported` or `unverifiable`. Every result is saved as an immutable history snapshot and written to the audit log.
 
 ---
 
-## 🚀 Quick Start (Local)
+## Features
+
+| Area | What you get |
+| --- | --- |
+| **Verify** | Paste an answer, get per-claim verdicts, scores, corrections and cited sources. "Try an example" button for demos. |
+| **Policy Studio** | Per-user policies: which categories to check, allowed/blocked/preferred domains, minimum source count and authority, evidence age limits, jurisdiction, cache TTLs, and `shadow`/`warn`/`enforce` mode. |
+| **Watchtower** | Monitor important claims on a schedule. Alerts fire when a verdict, score or the evidence changes. Leased jobs with retry and backoff. |
+| **Replay** | Immutable per-claim history. Compare snapshots over time (verdict, score, evidence). |
+| **Audit log** | Append-only record of every verification (dashboard, proxy, streaming, plugin, Watchtower). Admin-key protected. |
+| **Gateway proxy** | OpenAI-compatible `/v1/chat/completions` in front of Bifrost, with `X-FreshGate-*` headers, streaming support and fail-open behavior. |
+| **Resilience** | Per-service circuit breakers, single-flight coalescing, rate limiting (Redis with in-memory fallback), request size limits, security headers. |
+| **Multi-user** | Accounts, signed session cookies, per-user provider/model/keys (encrypted at rest), per-user data isolation in MongoDB. |
+| **Providers** | OpenAI, Groq, Gemini, OpenRouter, Ollama and any custom OpenAI-compatible endpoint. |
+| **CLI** | `freshgate verify`, `batch`, `status`, `benchmark` with CI-friendly exit codes and `text`/`json`/`markdown` output. |
+| **Dashboard** | React 19 + Vite + TypeScript, light and dark themes. |
+
+Claim categories: pricing, software/model versions, law, leadership, product availability, cybersecurity/CVEs, financial metrics, government policy, public health, company info, scientific findings.
+
+---
+
+## Quick start
 
 ### Prerequisites
+
 - Python 3.11+
-- Node.js 22+ & npm
-- A MongoDB instance (local `mongodb://localhost:27017` or MongoDB Atlas free cluster)
+- Node.js 22+ and npm
+- MongoDB (local `mongodb://localhost:27017` or a free MongoDB Atlas cluster)
+- Your own LLM provider key and a [Tavily](https://tavily.com) key (entered in the dashboard Profile page)
 
-### Option A: Local Run (PowerShell / Bash)
-
-1. **Clone and setup virtual environment**:
-   ```bash
-   git clone https://github.com/<USERNAME>/freshgate.git
-   cd freshgate
-   python -m venv .venv
-   ```
-
-2. **Activate environment & install dependencies**:
-   - Windows PowerShell:
-     ```powershell
-     .\.venv\Scripts\Activate.ps1
-     pip install -r requirements.txt
-     ```
-   - Linux/macOS:
-     ```bash
-     source .venv/bin/activate
-     pip install -r requirements.txt
-     ```
-
-3. **Configure Environment**:
-   ```bash
-   cp .env.example .env
-   ```
-   Set `MONGODB_URI` and `FRESHGATE_SESSION_SECRET` in `.env`.
-
-4. **Build Dashboard**:
-   ```bash
-   cd dashboard
-   npm ci
-   npm run build
-   cd ..
-   ```
-
-5. **Start FreshGate**:
-   ```bash
-   uvicorn server.app:app --reload --host 127.0.0.1 --port 8000
-   ```
-   Open `http://localhost:8000` in your browser.
-
----
-
-### Option B: Docker Compose (Full Stack)
-
-Starts FreshGate, MongoDB 7, Redis, and Bifrost Gateway:
-```bash
-docker compose up --build
-```
-FreshGate will be accessible at `http://localhost:8000` and Bifrost at `http://localhost:8080`.
-
----
-
-## ☁️ Deploy on Render (Step-by-Step)
-
-FreshGate is configured for deployment on Render's **Free Plan** with **zero persistent disk costs** using MongoDB Atlas free tier for durable storage.
-
-### Step 1: Create Free MongoDB Atlas Cluster
-1. Sign up at [mongodb.com/atlas](https://www.mongodb.com/atlas).
-2. Create a free **M0 Sandbox** cluster.
-3. In **Database Access**, create a user (e.g. `freshgate-admin`) and password.
-4. In **Network Access**, click **Add IP Address** and choose **Allow Access From Anywhere** (`0.0.0.0/0`) because Render's free instances use dynamic egress IPs.
-5. In **Database** → **Connect** → choose **Drivers** (Python 3.11+) and copy the connection string:
-   `mongodb+srv://<username>:<password>@cluster0.abcde.mongodb.net/?retryWrites=true&w=majority`
-
-### Step 2: Push to GitHub
-Ensure all your changes are committed to your GitHub repository:
-```bash
-git push origin main
-```
-
-### Step 3: Deploy via Render Blueprint
-1. Open your [Render Dashboard](https://dashboard.render.com/).
-2. Click **New +** → **Blueprint**.
-3. Select your GitHub repository. Render will automatically read [`render.yaml`](render.yaml).
-4. When prompted for environment variables:
-   - `MONGODB_URI`: Paste your MongoDB Atlas connection string from Step 1.
-5. Click **Apply**. Render builds the Docker image and provisions the web service.
-
-### Step 4: Configure User Profile
-1. Open your deployed URL (`https://<your-app>.onrender.com`).
-2. Register a new user account.
-3. Navigate to **Profile**:
-   - Select your provider (e.g., **OpenAI**, **Groq**, **Google Gemini**, or **Together**).
-   - Enter your provider API key.
-   - Click **"Load models"** to dynamically fetch supported models.
-   - Enter your free **Tavily search API key** (from [tavily.com](https://tavily.com)).
-   - Click **"Save settings"**.
-
-> [!NOTE]
-> **Free Web Service Sleep Behavior:**
-> Render free web services spin down after 15 minutes of inactivity, which pauses background Watchtower scheduling. For persistent continuous monitoring, either:
-> 1. Set up a free external ping service (e.g. [UptimeRobot](https://uptimerobot.com) or [cron-job.org](https://cron-job.org)) hitting `https://<your-app>.onrender.com/health/live` every 10 minutes, OR
-> 2. Upgrade the Render service to the **Starter Plan** ($7/month) in `render.yaml`.
-
----
-
-## 🔒 Security & Isolation Architecture
-
-- **Per-User MongoDB Isolation:** Every policy, monitored claim, alert, and verification snapshot is strictly filtered by the authenticated user's `owner_id`. User B can never read, modify, or delete User A's claims or history.
-- **Server-Side Encrypted Credentials:** User API keys and search tokens are encrypted at rest using AES-GCM (Fernet) keys derived from `FRESHGATE_SESSION_SECRET`. Credentials are **never stored in browser storage** (`localStorage` / `sessionStorage`) and are never sent back in plain text to the browser.
-  > [!WARNING]
-  > Changing `FRESHGATE_SESSION_SECRET` in production will invalidate previously encrypted user credentials; users will simply need to re-enter their API keys in Profile.
-- **SSRF Guard (`validate_base_url`):** In production mode (`FRESHGATE_ENV=production`), custom provider URLs pointing to loopback (`127.0.0.1`, `localhost`), private RFC-1918 subnets (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local IPs, or cloud instance metadata services (`169.254.169.254`) are strictly blocked.
-- **Offline Provider Notice:** Local offline providers (e.g., Ollama, LM Studio) running on `localhost` cannot be contacted by cloud deployments (such as Render) unless exposed via an HTTPS tunnel (e.g., Cloudflare Tunnel, ngrok).
-- **Shared Evidence Cache:** The web evidence cache is shared across tenants to maximize hit rates and minimize redundant search latency on public facts. It indexes verified public factual claims by hash, category, and jurisdiction, and contains zero user credentials or private context.
-
-### Where audit records come from
-
-All verifications across the platform write immutable, append-only records to the audit store with one of the following `source` tags:
-- `verify`: Direct verifications submitted via the dashboard Verify view or `POST /verify`.
-- `proxy`: Synchronous proxy chat completions via `/v1/chat/completions` or `/proxy/v1/chat/completions`.
-- `proxy_stream`: SSE streaming completions where verification completes asynchronously once all tokens are received.
-- `proxy_async`: Shadow-mode completions executed as background tasks (`FRESHGATE_MODE=shadow`).
-- `watchtower`: Scheduled continuous background checks performed by the Watchtower service.
-- `plugin`: Dedicated verifications received from the native Bifrost Go plugin via `POST /api/plugin/verify`.
-
----
-
-## 🌐 Using FreshGate in Front of Bifrost (Gateway Mode)
-
-FreshGate can sit in front of Bifrost as an OpenAI-compatible gateway proxy.
-
-### Proxy Chat Completion
-Send a chat request directly to FreshGate's proxy endpoint:
+### Run locally
 
 ```bash
-curl -X POST http://localhost:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "X-FreshGate-Mode: warn" \
-  -d '{
-    "model": "gpt-4o-mini",
-    "messages": [
-      {"role": "user", "content": "Who is the current CEO of Microsoft?"}
-    ]
-  }' -i
+git clone https://github.com/<your-username>/freshgate.git
+cd freshgate
+
+python -m venv .venv
+source .venv/bin/activate          # Windows: .\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+
+cp .env.example .env               # then edit .env (see below)
+
+cd dashboard && npm ci && npm run build && cd ..
+
+uvicorn server.app:app --reload --host 127.0.0.1 --port 8000
 ```
 
-### Attached Verification Headers
+Open <http://localhost:8000>, register an account, then open **Profile** and choose a provider, enter its API key and your Tavily key. After that, the **Verify** page works.
 
-| Header | Description | Example |
-|---|---|---|
-| `X-FreshGate-Mode` | Active verification mode | `shadow`, `warn`, `enforce`, `async` |
-| `X-FreshGate-Score` | Mean freshness score (0–100) | `96.5` |
-| `X-FreshGate-Stale-Count` | Number of stale/contradicted claims | `0` |
-| `X-FreshGate-Total-Claims` | Total claims extracted | `2` |
-| `X-FreshGate-Checked-Claims`| Claims checked against live search | `2` |
-| `X-FreshGate-Latency-Ms` | Latency incurred by verification | `412` |
-| `X-FreshGate-Status` | Verification status or fail-open notice | `verified`, `fail-open` |
-| `X-FreshGate-Circuit-Breaker`| Circuit breaker state | `closed`, `open` |
+Windows users can run `./run.ps1`, which creates the virtualenv, installs dependencies, builds the dashboard and starts the server.
 
----
+**Minimum `.env`** (generate real secrets, do not reuse examples):
 
-## 🧪 Testing & Verification
-
-Run the Python automated test suite:
 ```bash
-python -m pytest -q
+python -c "import secrets; print(secrets.token_urlsafe(32))"   # run twice
 ```
-All 197 test cases pass, verifying:
-- Mongo multi-tenant isolation and ownership scoping
-- Profile settings round-trip and Fernet secret encryption
-- Append-only audit log recording across `/verify`, proxy modes (`shadow`, `warn`, `enforce`), streaming SSE, and Watchtower
-- Zero SQLite database pollution in repo root during test runs
-- Chunked transfer body size limits and pure ASGI middleware handling
-- SSRF network guard in production mode
-- Password hashing offloaded from the event loop and user enumeration protections
-- Watchtower claim leasing, alerting, and alert cascading
-- Bifrost proxy endpoints, fail-open circuits, and distributed sliding-window rate limiters
 
-Build and verify the React frontend:
+```
+MONGODB_URI=mongodb://localhost:27017
+FRESHGATE_SESSION_SECRET=<random string, 32+ chars>
+FRESHGATE_ADMIN_KEY=<random string, 24+ chars>
+```
+
+### Frontend development
+
 ```bash
 cd dashboard
-npm run build
+FRESHGATE_API_ORIGIN=http://127.0.0.1:8000 npm run dev
 ```
-Produces a clean production bundle with zero TypeScript warnings or errors, compliant with strict CSP (`style-src 'self'`).
+
+Vite proxies `/api`, `/health`, `/verify` and `/metrics` to the backend.
+
+### Docker Compose (full stack)
+
+Starts FreshGate, MongoDB 7, Redis and Bifrost:
+
+```bash
+export FRESHGATE_SESSION_SECRET=$(python -c "import secrets;print(secrets.token_urlsafe(32))")
+export FRESHGATE_ADMIN_KEY=$(python -c "import secrets;print(secrets.token_urlsafe(32))")
+docker compose up --build
+```
+
+FreshGate is at <http://localhost:8000>, Bifrost at <http://localhost:8080>.
 
 ---
 
-## 📄 License
+## Configuration
 
-MIT License. See [LICENSE](LICENSE) for details.
+All settings are environment variables (see `.env.example` for the full list).
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `MONGODB_URI`, `MONGODB_DATABASE` | `mongodb://localhost:27017`, `freshgate` | Accounts, policies, Watchtower, history |
+| `FRESHGATE_SESSION_SECRET` | (required) | Signs session cookies and encrypts stored keys. 32+ random chars. Changing it invalidates sessions and stored keys. |
+| `FRESHGATE_ADMIN_KEY` | (unset) | Protects admin routes (audit log, cache clear, circuit-breaker reset). Unset means those routes return 403. |
+| `FRESHGATE_API_KEY` | (unset) | Client key for the proxy and plugin routes. Required in production. |
+| `FRESHGATE_ENV` | `development` | Set `production` to force HTTPS-only provider URLs and secure cookies. |
+| `FRESHGATE_MODE` | `enforce` | Proxy mode: `shadow`, `warn`, `enforce` |
+| `FRESHGATE_BLOCK_STALE` | `false` | In `enforce` mode, return HTTP 422 for stale responses |
+| `FRESHGATE_MIN_SCORE` | `0` | Minimum average score before blocking |
+| `FRESHGATE_FAIL_OPEN` | `true` | Pass the response through if verification fails or times out |
+| `FRESHGATE_TIMEOUT` | `8.0` | Overall verification timeout (seconds) |
+| `BIFROST_UPSTREAM_URL` | `http://localhost:8080` | Upstream gateway for the proxy |
+| `OPENAI_API_KEY`, `TAVILY_API_KEY`, `OPENAI_BASE_URL`, `LLM_MODEL` | | Server-side keys, used **only** by the proxy, plugin route and Watchtower. Dashboard users use their own Profile keys. |
+| `FRESHGATE_CACHE_DB`, `FRESHGATE_AUDIT_DB`, `FRESHGATE_FEATURE_DB` | `freshgate_*.db` | SQLite files. Put these on persistent storage in production. |
+| `REDIS_URL` | | Optional shared cache and rate limiter |
+| `FRESHGATE_RATE_LIMIT_PER_MINUTE` | `60` | Per-client limit on verification endpoints |
+| `FRESHGATE_MAX_BODY_SIZE_BYTES` | `1048576` | Request body limit |
+| `FRESHGATE_WATCHTOWER_*` | | Enable, poll interval, concurrency, claim cap, lease, retries |
+
+---
+
+## Using FreshGate
+
+### Dashboard
+
+| Page | Purpose |
+| --- | --- |
+| **Verify** | Check an answer, optionally against a policy |
+| **System / Benchmarks** | Health, provider status, circuit breakers, cache stats, benchmark results |
+| **Audit log** | Admin-only verification trail |
+| **Policy Studio** | Create and simulate policies |
+| **Watchtower** | Monitored claims and alerts |
+| **Replay** | Claim history over time |
+| **Profile** | Provider, model, API keys |
+
+### REST API
+
+```bash
+# Logged-in browser session, or send provider keys per request:
+curl -X POST http://localhost:8000/verify \
+  -H "Content-Type: application/json" \
+  -H "X-LLM-Provider: openai" \
+  -H "X-LLM-API-Key: $OPENAI_API_KEY" \
+  -H "X-Tavily-API-Key: $TAVILY_API_KEY" \
+  -d '{"answer": "The latest stable Python release is 3.11."}'
+```
+
+| Endpoint | Auth | Description |
+| --- | --- | --- |
+| `POST /verify` | session or request keys | Verify answer text |
+| `POST /v1/chat/completions`, `POST /proxy/v1/chat/completions` | upstream auth | Verifying proxy (see below) |
+| `POST /api/plugin/verify` | `X-API-Key` | Endpoint used by the Go plugin |
+| `GET /api/stream/verification/{id}` | session or admin | Result of an async stream verification |
+| `/api/policies`, `/api/watchtower/*`, `/api/history/*`, `/api/replay/*` | session | Policy Studio, Watchtower, Replay |
+| `GET /api/audits/recent` | `X-Admin-Key` | Audit log (`limit` 1-500, `offset`, `source`) |
+| `GET /metrics` | session or admin | Prometheus metrics |
+| `GET /health/live`, `GET /health/ready` | none | Liveness and readiness probes |
+| `POST /api/cache/clear`, `POST /api/circuit-breaker/reset` | `X-Admin-Key` | Operations |
+
+Full reference: [`docs/13_api_reference.md`](docs/13_api_reference.md). Interactive docs at `/docs` when the server is running.
+
+---
+
+## Gateway proxy mode
+
+Point your OpenAI SDK at FreshGate instead of Bifrost. FreshGate forwards the request, verifies the completion, and annotates the response.
+
+```python
+from openai import OpenAI
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="<your key>")
+```
+
+| Mode | Behavior |
+| --- | --- |
+| `shadow` | Returns the upstream response immediately; verifies in the background and records an audit entry |
+| `warn` | Verifies inline; adds `X-FreshGate-*` headers, body unchanged |
+| `enforce` | Verifies inline; adds a `freshgate` object to the body; with `FRESHGATE_BLOCK_STALE=true` returns HTTP 422 on stale claims or low scores |
+
+Select a mode per request with the `X-FreshGate-Mode` header or `?freshgate_mode=`.
+
+Response headers: `X-FreshGate-Score`, `-Stale-Count`, `-Total-Claims`, `-Checked-Claims`, `-Latency-Ms`, `-Status`, `-Mode`. If verification times out or the circuit breaker is open, FreshGate **fails open** (the original response is returned with `X-FreshGate-Status: fail-open`).
+
+Streaming (`"stream": true`) responses are passed through untouched. The full text is verified after the stream ends and the result is available at `/api/stream/verification/{completion_id}`.
+
+---
+
+## Audit log
+
+Every verification path writes an append-only record: dashboard `verify`, `proxy`, `proxy_stream`, `proxy_async` (shadow), `plugin` and `watchtower`. Records are never overwritten.
+
+Open **Audit log** in the dashboard, enter the admin key, and click **Load records**. The key is sent only with that request and is not stored. Records include source, request id, claim counts, score, latency, and the input text and claims (expandable).
+
+Audit records live in the SQLite file at `FRESHGATE_AUDIT_DB`. On hosts with ephemeral disks (for example Render's free plan) the file resets on redeploy; the page shows a notice in that case.
+
+---
+
+## CLI
+
+```bash
+pip install -e .                 # installs the `freshgate` command
+export FRESHGATE_URL=http://127.0.0.1:8000
+
+freshgate status
+freshgate verify --text "Python 3.13 is the current stable release." --min-score 70
+freshgate batch --file answers.json --format markdown
+freshgate benchmark --suite unit
+```
+
+Useful flags: `--policy-id`, `--min-score`, `--fail-on-unverifiable`, `--warning-only`, `--format text|json|markdown`, `--url`, `--timeout`, `--retries`. The CLI exits non-zero when thresholds fail, so it fits CI pipelines. Provider keys are read from `FRESHGATE_OPENAI_API_KEY` / `OPENAI_API_KEY` and `FRESHGATE_TAVILY_API_KEY` / `TAVILY_API_KEY`. See [`docs/developer-cli.md`](docs/developer-cli.md).
+
+---
+
+## Go plugin for Bifrost
+
+`plugin/freshgate_plugin.go` is a native Bifrost dynamic plugin. It sends completed responses to FreshGate's `/api/plugin/verify` and decorates them with freshness headers, failing open on errors.
+
+```bash
+cd plugin
+go build -buildmode=plugin -o freshgate.so freshgate_plugin.go
+```
+
+Configure `freshgate_url` in `plugin.json` and supply the key through the `FRESHGATE_API_KEY` environment variable. Plugins must be built with the same Go toolchain and Bifrost version as the host (Linux/macOS only). See [`plugin/README.md`](plugin/README.md).
+
+---
+
+## Deploying
+
+### Render (Blueprint)
+
+1. Create a MongoDB Atlas cluster and copy the connection string. Allow Render's egress IPs in Atlas network access.
+2. Push the repo to GitHub.
+3. In Render choose **New + > Blueprint**, select the repo. `render.yaml` provisions the Docker web service, generates `FRESHGATE_SESSION_SECRET` and `FRESHGATE_ADMIN_KEY`, and prompts for `MONGODB_URI`.
+4. Open the deployed URL, register, and complete **Profile**.
+
+Caveats for the free plan: the instance sleeps when idle (Watchtower pauses while asleep) and local SQLite files (cache, audit) are on ephemeral storage and reset on redeploy. For durable audit data use a paid plan with a disk mounted at `/data` and point the three `FRESHGATE_*_DB` paths there.
+
+Set `FRESHGATE_API_KEY` before exposing the proxy or plugin routes publicly, because they spend server-side provider credits.
+
+More: [`docs/11_deployment_and_rollback_guide.md`](docs/11_deployment_and_rollback_guide.md), [`docs/10_production_operations_guide.md`](docs/10_production_operations_guide.md).
+
+---
+
+## Testing and benchmarks
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest -q                      # unit and integration tests (mongomock, no network)
+cd dashboard && npm run build            # type-check and build the UI
+python bench/evaluate.py                 # offline benchmark
+python bench/evaluate_features.py        # policy / Watchtower / Replay scenarios
+```
+
+The checked-in report (`bench/results.md`) covers 520 labelled claims. Read it with these caveats:
+
+- Latency figures (about 2 ms median) come from the offline harness using cached evidence. They are not live search plus LLM latency, which is typically seconds.
+- Recall for stale-claim detection is 88.1%, below the 90% target in the report itself, and the **leadership** category is the weakest (stale claims often go undetected). Precision looks perfect partly because the labelled set has few tricky evergreen controls.
+- Re-run with `--live` for numbers against real providers (this calls paid APIs).
+
+---
+
+## Security notes
+
+- Provider and Tavily keys are encrypted at rest with a key derived from `FRESHGATE_SESSION_SECRET`.
+- Sessions are signed, `HttpOnly`, `SameSite=Lax` cookies; `Secure` in production.
+- Admin routes use constant-time key comparison and are disabled when no admin key is configured.
+- Provider base URLs are validated against SSRF (HTTPS only and no private/loopback addresses in production).
+- Request size limits, per-client rate limits, strict CSP and standard security headers are on by default.
+- **Never commit `.env` or any `*.db` file.** If a key was ever committed, rotate it.
+- Do not run behind a proxy with `--forwarded-allow-ips='*'` unless the proxy strips client-supplied `X-Forwarded-For`.
+
+See [`docs/03_security_architecture.md`](docs/03_security_architecture.md) and [`docs/04_threat_model.md`](docs/04_threat_model.md).
+
+---
+
+## Known limitations
+
+- Verification quality depends on Tavily's results and the LLM judge; it reduces stale answers but does not guarantee correctness.
+- Audit storage is SQLite only. A PostgreSQL backend is not implemented.
+- The claim cache is shared across users (it caches public-fact verdicts, not user data).
+- Audit records store the verified text. Treat the audit file as sensitive.
+- The Go plugin must be compiled for your exact Bifrost version.
+
+---
+
+## Project layout
+
+```
+core/        Verification engine: extractor, triage, verifier, scorer, cache, circuit breaker,
+             audit store, policies, history/replay, Watchtower, security, config
+server/      FastAPI app, routes (policies, watchtower, replay, providers, profile), auth, SSRF guard
+dashboard/   React + Vite + TypeScript UI (built into dashboard/dist and served at /)
+cli/         `freshgate` command-line client
+plugin/      Native Bifrost Go plugin
+bench/       Benchmark datasets, harness and reports
+tests/       pytest suite
+docs/        Architecture, security, operations, API reference, feature guides
+```
+
+---
+
+## License
+
+MIT. See [`LICENSE`](LICENSE).

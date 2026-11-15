@@ -28,16 +28,28 @@ def users_collection():
     return get_db()["users"]
 
 
+def _is_placeholder_secret(val: str) -> bool:
+    v = (val or "").strip().lower()
+    return (
+        v.startswith("replace")
+        or v.startswith("your_")
+        or v.startswith("changeme")
+        or v.startswith("dev-secret")
+        or v.startswith("optional")
+        or v == "secret"
+    )
+
+
 def serializer():
     secret = os.getenv("FRESHGATE_SESSION_SECRET") or ""
-    if len(secret) < 24:
+    if len(secret) < 24 or _is_placeholder_secret(secret):
         raise HTTPException(503, "Configure FRESHGATE_SESSION_SECRET with at least 24 characters.")
     return URLSafeTimedSerializer(secret, salt="freshgate-session")
 
 
 def _fernet() -> Fernet:
     secret = os.getenv("FRESHGATE_SESSION_SECRET") or ""
-    if len(secret) < 24:
+    if len(secret) < 24 or _is_placeholder_secret(secret):
         raise HTTPException(503, "Configure FRESHGATE_SESSION_SECRET with at least 24 characters.")
     key = base64.urlsafe_b64encode(hashlib.sha256(secret.encode()).digest())
     return Fernet(key)
@@ -73,6 +85,9 @@ def check_password(password: str, stored: str) -> bool:
         return hmac.compare_digest(password_hash(password, bytes.fromhex(salt_hex)).split(".", 1)[1], digest)
     except (ValueError, TypeError):
         return False
+
+
+DUMMY_PASSWORD_HASH = password_hash(secrets.token_urlsafe(16))
 
 
 def optional_current_user(request: Request) -> dict[str, Any] | None:

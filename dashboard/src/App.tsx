@@ -71,8 +71,8 @@ function display(value: unknown): string {
 
 function tone(value?: string | null): string {
   const normalized = value?.toLowerCase().replaceAll("_", "-") ?? "unknown";
-  if (["verified", "confirmed", "ready", "connected", "healthy", "closed", "ok", "completed", "success", "enabled", "acknowledged", "true"].includes(normalized)) return "good";
-  if (["contradicted", "failed", "unhealthy", "unavailable", "error", "not-ready", "verification-failed", "extraction-failed", "missing-credentials", "quota-exhausted", "false"].includes(normalized)) return "bad";
+  if (["verified", "confirmed", "ready", "connected", "healthy", "closed", "ok", "completed", "success", "enabled", "acknowledged", "true", "no-claims-detected"].includes(normalized)) return "good";
+  if (["contradicted", "failed", "unhealthy", "unavailable", "error", "not-ready", "verification-failed", "extraction-failed", "missing-credentials", "quota-exhausted", "false", "fail-open"].includes(normalized)) return "bad";
   if (["partial", "partially-verified", "completed-with-warnings", "warning", "stale", "degraded", "open", "rate-limited"].includes(normalized)) return "caution";
   return "neutral";
 }
@@ -1200,33 +1200,70 @@ function BenchmarkView({ data, setData }: { data: LoadState<Benchmark>; setData:
 function AuditView() {
   const [key, setKey] = useState("");
   const [audits, setAudits] = useState<AuditRecord[] | null>(null);
+  const [total, setTotal] = useState<number>(0);
   const [persistent, setPersistent] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [query, setQuery] = useState("");
-  const load = async (event?: React.FormEvent) => {
+  const [sourceFilter, setSourceFilter] = useState<string>("");
+
+  const load = async (event?: React.FormEvent, customSource?: string) => {
     event?.preventDefault();
     if (!key.trim()) {
       setError("Enter the admin key to load audit records.");
       return;
     }
-    setBusy(true); setError(null); setAudits(null);
+    setBusy(true); setError(null);
+    const src = customSource !== undefined ? customSource : sourceFilter;
     try {
-      const data = await api<{ audits: AuditRecord[]; persistent?: boolean }>("/api/audits/recent", { headers: { "X-Admin-Key": key.trim() } });
+      const srcParam = src ? `&source=${encodeURIComponent(src)}` : "";
+      const endpoint = "/api/audits/recent";
+      const data = await api<{ audits: AuditRecord[]; total?: number; persistent?: boolean }>(
+        `${endpoint}?limit=50&offset=0${srcParam}`,
+        { headers: { "X-Admin-Key": key.trim() } }
+      );
       setAudits(data.audits);
+      setTotal(data.total ?? data.audits.length);
       if (data.persistent !== undefined) setPersistent(data.persistent);
-      setKey("");
     }
     catch (cause) { setError(cause instanceof Error ? cause.message : "Audit records could not be loaded."); }
     finally { setBusy(false); }
   };
+
+  const loadMore = async () => {
+    if (!key.trim() || !audits) return;
+    setLoadingMore(true); setError(null);
+    try {
+      const srcParam = sourceFilter ? `&source=${encodeURIComponent(sourceFilter)}` : "";
+      const offset = audits.length;
+      const data = await api<{ audits: AuditRecord[]; total?: number }>(
+        `/api/audits/recent?limit=50&offset=${offset}${srcParam}`,
+        { headers: { "X-Admin-Key": key.trim() } }
+      );
+      setAudits((prev) => [...(prev ?? []), ...data.audits]);
+      if (data.total !== undefined) setTotal(data.total);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Failed to load more records.");
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+
+  const handleSourceChange = (newSource: string) => {
+    setSourceFilter(newSource);
+    if (audits !== null && key.trim()) {
+      void load(undefined, newSource);
+    }
+  };
+
   const filtered = (audits ?? []).filter((row) => JSON.stringify(row).toLowerCase().includes(query.toLowerCase()));
   return (
     <>
       <SectionHeading title="Audit log" detail="Gateway audit trail (admin key required). Recent immutable verification records." />
       <form className="access-strip" onSubmit={(event) => void load(event)}>
         <div className="access-icon"><LockKeyhole size={17} /></div>
-        <div className="access-copy"><strong>Protected audit access</strong><span>Enter the admin key for this request. It is held in memory only and cleared after the request.</span></div>
+        <div className="access-copy"><strong>Protected audit access</strong><span>Enter the admin key for this session. It is held in memory until you navigate away.</span></div>
         <input type="password" autoComplete="off" value={key} onChange={(event) => setKey(event.target.value)} aria-label="Admin key" placeholder="Admin key" />
         <button type="submit" className="secondary-button" disabled={busy}>{busy ? <LoaderCircle size={15} className="spin" /> : <Search size={15} />} Load records</button>
       </form>
@@ -1235,11 +1272,34 @@ function AuditView() {
         <InlineNotice variant="info">Audit records are stored on ephemeral storage on this deployment and reset on redeploy.</InlineNotice>
       )}
       {audits && (
-        <section className="folio-panel data-panel"><div className="panel-heading"><h2>Recent verification activity</h2><span className="table-count">{filtered.length} records</span></div>
-          <label className="search-field"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filter audit records" aria-label="Filter audit records" /></label>
+        <section className="folio-panel data-panel">
+          <div className="panel-heading">
+            <h2>Recent verification activity</h2>
+            <span className="table-count">{filtered.length} of {total}</span>
+          </div>
+          <div style={{ display: "flex", gap: "12px", alignItems: "center", margin: "12px 0", flexWrap: "wrap" }}>
+            <label className="search-field" style={{ margin: 0, flex: 1, minWidth: "220px" }}>
+              <Search size={16} />
+              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filter audit records" aria-label="Filter audit records" />
+            </label>
+            <select
+              value={sourceFilter}
+              onChange={(e) => handleSourceChange(e.target.value)}
+              aria-label="Filter by source"
+              style={{ minHeight: "35px", padding: "0 10px", borderRadius: "4px", border: "1px solid var(--rule)", background: "var(--paper-raised)", color: "var(--ink)", fontSize: "11px" }}
+            >
+              <option value="">All sources</option>
+              <option value="verify">verify</option>
+              <option value="proxy">proxy</option>
+              <option value="proxy_stream">proxy_stream</option>
+              <option value="proxy_async">proxy_async</option>
+              <option value="watchtower">watchtower</option>
+              <option value="plugin">plugin</option>
+            </select>
+          </div>
           <DataTable rows={filtered} columns={[
             { key: "created_at", label: "Recorded", format: (value) => dateTime(value as string | number | null) },
-            { key: "source", label: "Source", format: (value) => String(value ?? "proxy") },
+            { key: "source", label: "Source", format: (value) => String(value ?? "legacy") },
             { key: "status", label: "Status", format: (value) => <StatusMark value={String(value ?? "unknown")} /> },
             { key: "correlation_id", label: "Request", format: (value) => {
               const str = String(value ?? "—");
@@ -1261,6 +1321,18 @@ function AuditView() {
               );
             }},
           ]} empty="No audit records yet. Run a verification from the Verify tab, then reload." />
+          {audits.length < total && (
+            <div style={{ marginTop: "14px", display: "flex", justifyContent: "center" }}>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => void loadMore()}
+                disabled={loadingMore}
+              >
+                {loadingMore ? <LoaderCircle size={15} className="spin" /> : "Load more"}
+              </button>
+            </div>
+          )}
         </section>
       )}
     </>

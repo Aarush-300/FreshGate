@@ -183,10 +183,7 @@ class WatchtowerService:
                 if row.get("policy_id") and (policy is None or not policy.enabled):
                     raise RuntimeError("The associated policy no longer exists or is disabled")
                 active_pipeline, is_ephemeral = await self._get_pipeline(owner_id)
-                try:
-                    result = await active_pipeline.verify(row["claim_text"], policy=policy, owner_id=owner_id)
-                except TypeError:
-                    result = await active_pipeline.verify(row["claim_text"], policy=policy)
+                result = await active_pipeline.verify(row["claim_text"], policy=policy, owner_id=owner_id)
             failure = self._transient_failure(result)
             target = next((claim for claim in result.claims if claim.type == row["category"]), None)
             if target is None and result.claims:

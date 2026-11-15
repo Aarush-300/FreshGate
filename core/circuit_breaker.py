@@ -42,6 +42,7 @@ class ServiceCircuitBreaker:
         self._consecutive_failures = 0
         self._last_state_change = time.time()
         self._half_open_successes = 0
+        self._probes_in_flight = 0
         self._is_quota_exhausted = False
 
     def can_execute(self) -> bool:
@@ -58,6 +59,12 @@ class ServiceCircuitBreaker:
                     self._state = STATE_HALF_OPEN
                     self._last_state_change = now
                     self._half_open_successes = 0
+                    self._probes_in_flight = 1
+                    return True
+                return False
+            if self._state == STATE_HALF_OPEN:
+                if self._probes_in_flight < self.half_open_probes:
+                    self._probes_in_flight += 1
                     return True
                 return False
             return True
@@ -67,11 +74,14 @@ class ServiceCircuitBreaker:
         with self._lock:
             self._is_quota_exhausted = False
             if self._state == STATE_HALF_OPEN:
+                if self._probes_in_flight > 0:
+                    self._probes_in_flight -= 1
                 self._half_open_successes += 1
                 if self._half_open_successes >= self.half_open_probes:
                     logger.info("[%s] Circuit breaker probe succeeded; resetting state to CLOSED", self.name)
                     self._state = STATE_CLOSED
                     self._consecutive_failures = 0
+                    self._probes_in_flight = 0
                     self._last_state_change = time.time()
             elif self._state == STATE_CLOSED:
                 self._consecutive_failures = 0
@@ -85,6 +95,7 @@ class ServiceCircuitBreaker:
             if is_quota_error:
                 self._is_quota_exhausted = True
                 self._state = STATE_OPEN
+                self._probes_in_flight = 0
                 self._last_state_change = now
                 logger.error("[%s] Permanent quota exhaustion detected; immediately tripping circuit breaker to OPEN", self.name)
                 return
@@ -92,6 +103,7 @@ class ServiceCircuitBreaker:
             if self._state == STATE_HALF_OPEN:
                 logger.warning("[%s] Probe failed during HALF_OPEN state; reopening circuit breaker", self.name)
                 self._state = STATE_OPEN
+                self._probes_in_flight = 0
                 self._last_state_change = now
             elif self._state == STATE_CLOSED and self._consecutive_failures >= self.failure_threshold:
                 logger.error(
@@ -100,6 +112,7 @@ class ServiceCircuitBreaker:
                     self._consecutive_failures,
                 )
                 self._state = STATE_OPEN
+                self._probes_in_flight = 0
                 self._last_state_change = now
 
     def reset(self):
@@ -107,6 +120,7 @@ class ServiceCircuitBreaker:
         with self._lock:
             self._state = STATE_CLOSED
             self._consecutive_failures = 0
+            self._probes_in_flight = 0
             self._is_quota_exhausted = False
             self._last_state_change = time.time()
 
@@ -140,11 +154,12 @@ class MultiServiceCircuitBreaker:
         }
 
     def can_execute(self, service: str = "gateway") -> bool:
-        breaker = self.services.get(service) or self.services["gateway"]
-        # If overall gateway or the specific service is OPEN, block
+        if service == "gateway":
+            return self.services["gateway"].can_execute()
         if not self.services["gateway"].can_execute():
             return False
-        return breaker.can_execute()
+        breaker = self.services.get(service)
+        return breaker.can_execute() if breaker else True
 
     def record_success(self, service: str = "gateway"):
         if service in self.services:
