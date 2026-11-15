@@ -62,3 +62,8 @@ desktop.ini
 # Generated bench caches
 bench/eval_cache_*.db
 
+ANTIGRAVITY_SPEC.md
+DESIGN.md
+FRESHGATE_FIX_PLAN_2.md
+FRESHGATE_FIX_PLAN.md
+PRODUCT.md
