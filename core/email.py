@@ -15,6 +15,7 @@ try:
     import aiosmtplib
     HAS_AIOSMTPLIB = True
 except ImportError:
+    aiosmtplib = None
     HAS_AIOSMTPLIB = False
 
 from core.models import Claim
