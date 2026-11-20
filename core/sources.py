@@ -5,7 +5,7 @@ detects syndication/reprints, and measures evidence relevance.
 Phase 2: Multi-Source Evidence Triangulation with source type authority multipliers.
 """
 
-from typing import List, Optional, Set, Dict
+from typing import List, Optional, Set, Dict, Any
 from urllib.parse import urlparse
 import re
 from core.models import Source
