@@ -293,7 +293,9 @@ async def send_test_email(request: EmailTestRequest, req: Request):
     if not recipient:
         raise HTTPException(status_code=400, detail="No recipient email configured")
 
-    success = await watchtower_service._get_email_service()
-    result = await watchtower_service._email_service.send_test_email([recipient])
+    email_service = await watchtower_service._get_email_service()
+    if not email_service._is_configured():
+        return {"sent": False, "configured": False, "recipient": recipient}
+    result = await email_service.send_test_email([recipient])
 
-    return {"sent": result, "recipient": recipient}
+    return {"sent": result, "configured": True, "recipient": recipient}

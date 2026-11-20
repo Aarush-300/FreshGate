@@ -35,7 +35,7 @@ class SQLiteFeatureStore:
         self.db_path = str(configured_path)
         self._lock = threading.RLock()
         self._init_db()
-        if os.getenv("FRESHGATE_STORE", "mongo").lower() == "sqlite" and os.getenv("FRESHGATE_ENV", "").lower() == "production":
+        if os.getenv("FRESHGATE_STORE", "").lower() == "sqlite" and os.getenv("FRESHGATE_ENV", "").lower() == "production":
             logging.getLogger("freshgate.persistence").warning(
                 "FRESHGATE_STORE=sqlite is active in production environment! No per-user isolation will be enforced."
             )
@@ -670,7 +670,8 @@ def get_feature_store():
     if _store is None:
         with _store_lock:
             if _store is None:
-                if os.getenv("FRESHGATE_STORE", "mongo").lower() == "sqlite" or os.getenv("PYTEST_CURRENT_TEST"):
+                from core.mongo import uses_mongo_store
+                if not uses_mongo_store() or os.getenv("PYTEST_CURRENT_TEST"):
                     _store = SQLiteFeatureStore()
                 else:
                     from core.mongo_store import MongoFeatureStore

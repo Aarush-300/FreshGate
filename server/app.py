@@ -3,6 +3,7 @@ import time
 import json
 import asyncio
 import logging
+import sqlite3
 import re
 import threading
 import uuid
@@ -17,12 +18,13 @@ from pydantic import BaseModel, Field, field_validator
 import httpx
 from dotenv import load_dotenv
 from pymongo.errors import DuplicateKeyError
-from core.mongo import ensure_indexes, ping as mongo_ping
+from core.mongo import ensure_indexes, mongo_is_required, ping as mongo_ping
 from core.audit_helpers import write_audit, write_audit_failure
 from server.routes.profile import router as profile_router
 from server.pipeline_factory import get_shared_pipeline, build_user_pipeline
 from server.netguard import validate_base_url
 from server.users import (
+    SQLiteUserLimitError,
     users_collection,
     serializer,
     password_hash,
@@ -130,20 +132,29 @@ async def lifespan(app: FastAPI):
     logger.info("Starting FreshGate Gateway (mode=%s, upstream=%s)", current_cfg.freshgate_mode, current_cfg.bifrost_upstream_url)
     _ = get_llm_manager()
     cache_task = asyncio.create_task(_periodic_cache_cleanup())
-    index_task = asyncio.create_task(_ensure_indexes_with_backoff())
+    use_mongo = mongo_is_required()
+    if use_mongo:
+        # Retry index setup in the background, but don't take down local startup if
+        # Mongo is temporarily unavailable. Feature calls report 503 while offline.
+        index_task = asyncio.create_task(_ensure_indexes_with_backoff())
+    else:
+        index_task = None
+        logger.info("Using local storage without MongoDB; MongoDB startup checks are disabled.")
     await watchtower_service.start()
     yield
     logger.info("Shutting down FreshGate Gateway connection pools...")
     cache_task.cancel()
-    index_task.cancel()
+    if index_task is not None:
+        index_task.cancel()
     try:
         await cache_task
     except (asyncio.CancelledError, Exception):
         pass
-    try:
-        await index_task
-    except (asyncio.CancelledError, Exception):
-        pass
+    if index_task is not None:
+        try:
+            await index_task
+        except (asyncio.CancelledError, Exception):
+            pass
     try:
         await watchtower_service.stop()
     except Exception as exc:
@@ -170,7 +181,14 @@ app = FastAPI(
 # Register Security & Observability Middlewares
 app.add_middleware(CorrelationIdMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
-app.add_middleware(RequestBodySizeLimitMiddleware, max_body_bytes=MAX_BODY_SIZE)
+app.add_middleware(
+    RequestBodySizeLimitMiddleware,
+    max_body_bytes=MAX_BODY_SIZE,
+    path_limits={
+        # Multipart form boundaries and per-part headers add overhead to the file itself.
+        "/verify/upload": (cfg.max_upload_size_bytes * 4 + 2) // 3 + 1024 * 1024,
+    },
+)
 app.add_middleware(RateLimitMiddleware, limiter=rate_limiter)
 app.include_router(policies_router)
 app.include_router(watchtower_router)
@@ -260,12 +278,19 @@ async def register(body: AuthBody, response: Response):
                 "created_at": time.time(),
             },
         )
-    except DuplicateKeyError:
+    except SQLiteUserLimitError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    except (DuplicateKeyError, sqlite3.IntegrityError):
         raise HTTPException(status.HTTP_409_CONFLICT, "Email is already registered.")
     except HTTPException:
         raise
     except Exception as exc:
         logger.error("Registration database error: %s", exc)
+        if mongo_is_required():
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "MongoDB is unavailable. Start MongoDB or configure MONGODB_URI, then retry.",
+            ) from exc
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Database error during registration.")
     token = signer.dumps(uid)
     response.set_cookie(
@@ -293,6 +318,11 @@ async def login(body: AuthBody, request: Request, response: Response):
         user = users_collection().find_one({"email": email})
     except Exception as exc:
         logger.error("Login database error: %s", exc)
+        if mongo_is_required():
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "MongoDB is unavailable. Start MongoDB or configure MONGODB_URI, then retry.",
+            ) from exc
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Database connection error.")
 
     if user:
@@ -304,7 +334,12 @@ async def login(body: AuthBody, request: Request, response: Response):
     if not user or not is_valid:
         _record_failed_login(rate_key)
         _record_failed_login(ip_key)
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Email or password is incorrect.")
+        detail = (
+            "No local account exists in SQLite. Create an account, or set FRESHGATE_STORE=mongo and MONGODB_URI to your original database, then restart FreshGate."
+            if not user and not mongo_is_required()
+            else "Email or password is incorrect."
+        )
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail)
     _clear_login_attempts(rate_key)
 
     token = serializer().dumps(user["_id"])
@@ -516,13 +551,14 @@ async def health_live():
 async def health_ready():
     """Readiness probe checking database connectivity and cache availability."""
     db_status = "connected"
-    try:
-        mongo_ok = await asyncio.to_thread(mongo_ping)
-        if not mongo_ok:
+    if mongo_is_required():
+        try:
+            mongo_ok = await asyncio.to_thread(mongo_ping)
+            if not mongo_ok:
+                db_status = "mongo_unavailable"
+        except Exception as e:
+            logger.error("Readiness probe mongo check failed: %s", e)
             db_status = "mongo_unavailable"
-    except Exception as e:
-        logger.error("Readiness probe mongo check failed: %s", e)
-        db_status = "mongo_unavailable"
 
     cache_status = "connected"
     try:
@@ -542,7 +578,7 @@ async def health_ready():
             "status": "ready" if is_ready else "not_ready",
             "database": db_status,
             "cache": cache_status,
-            "indexes": _mongo_indexes_ready,
+            "indexes": _mongo_indexes_ready if mongo_is_required() else True,
             "upstream": BIFROST_UPSTREAM_URL,
         },
     )
@@ -768,7 +804,18 @@ async def verify_upload(
     # If a file was uploaded, validate and extract text
     extracted_file_text = ""
     if file_bytes and filename:
-        is_valid, reason = validate_upload(filename, len(file_bytes))
+        is_valid, reason = validate_upload(
+            filename,
+            len(file_bytes),
+            max_size=cfg.max_upload_size_bytes,
+            allowed_types={
+                extension.strip().lower()
+                if extension.strip().startswith(".")
+                else f".{extension.strip().lower()}"
+                for extension in cfg.allowed_upload_types
+                if extension.strip()
+            },
+        )
         if not is_valid:
             raise HTTPException(status_code=400, detail=reason)
         from core.extractor import extract_text_from_file_bytes

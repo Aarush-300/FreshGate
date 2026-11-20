@@ -299,24 +299,31 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 class RequestBodySizeLimitMiddleware:
     """Enforce request body size limits to prevent unbounded memory allocation and DoS."""
 
-    def __init__(self, app, max_body_bytes: int = 1048576):
+    def __init__(
+        self,
+        app,
+        max_body_bytes: int = 1048576,
+        path_limits: Optional[Dict[str, int]] = None,
+    ):
         self.app = app
         self.max_body_bytes = max_body_bytes
+        self.path_limits = path_limits or {}
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http" or scope["method"] not in ("POST", "PUT", "PATCH"):
             return await self.app(scope, receive, send)
 
+        max_body_bytes = self.path_limits.get(scope.get("path"), self.max_body_bytes)
         headers = dict(scope.get("headers", []))
         content_length_header = headers.get(b"content-length")
         if content_length_header:
             try:
-                if int(content_length_header) > self.max_body_bytes:
+                if int(content_length_header) > max_body_bytes:
                     response = JSONResponse(
                         status_code=413,
                         content={
                             "error": {
-                                "message": f"Payload Too Large: Maximum allowed size is {self.max_body_bytes} bytes.",
+                                "message": f"Payload Too Large: Maximum allowed size is {max_body_bytes} bytes.",
                                 "type": "payload_too_large",
                             }
                         },
@@ -333,12 +340,12 @@ class RequestBodySizeLimitMiddleware:
             if message["type"] == "http.request":
                 body = message.get("body", b"")
                 total_bytes += len(body)
-                if total_bytes > self.max_body_bytes:
+                if total_bytes > max_body_bytes:
                     response = JSONResponse(
                         status_code=413,
                         content={
                             "error": {
-                                "message": f"Payload Too Large: Maximum allowed size is {self.max_body_bytes} bytes.",
+                                "message": f"Payload Too Large: Maximum allowed size is {max_body_bytes} bytes.",
                                 "type": "payload_too_large",
                             }
                         },
@@ -457,17 +464,27 @@ ALLOWED_UPLOAD_TYPES = {".pdf", ".txt", ".md", ".json", ".docx", ".csv"}
 MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10MB
 
 
-def validate_upload(filename: Optional[str], size: int) -> Tuple[bool, str]:
-    """Validate uploaded file extension and size limits."""
+def validate_upload(
+    filename: Optional[str],
+    size: int,
+    max_size: int = MAX_UPLOAD_SIZE,
+    allowed_types: Optional[set[str]] = None,
+) -> Tuple[bool, str]:
+    """Validate an uploaded file against the configured extension and size limits."""
     if not filename:
         return False, "Filename cannot be empty"
 
     ext = ("." + filename.rsplit(".", 1)[-1].lower()) if "." in filename else ""
-    if ext not in ALLOWED_UPLOAD_TYPES:
-        return False, f"Unsupported file type '{ext}'. Allowed types: {', '.join(sorted(ALLOWED_UPLOAD_TYPES))}"
+    allowed = allowed_types if allowed_types is not None else ALLOWED_UPLOAD_TYPES
+    allowed = {
+        extension.lower() if extension.startswith(".") else f".{extension.lower()}"
+        for extension in allowed
+    }
+    if ext not in allowed:
+        return False, f"Unsupported file type '{ext}'. Allowed types: {', '.join(sorted(allowed))}"
 
-    if size > MAX_UPLOAD_SIZE:
-        return False, f"File size ({size} bytes) exceeds maximum limit of {MAX_UPLOAD_SIZE // (1024*1024)}MB"
+    if size > max_size:
+        return False, f"File size ({size} bytes) exceeds maximum limit of {max_size // (1024*1024)}MB"
 
     if size <= 0:
         return False, "File is empty"

@@ -2,6 +2,8 @@
 
 import pytest
 import time
+from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
 from core.models import Claim, Source
 from core.scorer import (
     compute_temporal_decay,
@@ -220,6 +222,33 @@ async def test_email_service_formatting():
     sent = await service.send_watchtower_report(["test@test.com"], claims, alerts)
     # sent will be False since localhost is not running, but method executes cleanly
     assert isinstance(sent, bool)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("port", "expected_use_tls", "expected_start_tls"),
+    [(587, False, True), (465, True, False)],
+)
+async def test_email_service_uses_tls_mode_for_standard_smtp_ports(
+    port, expected_use_tls, expected_start_tls, monkeypatch
+):
+    import core.email as email_module
+
+    send = AsyncMock()
+    monkeypatch.setattr(email_module, "HAS_AIOSMTPLIB", True)
+    monkeypatch.setattr(email_module, "aiosmtplib", SimpleNamespace(send=send))
+    config = FreshGateConfig(
+        smtp_host="smtp.example.com",
+        smtp_port=port,
+        smtp_user="sender@example.com",
+        smtp_password="app-password",
+        smtp_from="sender@example.com",
+        smtp_tls=True,
+    )
+
+    assert await EmailService(config).send_test_email(["recipient@example.com"])
+    assert send.await_args.kwargs["use_tls"] is expected_use_tls
+    assert send.await_args.kwargs["start_tls"] is expected_start_tls
 
 
 # --- Phase 7: File Upload API Tests ---

@@ -1,12 +1,73 @@
 import json
 import pytest
-import httpx
 from httpx import AsyncClient, ASGITransport
 from unittest.mock import patch, AsyncMock
 from types import SimpleNamespace
+from fastapi import FastAPI, Response
 
-from server.app import app, get_request_pipeline
+from server.app import app, cfg, get_request_pipeline
 from core.models import Claim, Summary, VerificationResult
+from core.security import RequestBodySizeLimitMiddleware
+
+
+def test_local_storage_uses_sqlite_without_touching_mongo(monkeypatch, tmp_path):
+    import server.users as users_module
+    from core.persistence import get_feature_store, reset_feature_store
+
+    monkeypatch.setenv("FRESHGATE_STORE", "sqlite")
+    monkeypatch.setenv("FRESHGATE_USERS_STORE", "sqlite")
+    monkeypatch.delenv("MONGODB_URI", raising=False)
+    monkeypatch.setenv("FRESHGATE_FEATURE_DB", str(tmp_path / "features.sqlite3"))
+    monkeypatch.setattr(users_module, "get_db", lambda: (_ for _ in ()).throw(AssertionError("MongoDB accessed")))
+    reset_feature_store()
+    try:
+        users = users_module.users_collection()
+        users.insert_one({"_id": "local-user", "email": "local@example.com", "password_hash": "hash"})
+        assert users.find_one({"_id": "local-user"})["email"] == "local@example.com"
+        assert get_feature_store().__class__.__name__ == "SQLiteFeatureStore"
+    finally:
+        reset_feature_store()
+
+
+def test_local_session_secret_is_generated_once_and_reused(monkeypatch, tmp_path):
+    import server.users as users_module
+
+    secret_path = tmp_path / "session-secret"
+    monkeypatch.setattr(users_module, "_LOCAL_SESSION_SECRET_PATH", secret_path)
+    monkeypatch.setenv("FRESHGATE_ENV", "development")
+    monkeypatch.delenv("FRESHGATE_SESSION_SECRET", raising=False)
+
+    first = users_module._session_secret()
+    second = users_module._session_secret()
+
+    assert len(first) >= 24
+    assert first == second
+    assert secret_path.read_text(encoding="utf-8") == first
+
+
+@pytest.mark.asyncio
+async def test_local_registration_and_login_work_without_session_secret(monkeypatch, tmp_path):
+    monkeypatch.setenv("FRESHGATE_ENV", "development")
+    monkeypatch.setenv("FRESHGATE_STORE", "sqlite")
+    monkeypatch.setenv("FRESHGATE_USERS_STORE", "sqlite")
+    monkeypatch.setenv("FRESHGATE_FEATURE_DB", str(tmp_path / "accounts.sqlite3"))
+    monkeypatch.delenv("FRESHGATE_SESSION_SECRET", raising=False)
+    monkeypatch.setattr("server.users._LOCAL_SESSION_SECRET_PATH", tmp_path / "session-secret")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        registered = await ac.post("/api/auth/register", json={
+            "email": "first-local-user@example.com",
+            "password": "correct horse battery staple",
+        })
+        assert registered.status_code == 201, registered.text
+        login = await ac.post("/api/auth/login", json={
+            "email": "first-local-user@example.com",
+            "password": "correct horse battery staple",
+        })
+
+    assert login.status_code == 200, login.text
+    assert login.json()["email"] == "first-local-user@example.com"
+    assert login.cookies.get("freshgate_session")
 
 
 @pytest.mark.asyncio
@@ -89,6 +150,50 @@ async def test_chunked_body_size_limit_returns_413():
             content=over_limit_generator(),
             headers={"Transfer-Encoding": "chunked", "Content-Type": "application/json"},
         )
+    assert resp.status_code == 413
+
+
+@pytest.mark.asyncio
+async def test_upload_route_accepts_configured_file_limit_plus_multipart_overhead():
+    app_with_upload_limit = FastAPI()
+    upload_request_limit = (cfg.max_upload_size_bytes * 4 + 2) // 3 + 1024 * 1024
+    app_with_upload_limit.add_middleware(
+        RequestBodySizeLimitMiddleware,
+        max_body_bytes=cfg.max_body_size_bytes,
+        path_limits={"/verify/upload": upload_request_limit},
+    )
+
+    @app_with_upload_limit.post("/verify/upload")
+    async def upload_probe():
+        return Response(status_code=204)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app_with_upload_limit),
+        base_url="http://test",
+    ) as ac:
+        resp = await ac.post("/verify/upload", content=b"x" * upload_request_limit)
+    assert resp.status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_upload_route_rejects_bodies_over_configured_limit():
+    app_with_upload_limit = FastAPI()
+    upload_request_limit = (cfg.max_upload_size_bytes * 4 + 2) // 3 + 1024 * 1024
+    app_with_upload_limit.add_middleware(
+        RequestBodySizeLimitMiddleware,
+        max_body_bytes=cfg.max_body_size_bytes,
+        path_limits={"/verify/upload": upload_request_limit},
+    )
+
+    @app_with_upload_limit.post("/verify/upload")
+    async def upload_probe():
+        return Response(status_code=204)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app_with_upload_limit),
+        base_url="http://test",
+    ) as ac:
+        resp = await ac.post("/verify/upload", content=b"x" * (upload_request_limit + 1))
     assert resp.status_code == 413
 
 

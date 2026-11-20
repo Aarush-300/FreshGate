@@ -17,6 +17,11 @@ from core.policies import get_policy
 from core.audit_helpers import write_audit
 from core.scorer import compute_temporal_decay
 
+try:
+    from pymongo.errors import PyMongoError
+except ImportError:  # pragma: no cover - pymongo is a runtime requirement
+    PyMongoError = OSError
+
 logger = logging.getLogger(__name__)
 
 
@@ -74,6 +79,8 @@ class WatchtowerService:
                 await self.run_due_checks()
             except asyncio.CancelledError:
                 raise
+            except PyMongoError as exc:
+                logger.warning("Watchtower is waiting for MongoDB; checks will retry: %s", exc)
             except Exception:
                 logger.exception("Watchtower scheduler iteration failed")
             try:

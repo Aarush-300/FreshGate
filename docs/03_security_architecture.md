@@ -53,6 +53,7 @@ All API keys (`FRESHGATE_API_KEY`) and administrative tokens (`FRESHGATE_ADMIN_K
 
 ### 3.1 Request Body Size Limit (`RequestBodySizeLimitMiddleware`)
 - Default maximum request payload: **1,048,576 bytes (1 MB)**, configurable via `FRESHGATE_MAX_BODY_SIZE_BYTES`.
+- `/verify/upload` has a separate limit of `FRESHGATE_MAX_UPLOAD_SIZE_BYTES` (10 MiB by default) plus 1 MiB for multipart framing; the uploaded file itself is validated against the configured upload limit.
 - Prevents memory exhaustion attacks from unbounded prompt payloads.
 - Rejects oversized requests immediately with `HTTP 413 Content Too Large` before JSON parsing occurs.
 

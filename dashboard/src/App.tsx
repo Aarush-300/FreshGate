@@ -1622,13 +1622,15 @@ function WatchtowerView({ claims, alerts, categories, policies, onRefresh, onErr
     setEmailBusy(true);
     setEmailNotice(null);
     try {
-      const res = await api<{ sent: boolean; recipient: string }>("/api/watchtower/email/test", jsonBody({
+      const res = await api<{ sent: boolean; configured: boolean; recipient: string }>("/api/watchtower/email/test", jsonBody({
         recipient_email: emailRecipient.trim() || undefined,
       }));
       if (res.sent) {
         setEmailNotice(`Test report sent successfully to ${res.recipient}!`);
+      } else if (!res.configured) {
+        onError("SMTP is not configured. Add FRESHGATE_SMTP_HOST, FRESHGATE_SMTP_PORT, FRESHGATE_SMTP_USER, FRESHGATE_SMTP_PASSWORD, and FRESHGATE_SMTP_FROM to the server environment, then restart FreshGate.");
       } else {
-        onError("Could not send test email. Ensure SMTP credentials are configured on the server.");
+        onError("SMTP is configured, but the test email could not be delivered. Check the server log for SMTP errors and verify the host, port, TLS mode, credentials, and recipient.");
       }
     } catch (err) {
       onError(err instanceof Error ? err.message : "Failed to trigger test email.");

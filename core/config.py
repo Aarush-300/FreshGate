@@ -173,7 +173,7 @@ class FreshGateConfig:
     admin_email: str = ""
 
     # Phase 7: File Upload Feature
-    allowed_upload_types: List[str] = field(default_factory=lambda: [".pdf", ".txt", ".md", ".json", ".docx"])
+    allowed_upload_types: List[str] = field(default_factory=lambda: [".pdf", ".txt", ".md", ".json", ".docx", ".csv"])
     max_upload_size_bytes: int = 10485760  # 10MB
 
     def get_safe_diagnostics(self) -> Dict[str, Any]:
@@ -334,7 +334,11 @@ def load_config(override_env: Optional[Dict[str, str]] = None) -> FreshGateConfi
         admin_email=(env.get("FRESHGATE_ADMIN_EMAIL") or "").strip(),
 
         # Phase 7: File Upload Feature
-        allowed_upload_types=(env.get("FRESHGATE_ALLOWED_UPLOAD_TYPES") or ".pdf,.txt,.md,.json,.docx").split(","),
+        allowed_upload_types=[
+            extension.strip().lower()
+            for extension in (env.get("FRESHGATE_ALLOWED_UPLOAD_TYPES") or ".pdf,.txt,.md,.json,.docx,.csv").split(",")
+            if extension.strip()
+        ],
         max_upload_size_bytes=_int_env("FRESHGATE_MAX_UPLOAD_SIZE_BYTES", 10485760),
     )
 

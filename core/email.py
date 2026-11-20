@@ -72,6 +72,8 @@ class EmailService:
         msg.attach(MIMEText(html, "html"))
 
         try:
+            implicit_tls = self.config.smtp_tls and self.config.smtp_port == 465
+            start_tls = self.config.smtp_tls and not implicit_tls
             if HAS_AIOSMTPLIB:
                 await aiosmtplib.send(
                     msg,
@@ -79,21 +81,27 @@ class EmailService:
                     port=self.config.smtp_port,
                     username=self.config.smtp_user,
                     password=self.config.smtp_password,
-                    use_tls=self.config.smtp_tls,
+                    use_tls=implicit_tls,
+                    start_tls=start_tls,
                     timeout=10,
                 )
             else:
                 def _send_sync():
-                    if self.config.smtp_tls and self.config.smtp_port == 465:
+                    if implicit_tls:
                         server = smtplib.SMTP_SSL(self.config.smtp_host, self.config.smtp_port, timeout=10)
                     else:
                         server = smtplib.SMTP(self.config.smtp_host, self.config.smtp_port, timeout=10)
-                        if self.config.smtp_tls:
+                        if start_tls:
                             server.starttls()
-                    if self.config.smtp_user and self.config.smtp_password:
-                        server.login(self.config.smtp_user, self.config.smtp_password)
-                    server.send_message(msg)
-                    server.quit()
+                    try:
+                        if self.config.smtp_user and self.config.smtp_password:
+                            server.login(self.config.smtp_user, self.config.smtp_password)
+                        server.send_message(msg)
+                    finally:
+                        try:
+                            server.quit()
+                        except smtplib.SMTPException:
+                            server.close()
 
                 await asyncio.to_thread(_send_sync)
 

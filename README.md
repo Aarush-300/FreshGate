@@ -126,7 +126,7 @@ Claim categories: pricing, software/model versions, law, leadership, product ava
 
 - Python 3.11+
 - Node.js 22+ and npm
-- MongoDB (local `mongodb://localhost:27017` or a free MongoDB Atlas cluster)
+- Local single-user development uses SQLite when `FRESHGATE_STORE=sqlite`; set `FRESHGATE_STORE=mongo` and `MONGODB_URI` for multi-user deployments
 - Your own LLM provider key and a [Tavily](https://tavily.com) key (entered in the dashboard Profile page)
 
 ### Run locally
@@ -157,8 +157,14 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"   # run twice
 ```
 
 ```
-MONGODB_URI=mongodb://localhost:27017
-FRESHGATE_SESSION_SECRET=<random string, 32+ chars>
+# Local single-user mode (uses SQLite for accounts and feature data)
+FRESHGATE_STORE=sqlite
+
+# For multi-user MongoDB mode, set these instead:
+# FRESHGATE_STORE=mongo
+# MONGODB_URI=mongodb://localhost:27017
+# Optional locally: FreshGate creates a persistent ignored secret file if unset.
+# FRESHGATE_SESSION_SECRET=<random string, 32+ chars>
 FRESHGATE_ADMIN_KEY=<random string, 24+ chars>
 ```
 
@@ -191,8 +197,10 @@ All settings are environment variables (see `.env.example` for the full list).
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `MONGODB_URI`, `MONGODB_DATABASE` | `mongodb://localhost:27017`, `freshgate` | Accounts, policies, Watchtower, history |
-| `FRESHGATE_SESSION_SECRET` | (required) | Signs session cookies and encrypts stored keys. 32+ random chars. Changing it invalidates sessions and stored keys. |
+| `FRESHGATE_STORE` | `sqlite` when unspecified in development; `mongo` in production when `MONGODB_URI` is set | Select local SQLite or Mongo-backed multi-user storage |
+| `MONGODB_URI`, `MONGODB_DATABASE` | `mongodb://localhost:27017`, `freshgate` | Accounts, policies, Watchtower, history when Mongo mode is enabled |
+| `FRESHGATE_USERS_STORE` | Follows `FRESHGATE_STORE` | Optionally use Mongo-backed accounts with SQLite feature storage (`mongo` or `sqlite`) |
+| `FRESHGATE_SESSION_SECRET` | Required in production; generated locally if unset | Signs session cookies and encrypts stored keys. Use a persistent 32+ character random value in production. Changing it invalidates sessions and stored keys. |
 | `FRESHGATE_ADMIN_KEY` | (unset) | Protects admin routes (audit log, cache clear, circuit-breaker reset). Unset means those routes return 403. |
 | `FRESHGATE_API_KEY` | (unset) | Client key for the proxy and plugin routes. Required in production. |
 | `FRESHGATE_ENV` | `development` | Set `production` to force HTTPS-only provider URLs and secure cookies. |
@@ -206,14 +214,17 @@ All settings are environment variables (see `.env.example` for the full list).
 | `FRESHGATE_CACHE_DB`, `FRESHGATE_AUDIT_DB`, `FRESHGATE_FEATURE_DB` | `freshgate_*.db` | SQLite files. Put these on persistent storage in production. |
 | `REDIS_URL` | | Optional shared cache and rate limiter |
 | `FRESHGATE_RATE_LIMIT_PER_MINUTE` | `60` | Per-client limit on verification endpoints |
-| `FRESHGATE_MAX_BODY_SIZE_BYTES` | `1048576` | Request body limit |
+| `FRESHGATE_MAX_BODY_SIZE_BYTES` | `1048576` | General request-body limit; `/verify/upload` has its own upload-sized allowance |
+| `FRESHGATE_MAX_UPLOAD_SIZE_BYTES` | `10485760` | Maximum document size for `/verify/upload` (10 MiB) |
+| `FRESHGATE_ALLOWED_UPLOAD_TYPES` | `.pdf,.txt,.md,.json,.docx,.csv` | Allowed document extensions |
 | `FRESHGATE_WATCHTOWER_*` | | Enable, poll interval, concurrency, claim cap, lease, retries |
-| `FRESHGATE_SMTP_HOST`, `FRESHGATE_SMTP_PORT`, `FRESHGATE_SMTP_USER`, `FRESHGATE_SMTP_PASSWORD`, `FRESHGATE_SMTP_FROM`, `FRESHGATE_SMTP_TLS` | | SMTP config for Watchtower email digests |
+| `FRESHGATE_SMTP_HOST`, `FRESHGATE_SMTP_PORT`, `FRESHGATE_SMTP_USER`, `FRESHGATE_SMTP_PASSWORD`, `FRESHGATE_SMTP_FROM`, `FRESHGATE_SMTP_TLS` | | SMTP config for Watchtower email digests (port 587 uses STARTTLS; port 465 uses implicit TLS) |
 | `FRESHGATE_ADMIN_EMAIL` | | Default recipient for Watchtower email reports |
-| `FRESHGATE_ALLOWED_UPLOAD_TYPES`, `FRESHGATE_MAX_UPLOAD_SIZE_BYTES` | `.pdf,.txt,.md,.json,.docx`, `10485760` | File upload validation |
 | `FRESHGATE_ENABLE_WIKIPEDIA_SEARCH`, `FRESHGATE_ENABLE_GITHUB_SEARCH`, `FRESHGATE_ENABLE_ACADEMIC_SEARCH` | `false` | Enable multi-source evidence search |
 | `FRESHGATE_DEFAULT_DEGRADATION_CURVE` | `exponential` | Temporal decay curve default |
 | `FRESHGATE_MIN_TEMPORAL_SCORE` | `0` | Floor for temporal decay factor |
+
+Email delivery is disabled until valid server-side SMTP credentials are configured. For Gmail, use `smtp.gmail.com`, port `587`, TLS enabled, your Gmail address, and a Google app password (not your regular account password). Set `FRESHGATE_SMTP_FROM` to the sender address and restart the server after changing `.env`.
 
 ---
 
