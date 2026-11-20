@@ -11,6 +11,47 @@ Built for a hackathon, covering two tracks:
 
 ---
 
+## 🚀 Strategic Enhancements (GeekRoom AI Hackathon)
+
+FreshGate now includes seven major capability extensions that dramatically expand its verification intelligence and operational maturity:
+
+### Phase 1: Temporal Freshness Scoring Engine
+- **Multiple decay curves**: Per-claim-type freshness decay using `linear`, `exponential`, or `step` functions.
+- **Category half-life defaults**: Pricing (1h), versions (6h), laws (7d), leadership (24h), etc.
+- **Predictive indicators**: Flip probability, recommended check interval, and temporal stability tags per claim.
+
+### Phase 2: Multi-Source Evidence Triangulation
+- **Specialized search clients**: Wikipedia (general knowledge), GitHub (releases & vulnerabilities), Crossref (academic papers).
+- **Source type authority multipliers**: Government (1.0), Academic (0.95), API (0.9), Document (0.85), Web (1.0).
+- **Cross-source consensus**: Computes agreement scores with diversity bonuses for multi-type evidence.
+
+### Phase 3: Predictive Claim Decomposition
+- **Volatility & evidence gap scoring**: Forward-looking claims tagged with risk metadata.
+- **Future pattern detection**: Identifies "will release", "expected Q3", "scheduled for" announcements.
+- **File upload extraction**: In-memory text extraction from PDF, DOCX, TXT, MD, JSON, CSV (10 MB limit).
+
+### Phase 4: Proactive Watchtower Monitoring
+- **Priority scheduling**: Claims sorted by flip probability descending; high-risk checked first.
+- **Optimal intervals**: Dynamic check intervals based on volatility + evidence freshness.
+
+### Phase 5: Executive Summary & Knowledge Base Export
+- **Executive summary**: Verdict distribution, score trends, timeline visualizations.
+- **Temporal trends**: Half-life estimation from score decay curves.
+- **ISO 25964 knowledge base**: JSON, XML, CSV exports for compliance.
+- **Full HTML report**: Standalone printable report with evidence citations.
+
+### Phase 6: Watchtower Email Digests
+- **SMTP delivery**: HTML digest reports with claim summaries, alerts, and predictive indicators.
+- **Configurable schedules**: Cron expressions or interval dropdowns.
+- **Dashboard UI**: Email schedule panel with test send capability.
+
+### Phase 7: File Upload Verification
+- **Multipart & JSON endpoints**: `POST /verify/upload` accepts documents + answer text.
+- **In-memory processing**: Files read, extracted, and discarded without disk persistence.
+- **Drag-and-drop UI**: File attachment zone in Verify view with size/type validation.
+
+---
+
 ## Contents
 
 - [How it works](#how-it-works)
@@ -63,17 +104,17 @@ Built for a hackathon, covering two tracks:
 
 | Area | What you get |
 | --- | --- |
-| **Verify** | Paste an answer, get per-claim verdicts, scores, corrections and cited sources. "Try an example" button for demos. |
+| **Verify** | Paste an answer, get per-claim verdicts, scores, corrections and cited sources. "Try an example" button for demos. **File upload** for PDF/DOCX/TXT/MD/JSON (up to 10 MB). |
 | **Policy Studio** | Per-user policies: which categories to check, allowed/blocked/preferred domains, minimum source count and authority, evidence age limits, jurisdiction, cache TTLs, and `shadow`/`warn`/`enforce` mode. |
-| **Watchtower** | Monitor important claims on a schedule. Alerts fire when a verdict, score or the evidence changes. Leased jobs with retry and backoff. |
-| **Replay** | Immutable per-claim history. Compare snapshots over time (verdict, score, evidence). |
+| **Watchtower** | Monitor important claims on a schedule. Alerts fire when a verdict, score or the evidence changes. Leased jobs with retry and backoff. **Predictive scheduling** checks high-risk claims first. **Email digests** with cron/interval scheduling. |
+| **Replay** | Immutable per-claim history. Compare snapshots over time (verdict, score, evidence). **Executive summary & ISO 25964 export** (JSON, XML, CSV, HTML report). |
 | **Audit log** | Append-only record of every verification (dashboard, proxy, streaming, plugin, Watchtower). Admin-key protected. |
 | **Gateway proxy** | OpenAI-compatible `/v1/chat/completions` in front of Bifrost, with `X-FreshGate-*` headers, streaming support and fail-open behavior. |
 | **Resilience** | Per-service circuit breakers, single-flight coalescing, rate limiting (Redis with in-memory fallback), request size limits, security headers. |
 | **Multi-user** | Accounts, signed session cookies, per-user provider/model/keys (encrypted at rest), per-user data isolation in MongoDB. |
 | **Providers** | OpenAI, Groq, Gemini, OpenRouter, Ollama and any custom OpenAI-compatible endpoint. |
 | **CLI** | `freshgate verify`, `batch`, `status`, `benchmark` with CI-friendly exit codes and `text`/`json`/`markdown` output. |
-| **Dashboard** | React 19 + Vite + TypeScript, light and dark themes. |
+| **Dashboard** | React 19 + Vite + TypeScript, light and dark themes. **Email schedule config**, **file upload zone**, **predictive indicators**, **export buttons**. |
 
 Claim categories: pricing, software/model versions, law, leadership, product availability, cybersecurity/CVEs, financial metrics, government policy, public health, company info, scientific findings.
 
@@ -167,6 +208,12 @@ All settings are environment variables (see `.env.example` for the full list).
 | `FRESHGATE_RATE_LIMIT_PER_MINUTE` | `60` | Per-client limit on verification endpoints |
 | `FRESHGATE_MAX_BODY_SIZE_BYTES` | `1048576` | Request body limit |
 | `FRESHGATE_WATCHTOWER_*` | | Enable, poll interval, concurrency, claim cap, lease, retries |
+| `FRESHGATE_SMTP_HOST`, `FRESHGATE_SMTP_PORT`, `FRESHGATE_SMTP_USER`, `FRESHGATE_SMTP_PASSWORD`, `FRESHGATE_SMTP_FROM`, `FRESHGATE_SMTP_TLS` | | SMTP config for Watchtower email digests |
+| `FRESHGATE_ADMIN_EMAIL` | | Default recipient for Watchtower email reports |
+| `FRESHGATE_ALLOWED_UPLOAD_TYPES`, `FRESHGATE_MAX_UPLOAD_SIZE_BYTES` | `.pdf,.txt,.md,.json,.docx`, `10485760` | File upload validation |
+| `FRESHGATE_ENABLE_WIKIPEDIA_SEARCH`, `FRESHGATE_ENABLE_GITHUB_SEARCH`, `FRESHGATE_ENABLE_ACADEMIC_SEARCH` | `false` | Enable multi-source evidence search |
+| `FRESHGATE_DEFAULT_DEGRADATION_CURVE` | `exponential` | Temporal decay curve default |
+| `FRESHGATE_MIN_TEMPORAL_SCORE` | `0` | Floor for temporal decay factor |
 
 ---
 
@@ -176,12 +223,12 @@ All settings are environment variables (see `.env.example` for the full list).
 
 | Page | Purpose |
 | --- | --- |
-| **Verify** | Check an answer, optionally against a policy |
+| **Verify** | Check an answer (text or uploaded document), optionally against a policy |
 | **System / Benchmarks** | Health, provider status, circuit breakers, cache stats, benchmark results |
 | **Audit log** | Admin-only verification trail |
 | **Policy Studio** | Create and simulate policies |
-| **Watchtower** | Monitored claims and alerts |
-| **Replay** | Claim history over time |
+| **Watchtower** | Monitored claims, alerts, **email schedule**, **predictive indicators** |
+| **Replay** | Claim history, **export buttons** (JSON/XML/CSV/HTML report) |
 | **Profile** | Provider, model, API keys |
 
 ### REST API
@@ -199,11 +246,15 @@ curl -X POST http://localhost:8000/verify \
 | Endpoint | Auth | Description |
 | --- | --- | --- |
 | `POST /verify` | session or request keys | Verify answer text |
+| `POST /verify/upload` | session or request keys | Verify answer text with document upload |
 | `POST /v1/chat/completions`, `POST /proxy/v1/chat/completions` | upstream auth | Verifying proxy (see below) |
 | `POST /api/plugin/verify` | `X-API-Key` | Endpoint used by the Go plugin |
 | `GET /api/stream/verification/{id}` | session or admin | Result of an async stream verification |
 | `/api/policies`, `/api/watchtower/*`, `/api/history/*`, `/api/replay/*` | session | Policy Studio, Watchtower, Replay |
 | `GET /api/audits/recent` | `X-Admin-Key` | Audit log (`limit` 1-500, `offset`, `source`) |
+| `/api/export/claim/{fingerprint}/*` | session | Executive summary, temporal trends, knowledge base (JSON/XML/CSV), full HTML report |
+| `GET /api/watchtower/email/schedule`, `POST /api/watchtower/email/schedule` | session | Email schedule config (cron/interval) |
+| `POST /api/watchtower/email/test` | session | Send test watchtower digest |
 | `GET /metrics` | session or admin | Prometheus metrics |
 | `GET /health/live`, `GET /health/ready` | none | Liveness and readiness probes |
 | `POST /api/cache/clear`, `POST /api/circuit-breaker/reset` | `X-Admin-Key` | Operations |
