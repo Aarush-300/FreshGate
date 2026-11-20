@@ -171,6 +171,9 @@ class FreshGateConfig:
     smtp_from: str = ""
     smtp_tls: bool = True
     admin_email: str = ""
+    brevo_api_key: str = ""
+    resend_api_key: str = ""
+    sendgrid_api_key: str = ""
 
     # Phase 7: File Upload Feature
     allowed_upload_types: List[str] = field(default_factory=lambda: [".pdf", ".txt", ".md", ".json", ".docx", ".csv"])
@@ -332,6 +335,9 @@ def load_config(override_env: Optional[Dict[str, str]] = None) -> FreshGateConfi
         smtp_from=(env.get("FRESHGATE_SMTP_FROM") or "").strip(),
         smtp_tls=_bool_env("FRESHGATE_SMTP_TLS", True),
         admin_email=(env.get("FRESHGATE_ADMIN_EMAIL") or "").strip(),
+        brevo_api_key=(env.get("BREVO_API_KEY") or "").strip(),
+        resend_api_key=(env.get("RESEND_API_KEY") or "").strip(),
+        sendgrid_api_key=(env.get("SENDGRID_API_KEY") or "").strip(),
 
         # Phase 7: File Upload Feature
         allowed_upload_types=[

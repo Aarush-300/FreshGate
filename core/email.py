@@ -5,11 +5,13 @@ Provides SMTP-based email delivery with HTML templates for scheduled reports.
 
 import asyncio
 import logging
+import os
 import smtplib
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+import httpx
 
 try:
     import aiosmtplib
@@ -31,7 +33,9 @@ class EmailService:
         self.config = config
 
     def _is_configured(self) -> bool:
-        """Check if SMTP is properly configured."""
+        """Check if SMTP or HTTP email provider is properly configured."""
+        if self.config.brevo_api_key or self.config.resend_api_key or self.config.sendgrid_api_key:
+            return True
         return bool(
             self.config.smtp_host
             and self.config.smtp_user
@@ -47,29 +51,180 @@ class EmailService:
         text: Optional[str] = None,
     ) -> bool:
         """Send HTML email with optional plain text fallback."""
+        success, _ = await self.send_html_with_error(to, subject, html, text)
+        return success
+
+    async def send_html_with_error(
+        self,
+        to: List[str],
+        subject: str,
+        html: str,
+        text: Optional[str] = None,
+    ) -> Tuple[bool, Optional[str]]:
+        """Send HTML email returning success boolean and optional error message."""
         if not self._is_configured():
-            logger.warning("SMTP not configured, skipping email send")
-            return False
+            logger.warning("Email service not configured, skipping email send")
+            return False, "Email service is not configured. Provide BREVO_API_KEY, RESEND_API_KEY, or SMTP credentials."
 
         if not to:
             logger.warning("No recipients specified, skipping email send")
-            return False
+            return False, "No recipient specified."
 
+        # 1. Brevo REST API (HTTPS Port 443 - works on Render Free without requiring a custom domain)
+        if self.config.brevo_api_key:
+            return await self._send_via_brevo(to, subject, html, text)
+
+        # 2. Resend API (HTTPS Port 443 - works on Render Free)
+        if self.config.resend_api_key:
+            return await self._send_via_resend(to, subject, html, text)
+
+        # 3. SendGrid API (HTTPS Port 443)
+        if self.config.sendgrid_api_key:
+            return await self._send_via_sendgrid(to, subject, html, text)
+
+        # 4. Standard SMTP (Ports 587/465)
+        return await self._send_via_smtp(to, subject, html, text)
+
+    async def _send_via_brevo(
+        self,
+        to: List[str],
+        subject: str,
+        html: str,
+        text: Optional[str] = None,
+    ) -> Tuple[bool, Optional[str]]:
+        """Send email using Brevo REST API over HTTPS (Port 443)."""
+        import email.utils
+        from_raw = self.config.smtp_from or "freshgate67@gmail.com"
+        parsed_name, parsed_email = email.utils.parseaddr(from_raw)
+        sender_name = parsed_name.strip() or "FreshGate Watchtower"
+        sender_email = parsed_email.strip() or "freshgate67@gmail.com"
+
+        payload = {
+            "sender": {"name": sender_name, "email": sender_email},
+            "to": [{"email": addr.strip()} for addr in to if addr.strip()],
+            "subject": subject,
+            "htmlContent": html,
+        }
+        if text:
+            payload["textContent"] = text
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                res = await client.post(
+                    "https://api.brevo.com/v3/smtp/email",
+                    headers={
+                        "api-key": self.config.brevo_api_key,
+                        "Content-Type": "application/json",
+                        "Accept": "application/json",
+                    },
+                    json=payload,
+                )
+                if res.is_success or res.status_code in (200, 201, 202):
+                    logger.info("Email sent via Brevo API to %s", ", ".join(to))
+                    return True, None
+                err_detail = res.text
+                logger.error("Brevo API delivery failed (%d): %s", res.status_code, err_detail)
+                return False, f"Brevo API error ({res.status_code}): {err_detail}"
+        except Exception as e:
+            logger.error("Failed to send email via Brevo API: %s", e)
+            return False, f"Brevo connection error: {e}"
+
+    async def _send_via_resend(
+        self,
+        to: List[str],
+        subject: str,
+        html: str,
+        text: Optional[str] = None,
+    ) -> Tuple[bool, Optional[str]]:
+        """Send email using Resend REST API over HTTPS (Port 443)."""
+        from_address = self.config.smtp_from or "FreshGate <onboarding@resend.dev>"
+        payload = {
+            "from": from_address,
+            "to": to,
+            "subject": subject,
+            "html": html,
+        }
+        if text:
+            payload["text"] = text
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                res = await client.post(
+                    "https://api.resend.com/emails",
+                    headers={
+                        "Authorization": f"Bearer {self.config.resend_api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                )
+                if res.is_success:
+                    logger.info("Email sent via Resend API to %s", ", ".join(to))
+                    return True, None
+                err_detail = res.text
+                logger.error("Resend API delivery failed (%d): %s", res.status_code, err_detail)
+                return False, f"Resend API error ({res.status_code}): {err_detail}"
+        except Exception as e:
+            logger.error("Failed to send email via Resend API: %s", e)
+            return False, f"Resend connection error: {e}"
+
+    async def _send_via_sendgrid(
+        self,
+        to: List[str],
+        subject: str,
+        html: str,
+        text: Optional[str] = None,
+    ) -> Tuple[bool, Optional[str]]:
+        """Send email using SendGrid REST API over HTTPS (Port 443)."""
+        from_address = self.config.smtp_from or "alerts@freshgate.ai"
+        content = [{"type": "text/html", "value": html}]
+        if text:
+            content.insert(0, {"type": "text/plain", "value": text})
+        payload = {
+            "personalizations": [{"to": [{"email": addr} for addr in to]}],
+            "from": {"email": from_address},
+            "subject": subject,
+            "content": content,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                res = await client.post(
+                    "https://api.sendgrid.com/v3/mail/send",
+                    headers={
+                        "Authorization": f"Bearer {self.config.sendgrid_api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                )
+                if res.is_success or res.status_code == 202:
+                    logger.info("Email sent via SendGrid API to %s", ", ".join(to))
+                    return True, None
+                err_detail = res.text
+                logger.error("SendGrid API delivery failed (%d): %s", res.status_code, err_detail)
+                return False, f"SendGrid API error ({res.status_code}): {err_detail}"
+        except Exception as e:
+            logger.error("Failed to send email via SendGrid API: %s", e)
+            return False, f"SendGrid connection error: {e}"
+
+    async def _send_via_smtp(
+        self,
+        to: List[str],
+        subject: str,
+        html: str,
+        text: Optional[str] = None,
+    ) -> Tuple[bool, Optional[str]]:
+        """Send email via SMTP."""
         msg = MIMEMultipart("alternative")
         msg["Subject"] = subject
         msg["From"] = self.config.smtp_from
         msg["To"] = ", ".join(to)
 
-        # Plain text version
         if text:
             msg.attach(MIMEText(text, "plain"))
         else:
-            # Generate basic text from HTML (strip tags)
             import re
             text_content = re.sub(r"<[^>]+>", "", html)
             msg.attach(MIMEText(text_content, "plain"))
 
-        # HTML version
         msg.attach(MIMEText(html, "html"))
 
         try:
@@ -84,14 +239,14 @@ class EmailService:
                     password=self.config.smtp_password,
                     use_tls=implicit_tls,
                     start_tls=start_tls,
-                    timeout=10,
+                    timeout=5,
                 )
             else:
                 def _send_sync():
                     if implicit_tls:
-                        server = smtplib.SMTP_SSL(self.config.smtp_host, self.config.smtp_port, timeout=10)
+                        server = smtplib.SMTP_SSL(self.config.smtp_host, self.config.smtp_port, timeout=5)
                     else:
-                        server = smtplib.SMTP(self.config.smtp_host, self.config.smtp_port, timeout=10)
+                        server = smtplib.SMTP(self.config.smtp_host, self.config.smtp_port, timeout=5)
                         if start_tls:
                             server.starttls()
                     try:
@@ -106,11 +261,28 @@ class EmailService:
 
                 await asyncio.to_thread(_send_sync)
 
-            logger.info("Email sent successfully to %s", ", ".join(to))
-            return True
+            logger.info("Email sent successfully via SMTP to %s", ", ".join(to))
+            return True, None
         except Exception as e:
-            logger.error("Failed to send email: %s", e)
-            return False
+            err_str = str(e)
+            is_timeout = "timeout" in err_str.lower() or "timed out" in err_str.lower()
+            is_render = bool(os.environ.get("RENDER") or os.environ.get("RENDER_SERVICE_ID"))
+            if is_timeout and is_render:
+                err_msg = (
+                    f"Timed out connecting to {self.config.smtp_host}:{self.config.smtp_port}. "
+                    "Render Free tier blocks outbound SMTP ports 25, 465, and 587. "
+                    "To send emails from Render, add RESEND_API_KEY in Render environment variables "
+                    "(uses HTTPS port 443 with 3,000 free emails/mo), or upgrade Render to Starter tier."
+                )
+                logger.error(err_msg)
+                return False, err_msg
+            elif is_timeout:
+                err_msg = f"Timed out connecting to SMTP host {self.config.smtp_host}:{self.config.smtp_port}. Check network or firewall."
+                logger.error("Failed to send email: %s", err_msg)
+                return False, err_msg
+            else:
+                logger.error("Failed to send email: %s", e)
+                return False, err_str
 
     async def send_watchtower_report(
         self,
@@ -263,6 +435,12 @@ class EmailService:
                 </div>
                 """)
             html_parts.append("</div>")
+        else:
+            html_parts.append("""
+            <div class="section" style="text-align: center; color: #6b7280; padding: 24px 0;">
+                <p>No claims are currently enrolled in continuous verification. Verify claims in the FreshGate dashboard to track their veracity and receive alerts.</p>
+            </div>
+            """)
 
         html_parts.append("""
             <div class="footer">
@@ -277,21 +455,26 @@ class EmailService:
         return await self.send_html(to, subject, html)
 
     async def send_test_email(self, to: List[str]) -> bool:
-        """Send a test email to verify SMTP configuration."""
+        """Send a test email returning boolean success."""
+        success, _ = await self.send_test_email_with_error(to)
+        return success
+
+    async def send_test_email_with_error(self, to: List[str]) -> Tuple[bool, Optional[str]]:
+        """Send a test email returning success boolean and optional error description."""
         subject = "🧪 FreshGate Test Email"
         html = """
         <!DOCTYPE html>
         <html>
         <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 20px;">
-            <h2 style="color: #667eea;">FreshGate SMTP Test</h2>
+            <h2 style="color: #667eea;">FreshGate Email Test</h2>
             <p>This is a test email from FreshGate Watchtower.</p>
-            <p>If you received this, your SMTP configuration is working correctly! ✅</p>
+            <p>If you received this, your email configuration is working correctly! ✅</p>
             <hr style="border: none; border-top: 1px solid #e1e5e9; margin: 20px 0;">
             <p style="color: #999; font-size: 12px;">Sent at """ + datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC') + """</p>
         </body>
         </html>
         """
-        return await self.send_html(to, subject, html)
+        return await self.send_html_with_error(to, subject, html)
 
 
 def get_email_service(config: Optional[FreshGateConfig] = None) -> EmailService:

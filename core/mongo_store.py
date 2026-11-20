@@ -427,9 +427,21 @@ class MongoFeatureStore:
         self.db.users.update_one(
             {"_id": user_id},
             {"$set": {f"metadata.{k}": v for k, v in metadata.items()}},
-            upsert=False,
+            upsert=True,
         )
 
     def get_user_metadata(self, user_id: str) -> dict[str, Any]:
         doc = self.db.users.find_one({"_id": user_id}, {"metadata": 1})
         return doc.get("metadata", {}) if doc else {}
+
+    def get_all_email_schedules(self) -> list[dict[str, Any]]:
+        cursor = self.db.users.find(
+            {"metadata.email_schedule.enabled": True},
+            {"_id": 1, "metadata.email_schedule": 1},
+        )
+        results = []
+        for doc in cursor:
+            sched = doc.get("metadata", {}).get("email_schedule", {})
+            if sched and sched.get("enabled"):
+                results.append({"user_id": str(doc["_id"]), **sched})
+        return results

@@ -378,6 +378,6 @@ def test_api_provider_status_endpoint():
     assert "circuit_breakers" in data
     assert "cache" in data
     assert "metrics" in data
-    assert data["llm"]["model"] == "gpt-4o-mini"
+    assert data["llm"]["model"] in ("gpt-4o-mini", os.environ.get("LLM_MODEL", "gpt-4o-mini"))
     assert "gateway" in data["circuit_breakers"]
     assert "llm_extraction" in data["circuit_breakers"]

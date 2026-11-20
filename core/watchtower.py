@@ -84,6 +84,12 @@ class WatchtowerService:
             except Exception:
                 logger.exception("Watchtower scheduler iteration failed")
             try:
+                await self.run_due_email_reports()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Watchtower email report runner iteration failed")
+            try:
                 await asyncio.wait_for(self._stopping.wait(), timeout=self.config.watchtower_poll_seconds)
             except asyncio.TimeoutError:
                 pass
@@ -368,7 +374,11 @@ class WatchtowerService:
             self._email_service = get_email_service(self.config)
         return self._email_service
 
-    async def send_scheduled_report(self, owner_id: Optional[str] = None) -> bool:
+    async def send_scheduled_report(
+        self,
+        owner_id: Optional[str] = None,
+        recipient_email: Optional[str] = None,
+    ) -> bool:
         """
         Generate and send scheduled watchtower report via email.
 
@@ -381,51 +391,127 @@ class WatchtowerService:
 
         # Get all monitored claims for this owner
         store = self.store.for_owner(owner_id) if (owner_id and hasattr(self.store, "for_owner")) else self.store
-        monitored = await asyncio.to_thread(store.list_monitored_claims, owner_id)
-
-        if not monitored:
-            logger.info("No monitored claims for scheduled report")
-            return True
+        monitored = await asyncio.to_thread(store.list_monitored_claims)
 
         # Get latest verification for each claim
         claims = []
         alerts = []
-        for row in monitored:
-            # Get latest snapshot
-            snapshot = await asyncio.to_thread(store.get_latest_snapshot, row["claim_fingerprint"])
-            if snapshot:
-                # Reconstruct claim from snapshot
-                claim = Claim(
-                    id=row["id"],
-                    text=snapshot["claim_text"],
-                    type=snapshot["category"],
-                    verdict=snapshot["verdict"],
-                    score=snapshot["freshness_score"],
-                    sources=[Source(**s) for s in snapshot.get("sources", [])],
-                    last_verified_at=snapshot.get("checked_at"),
-                    volatility_score=row.get("volatility_score", 0.5),
-                    evidence_gap=row.get("evidence_gap", 0.5),
-                    predicted_flip_probability=row.get("predicted_flip_probability"),
-                    recommended_check_interval=row.get("recommended_check_interval"),
-                )
-                claims.append(claim)
+        if monitored:
+            for row in monitored:
+                # Get latest snapshot
+                snapshot = await asyncio.to_thread(store.get_latest_snapshot, row["claim_fingerprint"])
+                if snapshot:
+                    # Reconstruct claim from snapshot
+                    claim = Claim(
+                        id=row["id"],
+                        text=snapshot["claim_text"],
+                        type=snapshot["category"],
+                        verdict=snapshot["verdict"],
+                        score=snapshot["freshness_score"],
+                        sources=[Source(**s) for s in snapshot.get("sources", [])],
+                        last_verified_at=snapshot.get("checked_at"),
+                        volatility_score=row.get("volatility_score", 0.5),
+                        evidence_gap=row.get("evidence_gap", 0.5),
+                        predicted_flip_probability=row.get("predicted_flip_probability"),
+                        recommended_check_interval=row.get("recommended_check_interval"),
+                    )
+                    claims.append(claim)
 
-            # Get recent alerts
-            claim_alerts = await asyncio.to_thread(store.get_alerts_for_claim, row["id"], limit=5)
-            for alert in claim_alerts:
-                alerts.append({
-                    "title": f"Verdict Change: {alert['previous_verdict']} → {alert['current_verdict']}",
-                    "message": alert["reason"],
-                })
+                # Get recent alerts
+                claim_alerts = await asyncio.to_thread(store.get_alerts_for_claim, row["id"], limit=5)
+                for alert in claim_alerts:
+                    alerts.append({
+                        "title": f"Verdict Change: {alert['previous_verdict']} → {alert['current_verdict']}",
+                        "message": alert["reason"],
+                    })
 
-        # Send report to admin email
-        if self.config.admin_email:
+        # Send report to target recipient or admin email
+        target_recipient = recipient_email or self.config.admin_email
+        if target_recipient:
             return await email_service.send_watchtower_report(
-                to=[self.config.admin_email],
+                to=[target_recipient],
                 claims=claims,
                 alerts=alerts,
             )
         return False
+
+    async def run_due_email_reports(self) -> list[str]:
+        """Check for users whose scheduled email digests are due and send them."""
+        email_service = await self._get_email_service()
+        if not email_service._is_configured():
+            return []
+
+        fs = self.store
+        if not hasattr(fs, "get_all_email_schedules"):
+            fs = get_feature_store()
+        if not hasattr(fs, "get_all_email_schedules"):
+            return []
+
+        schedules = await asyncio.to_thread(fs.get_all_email_schedules)
+        if not schedules:
+            return []
+
+        now = time.time()
+        sent_recipients: list[str] = []
+
+        for item in schedules:
+            user_id = item.get("user_id")
+            recipient = item.get("recipient_email") or self.config.admin_email
+            if not recipient:
+                continue
+
+            interval_seconds = item.get("interval_seconds")
+            if not interval_seconds:
+                cron = item.get("cron_expression")
+                if cron == "0 */6 * * *":
+                    interval_seconds = 21600
+                elif cron == "0 */12 * * *":
+                    interval_seconds = 43200
+                elif cron == "0 9 * * 1":
+                    interval_seconds = 604800
+                else:
+                    interval_seconds = 86400
+
+            next_run_at = item.get("next_run_at")
+            last_sent_at = item.get("last_sent_at")
+
+            is_due = False
+            if next_run_at is not None:
+                is_due = now >= next_run_at
+            elif last_sent_at is not None:
+                is_due = (now - last_sent_at) >= interval_seconds
+            else:
+                # First run: initialize next_run_at
+                await asyncio.to_thread(
+                    fs.update_user_metadata,
+                    user_id,
+                    {"email_schedule": {**item, "next_run_at": now + interval_seconds}},
+                )
+                continue
+
+            if is_due:
+                try:
+                    success = await self.send_scheduled_report(
+                        owner_id=user_id,
+                        recipient_email=recipient,
+                    )
+                    if success:
+                        sent_recipients.append(recipient)
+                    await asyncio.to_thread(
+                        fs.update_user_metadata,
+                        user_id,
+                        {
+                            "email_schedule": {
+                                **item,
+                                "last_sent_at": now,
+                                "next_run_at": now + interval_seconds,
+                            }
+                        },
+                    )
+                except Exception as err:
+                    logger.error("Failed to run scheduled email report for %s: %s", recipient, err)
+
+        return sent_recipients
 
 
 class _InsufficientEvidence(Exception):

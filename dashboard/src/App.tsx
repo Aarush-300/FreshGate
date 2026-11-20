@@ -5,7 +5,7 @@ import {
   Activity, AlertTriangle, ArrowDownRight, ArrowUpRight, BookOpen, Check, ChevronDown,
   ChevronRight, CircleHelp, Clock3, FileClock, FlaskConical, Gauge, History, Leaf,
   LoaderCircle, LockKeyhole, Menu, Plus, RefreshCw, Search, Settings2, ShieldCheck,
-  Sprout, Sun, Moon, Eye, EyeOff, Trash2, X, Upload, FileText, Download, Mail,
+  Sprout, Sun, Moon, Eye, EyeOff, Trash2, X, Upload, FileText, Download, Mail, Pause, Play,
 } from "lucide-react";
 import { api, jsonBody, patchBody, putBody, deleteReq, setUnauthorizedHandler } from "./api";
 import type {
@@ -1579,6 +1579,11 @@ function WatchtowerView({ claims, alerts, categories, policies, onRefresh, onErr
   // Phase 6: Email monitoring schedule state
   const [emailRecipient, setEmailRecipient] = useState("");
   const [emailCron, setEmailCron] = useState("0 9 * * *");
+  const [scheduleEnabled, setScheduleEnabled] = useState(true);
+  const [customMode, setCustomMode] = useState<"interval" | "cron">("interval");
+  const [customAmount, setCustomAmount] = useState<number>(4);
+  const [customUnit, setCustomUnit] = useState<"minutes" | "hours" | "days" | "weeks">("hours");
+  const [customCronExpr, setCustomCronExpr] = useState<string>("0 */4 * * *");
   const [emailBusy, setEmailBusy] = useState(false);
   const [emailNotice, setEmailNotice] = useState<string | null>(null);
 
@@ -1594,8 +1599,44 @@ function WatchtowerView({ claims, alerts, categories, policies, onRefresh, onErr
         if (data?.schedule?.recipient_email) {
           setEmailRecipient(data.schedule.recipient_email);
         }
-        if (data?.schedule?.cron_expression) {
-          setEmailCron(data.schedule.cron_expression);
+        const sched = data?.schedule;
+        if (sched) {
+          if (sched.enabled !== undefined) {
+            setScheduleEnabled(Boolean(sched.enabled));
+          }
+          const presets = ["0 9 * * *", "0 */6 * * *", "0 */12 * * *", "0 9 * * 1"];
+          if (sched.custom_amount && sched.custom_unit) {
+            setEmailCron("custom");
+            setCustomMode("interval");
+            setCustomAmount(sched.custom_amount);
+            setCustomUnit(sched.custom_unit as "minutes" | "hours" | "days" | "weeks");
+          } else if (sched.interval_seconds && !presets.includes(sched.cron_expression || "")) {
+            setEmailCron("custom");
+            setCustomMode("interval");
+            const secs = sched.interval_seconds;
+            if (secs % 604800 === 0) {
+              setCustomAmount(secs / 604800);
+              setCustomUnit("weeks");
+            } else if (secs % 86400 === 0) {
+              setCustomAmount(secs / 86400);
+              setCustomUnit("days");
+            } else if (secs % 3600 === 0) {
+              setCustomAmount(secs / 3600);
+              setCustomUnit("hours");
+            } else if (secs % 60 === 0) {
+              setCustomAmount(secs / 60);
+              setCustomUnit("minutes");
+            } else {
+              setCustomAmount(Math.max(1, Math.round(secs / 3600)));
+              setCustomUnit("hours");
+            }
+          } else if (sched.cron_expression && !presets.includes(sched.cron_expression)) {
+            setEmailCron("custom");
+            setCustomMode("cron");
+            setCustomCronExpr(sched.cron_expression);
+          } else if (sched.cron_expression) {
+            setEmailCron(sched.cron_expression);
+          }
         }
       })
       .catch(() => {});
@@ -1605,14 +1646,73 @@ function WatchtowerView({ claims, alerts, categories, policies, onRefresh, onErr
     setEmailBusy(true);
     setEmailNotice(null);
     try {
+      let cron_expression: string | null = emailCron;
+      let interval_seconds: number | null = null;
+      let custom_amount: number | null = null;
+      let custom_unit: string | null = null;
+
+      if (emailCron === "custom") {
+        if (customMode === "interval") {
+          const amt = Math.max(1, Number(customAmount) || 1);
+          custom_amount = amt;
+          custom_unit = customUnit;
+          const multipliers: Record<string, number> = {
+            minutes: 60,
+            hours: 3600,
+            days: 86400,
+            weeks: 604800,
+          };
+          interval_seconds = amt * (multipliers[customUnit] || 3600);
+          if (customUnit === "hours" && 24 % amt === 0) {
+            cron_expression = `0 */${amt} * * *`;
+          } else if (customUnit === "minutes" && 60 % amt === 0) {
+            cron_expression = `*/${amt} * * * *`;
+          } else if (customUnit === "days") {
+            cron_expression = `0 9 */${amt} * *`;
+          } else {
+            cron_expression = null;
+          }
+        } else {
+          cron_expression = customCronExpr.trim() || null;
+          custom_amount = null;
+          custom_unit = null;
+        }
+      } else {
+        const presetIntervals: Record<string, number> = {
+          "0 9 * * *": 86400,
+          "0 */6 * * *": 21600,
+          "0 */12 * * *": 43200,
+          "0 9 * * 1": 604800,
+        };
+        interval_seconds = presetIntervals[emailCron] || 86400;
+      }
+
       await api("/api/watchtower/email/schedule", jsonBody({
         enabled: true,
-        cron_expression: emailCron,
+        cron_expression,
+        interval_seconds,
+        custom_amount,
+        custom_unit,
         recipient_email: emailRecipient.trim(),
       }));
-      setEmailNotice("Email monitoring schedule saved successfully.");
+      setScheduleEnabled(true);
+      setEmailNotice("Email monitoring schedule saved and active.");
     } catch (err) {
       onError(err instanceof Error ? err.message : "Failed to save email schedule.");
+    } finally {
+      setEmailBusy(false);
+    }
+  };
+
+  const stopEmailSchedule = async () => {
+    setEmailBusy(true);
+    setEmailNotice(null);
+    try {
+      await api("/api/watchtower/email/schedule/stop", { method: "POST" });
+      setScheduleEnabled(false);
+      setEmailNotice("Periodic email digest reports have been stopped.");
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "Failed to stop periodic email schedule.");
     } finally {
       setEmailBusy(false);
     }
@@ -1622,15 +1722,17 @@ function WatchtowerView({ claims, alerts, categories, policies, onRefresh, onErr
     setEmailBusy(true);
     setEmailNotice(null);
     try {
-      const res = await api<{ sent: boolean; configured: boolean; recipient: string }>("/api/watchtower/email/test", jsonBody({
+      const res = await api<{ sent: boolean; configured: boolean; recipient: string; error?: string }>("/api/watchtower/email/test", jsonBody({
         recipient_email: emailRecipient.trim() || undefined,
       }));
       if (res.sent) {
         setEmailNotice(`Test report sent successfully to ${res.recipient}!`);
       } else if (!res.configured) {
-        onError("SMTP is not configured. Add FRESHGATE_SMTP_HOST, FRESHGATE_SMTP_PORT, FRESHGATE_SMTP_USER, FRESHGATE_SMTP_PASSWORD, and FRESHGATE_SMTP_FROM to the server environment, then restart FreshGate.");
+        onError("Email is not configured. Add RESEND_API_KEY (for Render / HTTPS) or SMTP settings to your environment, then restart FreshGate.");
+      } else if (res.error) {
+        onError(res.error);
       } else {
-        onError("SMTP is configured, but the test email could not be delivered. Check the server log for SMTP errors and verify the host, port, TLS mode, credentials, and recipient.");
+        onError("Email is configured, but the test email could not be delivered. Check the server log for details.");
       }
     } catch (err) {
       onError(err instanceof Error ? err.message : "Failed to trigger test email.");
@@ -1807,6 +1909,9 @@ function WatchtowerView({ claims, alerts, categories, policies, onRefresh, onErr
           <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
             <Mail size={17} />
             <h2>Email Monitoring Reports</h2>
+            <span className={`schedule-status-badge ${scheduleEnabled ? "active" : "paused"}`}>
+              {scheduleEnabled ? "Active" : "Paused"}
+            </span>
           </div>
           <span className="panel-index">DIGESTS</span>
         </div>
@@ -1830,6 +1935,7 @@ function WatchtowerView({ claims, alerts, categories, policies, onRefresh, onErr
               <option value="0 */6 * * *">Every 6 hours</option>
               <option value="0 */12 * * *">Every 12 hours</option>
               <option value="0 9 * * 1">Weekly on Monday</option>
+              <option value="custom">Custom time period…</option>
             </select>
           </label>
           <div className="email-schedule-actions">
@@ -1839,8 +1945,20 @@ function WatchtowerView({ claims, alerts, categories, policies, onRefresh, onErr
               disabled={emailBusy || !emailRecipient.trim()}
               onClick={() => void saveEmailSchedule()}
             >
-              {emailBusy ? <LoaderCircle size={15} className="spin" /> : <Check size={15} />} Save schedule
+              {emailBusy ? <LoaderCircle size={15} className="spin" /> : scheduleEnabled ? <Check size={15} /> : <Play size={15} />}
+              {" "}{scheduleEnabled ? "Save schedule" : "Enable schedule"}
             </button>
+            {scheduleEnabled && (
+              <button
+                className="secondary-button"
+                type="button"
+                disabled={emailBusy}
+                onClick={() => void stopEmailSchedule()}
+                title="Stop periodic automated email reports"
+              >
+                {emailBusy ? <LoaderCircle size={15} className="spin" /> : <Pause size={15} />} Stop periodic emails
+              </button>
+            )}
             <button
               className="secondary-button"
               type="button"
@@ -1851,6 +1969,77 @@ function WatchtowerView({ claims, alerts, categories, policies, onRefresh, onErr
             </button>
           </div>
         </div>
+        {emailCron === "custom" && (
+          <div className="email-custom-schedule-wrap">
+            <div className="custom-schedule-heading">
+              <Clock3 size={15} />
+              <strong>Custom delivery period</strong>
+              <div className="custom-schedule-toggle">
+                <button
+                  type="button"
+                  className={`tab-pill ${customMode === "interval" ? "active" : ""}`}
+                  onClick={() => setCustomMode("interval")}
+                >
+                  Periodic interval
+                </button>
+                <button
+                  type="button"
+                  className={`tab-pill ${customMode === "cron" ? "active" : ""}`}
+                  onClick={() => setCustomMode("cron")}
+                >
+                  Cron expression
+                </button>
+              </div>
+            </div>
+
+            {customMode === "interval" ? (
+              <div className="custom-schedule-body">
+                <div className="custom-interval-row">
+                  <label className="field-group">
+                    <span className="field-label">Repeat every</span>
+                    <input
+                      type="number"
+                      min={customUnit === "minutes" ? 5 : 1}
+                      max={customUnit === "minutes" ? 1440 : customUnit === "hours" ? 720 : 365}
+                      value={customAmount}
+                      onChange={(e) => setCustomAmount(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                    />
+                  </label>
+                  <label className="field-group">
+                    <span className="field-label">Time unit</span>
+                    <select
+                      value={customUnit}
+                      onChange={(e) => setCustomUnit(e.target.value as "minutes" | "hours" | "days" | "weeks")}
+                    >
+                      <option value="minutes">Minutes</option>
+                      <option value="hours">Hours</option>
+                      <option value="days">Days</option>
+                      <option value="weeks">Weeks</option>
+                    </select>
+                  </label>
+                </div>
+                <p className="custom-schedule-note">
+                  Digest report will be delivered automatically every <strong>{customAmount} {customUnit}</strong> to <em>{emailRecipient || "configured recipient"}</em>.
+                </p>
+              </div>
+            ) : (
+              <div className="custom-schedule-body">
+                <label className="field-group" style={{ maxWidth: "340px" }}>
+                  <span className="field-label">Cron expression (standard 5-part UTC)</span>
+                  <input
+                    type="text"
+                    value={customCronExpr}
+                    onChange={(e) => setCustomCronExpr(e.target.value)}
+                    placeholder="e.g. 0 18 * * 1-5"
+                  />
+                </label>
+                <p className="custom-schedule-note">
+                  Use standard UTC cron syntax: <code>minute hour day-of-month month day-of-week</code> (e.g., <code>0 18 * * 1-5</code> for weekdays at 6:00 PM UTC).
+                </p>
+              </div>
+            )}
+          </div>
+        )}
         {emailNotice && <InlineNotice variant="success" onDismiss={() => setEmailNotice(null)}>{emailNotice}</InlineNotice>}
       </section>
 

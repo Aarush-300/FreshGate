@@ -652,6 +652,20 @@ class SQLiteFeatureStore:
             row = conn.execute("SELECT metadata_json FROM user_metadata WHERE user_id = ?", (user_id,)).fetchone()
             return json.loads(row[0]) if row else {}
 
+    def get_all_email_schedules(self) -> list[dict[str, Any]]:
+        with self._connection() as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS user_metadata (user_id TEXT PRIMARY KEY, metadata_json TEXT NOT NULL DEFAULT '{}')"
+            )
+            rows = conn.execute("SELECT user_id, metadata_json FROM user_metadata").fetchall()
+        results = []
+        for user_id, meta_json in rows:
+            data = json.loads(meta_json) if meta_json else {}
+            sched = data.get("email_schedule")
+            if sched and sched.get("enabled"):
+                results.append({"user_id": user_id, **sched})
+        return results
+
 
 def _validate_page(limit: int, offset: int) -> None:
     if not isinstance(limit, int) or not 1 <= limit <= 1000:

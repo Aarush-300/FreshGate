@@ -116,5 +116,7 @@ export type EmailScheduleConfig = {
   enabled: boolean;
   cron_expression?: string | null;
   interval_seconds?: number | null;
+  custom_amount?: number | null;
+  custom_unit?: string | null;
   recipient_email?: string | null;
 };

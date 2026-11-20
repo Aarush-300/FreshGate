@@ -38,3 +38,36 @@ services:
         value: "true"
       - key: FRESHGATE_WATCHTOWER_MAX_CLAIMS
         value: "50"
+      # AI & Search Providers
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_BASE_URL
+        value: "https://api.openai.com/v1"
+      - key: LLM_MODEL
+        value: "openai/gpt-oss-20b"
+      - key: TAVILY_API_KEY
+        sync: false
+      # HTTPS-based email delivery (Recommended on Render Free tier where SMTP ports 25, 465, and 587 are blocked)
+      # Brevo: 300 free emails/day, no custom domain required (verify personal Gmail). Get key at https://brevo.com
+      - key: BREVO_API_KEY
+        sync: false
+      # Resend: 3,000 free emails/mo via HTTPS port 443 at https://resend.com
+      - key: RESEND_API_KEY
+        sync: false
+      - key: SENDGRID_API_KEY
+        sync: false
+      # Standard SMTP delivery (Only unblocked on Render paid plans like "starter", blocked on "free")
+      - key: FRESHGATE_SMTP_HOST
+        sync: false
+      - key: FRESHGATE_SMTP_PORT
+        value: "587"
+      - key: FRESHGATE_SMTP_USER
+        sync: false
+      - key: FRESHGATE_SMTP_PASSWORD
+        sync: false
+      - key: FRESHGATE_SMTP_FROM
+        sync: false
+      - key: FRESHGATE_SMTP_TLS
+        value: "true"
+      - key: FRESHGATE_ADMIN_EMAIL
+        sync: false

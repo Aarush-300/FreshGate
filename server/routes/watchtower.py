@@ -237,7 +237,9 @@ class EmailScheduleRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enabled: bool = True
     cron_expression: Optional[str] = Field(default=None, description="Cron expression (e.g., '0 9 * * *' for daily at 9 AM)")
-    interval_seconds: Optional[int] = Field(default=None, ge=300, le=2_592_000, description="Interval in seconds (alternative to cron)")
+    interval_seconds: Optional[int] = Field(default=None, ge=60, le=2_592_000, description="Interval in seconds (alternative to cron)")
+    custom_amount: Optional[int] = Field(default=None, ge=1, le=10000, description="Custom periodic amount")
+    custom_unit: Optional[str] = Field(default=None, description="Custom periodic unit: minutes, hours, days, weeks")
     recipient_email: Optional[str] = Field(default=None, description="Override default admin email")
 
 
@@ -255,13 +257,42 @@ async def set_email_schedule(request: EmailScheduleRequest, req: Request):
     # For now, update the watchtower service config
     watchtower_service.config.admin_email = request.recipient_email or watchtower_service.config.admin_email
 
-    # Store schedule in user preferences (could be a separate table)
+    interval_seconds = request.interval_seconds
+    if not interval_seconds and request.custom_amount and request.custom_unit:
+        unit = request.custom_unit.lower()
+        multiplier = 3600
+        if "minute" in unit:
+            multiplier = 60
+        elif "hour" in unit:
+            multiplier = 3600
+        elif "day" in unit:
+            multiplier = 86400
+        elif "week" in unit:
+            multiplier = 604800
+        interval_seconds = max(60, min(2_592_000, request.custom_amount * multiplier))
+    elif not interval_seconds:
+        cron = request.cron_expression
+        if cron == "0 */6 * * *":
+            interval_seconds = 21600
+        elif cron == "0 */12 * * *":
+            interval_seconds = 43200
+        elif cron == "0 9 * * 1":
+            interval_seconds = 604800
+        else:
+            interval_seconds = 86400
+
+    now = time.time()
+    # Store schedule in user preferences
     metadata = {
         "email_schedule": {
             "enabled": request.enabled,
             "cron_expression": request.cron_expression,
-            "interval_seconds": request.interval_seconds,
+            "interval_seconds": interval_seconds,
+            "custom_amount": request.custom_amount,
+            "custom_unit": request.custom_unit,
             "recipient_email": request.recipient_email,
+            "next_run_at": now + interval_seconds,
+            "last_sent_at": None,
         }
     }
 
@@ -284,9 +315,37 @@ async def get_email_schedule(req: Request):
     return {"schedule": schedule}
 
 
+@router.post("/email/schedule/stop")
+async def stop_email_schedule(req: Request):
+    """Stop/pause scheduled periodic email reports for watchtower."""
+    user, store = _scoped(req)
+    from core.persistence import get_feature_store
+    fs = get_feature_store()
+    metadata = await asyncio.to_thread(fs.get_user_metadata, user["_id"])
+    schedule = metadata.get("email_schedule", {}) if metadata else {}
+    schedule["enabled"] = False
+    metadata["email_schedule"] = schedule
+    await asyncio.to_thread(fs.update_user_metadata, user["_id"], metadata)
+    return {"status": "stopped", "schedule": schedule}
+
+
+@router.delete("/email/schedule")
+async def delete_email_schedule(req: Request):
+    """Disable/stop scheduled periodic email reports."""
+    user, store = _scoped(req)
+    from core.persistence import get_feature_store
+    fs = get_feature_store()
+    metadata = await asyncio.to_thread(fs.get_user_metadata, user["_id"])
+    schedule = metadata.get("email_schedule", {}) if metadata else {}
+    schedule["enabled"] = False
+    metadata["email_schedule"] = schedule
+    await asyncio.to_thread(fs.update_user_metadata, user["_id"], metadata)
+    return {"status": "stopped", "schedule": schedule}
+
+
 @router.post("/email/test")
 async def send_test_email(request: EmailTestRequest, req: Request):
-    """Send a test email to verify SMTP configuration."""
+    """Send a test email to verify SMTP or HTTPS email configuration."""
     user, store = _scoped(req)
     recipient = request.recipient_email or watchtower_service.config.admin_email
 
@@ -296,6 +355,6 @@ async def send_test_email(request: EmailTestRequest, req: Request):
     email_service = await watchtower_service._get_email_service()
     if not email_service._is_configured():
         return {"sent": False, "configured": False, "recipient": recipient}
-    result = await email_service.send_test_email([recipient])
+    result, error_msg = await email_service.send_test_email_with_error([recipient])
 
-    return {"sent": result, "configured": True, "recipient": recipient}
+    return {"sent": result, "configured": True, "recipient": recipient, "error": error_msg}
