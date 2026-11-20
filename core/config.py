@@ -7,7 +7,7 @@ and operational parameters with strict validation, safe diagnostics, and secret 
 import os
 import re
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field
 from dotenv import load_dotenv
 
