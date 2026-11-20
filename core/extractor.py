@@ -13,6 +13,9 @@ import logging
 import re
 import string
 import asyncio
+import io
+import zipfile
+import xml.etree.ElementTree as ET
 from typing import List, Optional, Dict, Any, Tuple
 from core.models import Claim, ExtractionResult, ExtractionStatus
 from core.llm import LLMClient, OpenAILLMClient
@@ -45,6 +48,9 @@ For each claim extracted, provide:
 5. "numerical_value": Extracted price, rate, percentage, or quantity, if present (e.g. "$20 per month").
 6. "temporal_anchor": Relevant date, deadline, year, or release time, if present (e.g. "currently", "2024").
 7. "confidence": Confidence score between 0.0 and 1.0 that this claim is an atomic factual claim.
+8. "volatility_score": Likelihood (0.0 to 1.0) that this fact will change or evolve soon (e.g., pricing 0.85, versions 0.8, law 0.4, static 0.1).
+9. "evidence_gap": Potential difficulty or ambiguity in finding fresh evidence (0.0 to 1.0).
+10. "temporal_stability": "high", "medium", or "low".
 
 RULES:
 - When a sentence contains multiple factual assertions, SPLIT THEM into separate atomic objects.
@@ -92,6 +98,86 @@ def split_compound_sentences(text: str) -> List[str]:
     return sentences if sentences else [text.strip()]
 
 
+FUTURE_CLAIM_PATTERNS = [
+    re.compile(r"\b(will\s+release|expected\s+to|scheduled\s+for|planned\s+for|announced\s+for|slated\s+for|coming\s+in|launching\s+in|upcoming)\b", re.IGNORECASE),
+    re.compile(r"\b(q[1-4]\s+202[4-9]|\b202[5-9]\b|\b203\d\b)\b", re.IGNORECASE),
+]
+
+
+def detect_future_claim(text: str) -> bool:
+    """Detect if a claim references future dates or upcoming events."""
+    return any(p.search(text) for p in FUTURE_CLAIM_PATTERNS)
+
+
+def extract_text_from_file_bytes(file_content: bytes, filename: str) -> str:
+    """
+    Extract raw text from uploaded file bytes across multiple formats:
+    - .txt, .md, .json, .csv: UTF-8 / latin-1 text
+    - .docx: Microsoft Word Document via python-docx or zipfile XML fallback
+    - .pdf: Adobe PDF via pymupdf (fitz) or stream text extraction fallback
+    """
+    ext = ("." + filename.rsplit(".", 1)[-1].lower()) if "." in filename else ""
+
+    if ext in (".txt", ".md", ".json", ".csv"):
+        try:
+            return file_content.decode("utf-8")
+        except UnicodeDecodeError:
+            return file_content.decode("latin-1", errors="replace")
+
+    elif ext == ".docx":
+        # Try python-docx first
+        try:
+            import docx
+            doc = docx.Document(io.BytesIO(file_content))
+            return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+        except Exception:
+            pass
+
+        # Fallback: Extract directly from docx XML (a docx is a zip container)
+        try:
+            with zipfile.ZipFile(io.BytesIO(file_content)) as z:
+                xml_data = z.read("word/document.xml")
+                root = ET.fromstring(xml_data)
+                # Word text nodes have tag {http://schemas.openxmlformats.org/wordprocessingml/2006/main}t
+                texts = [node.text for node in root.iter() if node.text and node.text.strip()]
+                return "\n".join(texts)
+        except Exception as e:
+            logger.warning("DOCX extraction fallback failed: %s", e)
+            return file_content.decode("latin-1", errors="replace")
+
+    elif ext == ".pdf":
+        # Try pymupdf (fitz)
+        try:
+            import fitz
+            doc = fitz.open(stream=file_content, filetype="pdf")
+            pages_text = []
+            for page in doc:
+                t = page.get_text()
+                if t and t.strip():
+                    pages_text.append(t.strip())
+            return "\n\n".join(pages_text)
+        except Exception:
+            pass
+
+        # Fallback: extract ASCII and literal string tokens from PDF stream
+        try:
+            matches = re.findall(rb"\((.*?)\)\s*Tj", file_content)
+            if matches:
+                return "\n".join(m.decode("latin-1", errors="ignore") for m in matches)
+            # General string regex
+            strings = re.findall(rb"[\x20-\x7E]{4,}", file_content)
+            return "\n".join(s.decode("latin-1", errors="ignore") for s in strings if not s.startswith(b"/"))
+        except Exception as e:
+            logger.warning("PDF stream extraction fallback failed: %s", e)
+            return file_content.decode("latin-1", errors="replace")
+
+    # Default fallback
+    try:
+        return file_content.decode("utf-8")
+    except UnicodeDecodeError:
+        return file_content.decode("latin-1", errors="replace")
+
+
 class FallbackHeuristicExtractor:
     """Deterministic pattern-based fallback extractor for high-volatility assertions.
 
@@ -100,7 +186,7 @@ class FallbackHeuristicExtractor:
 
     # 1. Version patterns: "Python 2.7 is the currently supported release"
     VERSION_PATTERN = re.compile(
-        r"([A-Z][a-zA-Z0-9_\.\-]*?(?:\s+[a-zA-Z][a-zA-Z0-9_\.\-]*)?)\s*"
+        r"([a-zA-Z][a-zA-Z_\-]*?(?:\s+[a-zA-Z][a-zA-Z_\-]*)?)\s*"
         r"(\d+(?:\.\d+)+[a-zA-Z0-9_\.\-]*)\s+"
         r"(?:is|was|has\s+(?:just\s+)?been)\s+(?:the\s+)?(currently\s+supported|current\s+supported|supported|latest\s+stable|production|active\s+LTS|deprecated|released|EOL|end[-\s]of[-\s]life)"
         r"(?:\s+(?:release|version|branch|edition))?",
@@ -432,6 +518,40 @@ class ClaimExtractor:
             except (ValueError, TypeError):
                 conf = 0.8
 
+            # Phase 3: Volatility score & stability
+            is_future = detect_future_claim(claim_text)
+            cat_def = category_registry.get(norm_type)
+
+            try:
+                vol_score = float(item.get("volatility_score", 0.0))
+                vol_score = max(0.0, min(1.0, vol_score))
+            except (ValueError, TypeError):
+                vol_score = 0.0
+
+            if vol_score <= 0.0:
+                # Default based on category and future patterns
+                if is_future:
+                    vol_score = 0.9
+                elif cat_def.is_volatile:
+                    vol_score = 0.75
+                else:
+                    vol_score = 0.2
+
+            try:
+                ev_gap = float(item.get("evidence_gap", 0.5))
+                ev_gap = max(0.0, min(1.0, ev_gap))
+            except (ValueError, TypeError):
+                ev_gap = 0.5
+
+            stability = item.get("temporal_stability")
+            if not stability or stability not in ("high", "medium", "low"):
+                if vol_score >= 0.7 or is_future:
+                    stability = "low"
+                elif vol_score >= 0.4:
+                    stability = "medium"
+                else:
+                    stability = "high"
+
             claim_id = f"c{len(claims) + 1}"
 
             claims.append(
@@ -445,6 +565,9 @@ class ClaimExtractor:
                     temporal_anchor=str(temp_anchor) if temp_anchor else None,
                     extraction_confidence=conf,
                     extraction_method="llm",
+                    volatility_score=vol_score,
+                    evidence_gap=ev_gap,
+                    temporal_stability=stability,
                 )
             )
 
@@ -480,3 +603,15 @@ class ClaimExtractor:
             is_fallback=False,
             is_complete=(dropped_count == 0),
         )
+
+    async def extract_from_file(self, file_content: bytes, filename: str) -> ExtractionResult:
+        """
+        Phase 7: Extract atomic factual claims from uploaded file bytes.
+
+        Reads file content into memory, converts to plain text, runs extraction,
+        and leaves no persistent file on disk.
+        """
+        text = extract_text_from_file_bytes(file_content, filename)
+        if not text or not text.strip():
+            return ExtractionResult(claims=[], status="no_claims_detected")
+        return await self.extract(text)

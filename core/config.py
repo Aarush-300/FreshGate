@@ -75,6 +75,23 @@ def mask_secret(secret: Optional[str]) -> str:
     return f"{clean[:4]}...{clean[-4:]}"
 
 
+DEFAULT_FRESHNESS_HALF_LIFE: Dict[str, int] = {
+    "pricing": 3600,           # 1 hour
+    "version": 21600,          # 6 hours
+    "law": 604800,             # 7 days
+    "leadership": 86400,       # 24 hours
+    "product_availability": 14400,  # 4 hours
+    "cybersecurity": 14400,    # 4 hours
+    "financial": 3600,         # 1 hour
+    "government_policy": 172800,  # 48 hours
+    "public_health": 86400,    # 24 hours
+    "scientific_findings": 604800,  # 7 days
+    "company_info": 86400,     # 24 hours
+    "dated_event": 86400,      # 24 hours
+    "other": 86400,            # 24 hours
+}
+
+
 @dataclass
 class FreshGateConfig:
     """Validated, centralized FreshGate configuration."""
@@ -135,6 +152,30 @@ class FreshGateConfig:
     min_score: int = 0
     block_stale: bool = False
 
+    # Phase 1: Temporal Freshness Scoring
+    freshness_half_life_defaults: Dict[str, int] = field(default_factory=lambda: dict(DEFAULT_FRESHNESS_HALF_LIFE))
+    default_degradation_curve: str = "exponential"
+    min_temporal_score: int = 0
+
+    # Phase 2: Multi-Source Evidence Triangulation
+    enable_wikipedia_search: bool = False
+    enable_github_search: bool = False
+    enable_academic_search: bool = False
+    search_api_keys: Dict[str, str] = field(default_factory=dict)
+
+    # Phase 6: Watchtower Mail Feature
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    smtp_tls: bool = True
+    admin_email: str = ""
+
+    # Phase 7: File Upload Feature
+    allowed_upload_types: List[str] = field(default_factory=lambda: [".pdf", ".txt", ".md", ".json", ".docx"])
+    max_upload_size_bytes: int = 10485760  # 10MB
+
     def get_safe_diagnostics(self) -> Dict[str, Any]:
         """Return diagnostic view of configuration with all secrets masked."""
         return {
@@ -166,6 +207,23 @@ class FreshGateConfig:
                 "mode": self.freshgate_mode,
                 "fail_open": self.fail_open,
                 "rate_limit_per_minute": self.rate_limit_per_minute,
+            },
+            "freshness_scoring": {
+                "default_degradation_curve": self.default_degradation_curve,
+                "min_temporal_score": self.min_temporal_score,
+            },
+            "multi_source_search": {
+                "enable_wikipedia_search": self.enable_wikipedia_search,
+                "enable_github_search": self.enable_github_search,
+                "enable_academic_search": self.enable_academic_search,
+            },
+            "watchtower_email": {
+                "smtp_configured": bool(self.smtp_host and self.smtp_user and self.smtp_from),
+                "admin_email": self.admin_email or "[NOT CONFIGURED]",
+            },
+            "file_upload": {
+                "allowed_types": self.allowed_upload_types,
+                "max_size_mb": self.max_upload_size_bytes // (1024 * 1024),
             },
         }
 
@@ -254,6 +312,30 @@ def load_config(override_env: Optional[Dict[str, str]] = None) -> FreshGateConfi
         async_mode=_bool_env("FRESHGATE_ASYNC_MODE", False),
         min_score=_int_env("FRESHGATE_MIN_SCORE", 0),
         block_stale=_bool_env("FRESHGATE_BLOCK_STALE", False),
+
+        # Phase 1: Temporal Freshness Scoring
+        freshness_half_life_defaults=dict(DEFAULT_FRESHNESS_HALF_LIFE),
+        default_degradation_curve=(env.get("FRESHGATE_DEFAULT_DEGRADATION_CURVE") or "exponential").strip().lower(),
+        min_temporal_score=_int_env("FRESHGATE_MIN_TEMPORAL_SCORE", 0),
+
+        # Phase 2: Multi-Source Evidence Triangulation
+        enable_wikipedia_search=_bool_env("FRESHGATE_ENABLE_WIKIPEDIA_SEARCH", False),
+        enable_github_search=_bool_env("FRESHGATE_ENABLE_GITHUB_SEARCH", False),
+        enable_academic_search=_bool_env("FRESHGATE_ENABLE_ACADEMIC_SEARCH", False),
+        search_api_keys={},
+
+        # Phase 6: Watchtower Mail Feature
+        smtp_host=(env.get("FRESHGATE_SMTP_HOST") or "").strip(),
+        smtp_port=_int_env("FRESHGATE_SMTP_PORT", 587),
+        smtp_user=(env.get("FRESHGATE_SMTP_USER") or "").strip(),
+        smtp_password=(env.get("FRESHGATE_SMTP_PASSWORD") or "").strip(),
+        smtp_from=(env.get("FRESHGATE_SMTP_FROM") or "").strip(),
+        smtp_tls=_bool_env("FRESHGATE_SMTP_TLS", True),
+        admin_email=(env.get("FRESHGATE_ADMIN_EMAIL") or "").strip(),
+
+        # Phase 7: File Upload Feature
+        allowed_upload_types=(env.get("FRESHGATE_ALLOWED_UPLOAD_TYPES") or ".pdf,.txt,.md,.json,.docx").split(","),
+        max_upload_size_bytes=_int_env("FRESHGATE_MAX_UPLOAD_SIZE_BYTES", 10485760),
     )
 
     if not is_openai_ok:

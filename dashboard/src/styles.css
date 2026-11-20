@@ -596,3 +596,28 @@ tbody tr:last-child td { border-bottom: 0; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+/* Strategic Feature Enhancements (Phases 1-7) */
+.predictive-indicators-bar { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.predictive-indicator-tag { font-size: 11px; padding: 2px 8px; border-radius: 4px; background: var(--paper-deep); color: var(--ink-soft); font-weight: 500; display: inline-flex; align-items: center; border: 1px solid var(--rule); }
+.predictive-indicator-tag.stability-high { background: var(--green-wash); color: var(--green); border-color: var(--green); }
+.predictive-indicator-tag.stability-medium { background: var(--gold-wash); color: var(--gold); border-color: var(--gold); }
+.predictive-indicator-tag.stability-low { background: var(--rust-wash); color: var(--rust); border-color: var(--rust); }
+.source-type-pill { font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 3px; background: var(--info-wash); color: var(--info); letter-spacing: 0.5px; }
+
+.watch-meta-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 4px; }
+.email-schedule-panel { margin-top: 20px; }
+.email-config-grid { display: grid; grid-template-columns: 2fr 1.5fr auto; gap: 14px; align-items: flex-end; margin-top: 14px; }
+.email-schedule-actions { display: flex; gap: 10px; }
+
+.export-panel { margin-top: 20px; }
+.export-actions-grid { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 16px; }
+.export-actions-grid a { text-decoration: none; display: inline-flex; align-items: center; gap: 6px; }
+
+.file-upload-section { margin-top: 10px; margin-bottom: 6px; }
+.file-drop-area { display: flex; align-items: center; justify-content: center; padding: 12px 16px; border: 1px dashed var(--rule); border-radius: 6px; background: var(--paper-light); cursor: pointer; transition: all 0.2s ease; }
+.file-drop-area:hover { border-color: var(--ink-soft); background: var(--paper-hover); }
+.file-drop-prompt { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-soft); }
+.file-selected-badge { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; background: var(--green-wash); color: var(--green); border: 1px solid var(--green); border-radius: 6px; font-size: 13px; font-weight: 500; }
+.file-size { font-size: 11px; opacity: 0.8; }
+

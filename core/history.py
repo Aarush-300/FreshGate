@@ -101,3 +101,211 @@ def get_verification_history(
     verification_id: str, store: Optional[SQLiteFeatureStore] = None
 ) -> Optional[dict[str, Any]]:
     return (store or get_feature_store()).get_snapshot_by_verification_id(verification_id)
+
+
+# Phase 5: Executive Summary Export Functions
+def export_executive_summary(
+    fingerprint: str,
+    *,
+    limit: int = 100,
+    store: Optional[SQLiteFeatureStore] = None,
+) -> dict[str, Any]:
+    """Export executive summary of claim history with trends, verdict distribution, score timeline."""
+    repository = store or get_feature_store()
+    history = repository.list_snapshots(fingerprint, limit, 0)
+
+    if not history:
+        return {
+            "claim_fingerprint": fingerprint,
+            "summary": "No verification history found.",
+            "verdict_distribution": {},
+            "score_timeline": [],
+            "total_verifications": 0,
+        }
+
+    # Verdict distribution
+    verdict_counts: dict[str, int] = {}
+    score_timeline = []
+    total_score = 0
+    scored_count = 0
+
+    for snapshot in history:
+        verdict = snapshot.get("verdict", "unknown")
+        verdict_counts[verdict] = verdict_counts.get(verdict, 0) + 1
+
+        score = snapshot.get("freshness_score")
+        if score is not None:
+            total_score += score
+            scored_count += 1
+
+        score_timeline.append({
+            "checked_at": snapshot.get("checked_at"),
+            "score": score,
+            "verdict": verdict,
+            "verification_id": snapshot.get("verification_id"),
+        })
+
+    avg_score = int(round(total_score / scored_count)) if scored_count > 0 else None
+
+    # Score trend
+    scores = [s["score"] for s in score_timeline if s["score"] is not None]
+    trend = "stable"
+    if len(scores) >= 2:
+        if scores[0] > scores[-1] + 10:
+            trend = "declining"
+        elif scores[0] < scores[-1] - 10:
+            trend = "improving"
+
+    return {
+        "claim_fingerprint": fingerprint,
+        "total_verifications": len(history),
+        "average_score": avg_score,
+        "verdict_distribution": verdict_counts,
+        "score_trend": trend,
+        "score_timeline": score_timeline,
+        "first_verified": history[-1].get("checked_at") if history else None,
+        "last_verified": history[0].get("checked_at") if history else None,
+    }
+
+
+def export_temporal_trends(
+    fingerprint: str,
+    *,
+    limit: int = 100,
+    store: Optional[SQLiteFeatureStore] = None,
+) -> dict[str, Any]:
+    """Export temporal trends with decay visualization data."""
+    repository = store or get_feature_store()
+    history = repository.list_snapshots(fingerprint, limit, 0)
+
+    if not history:
+        return {
+            "claim_fingerprint": fingerprint,
+            "decay_data": [],
+            "half_life_estimate": None,
+        }
+
+    # Build decay data points
+    decay_data = []
+    for snapshot in history:
+        metadata = snapshot.get("metadata", {})
+        score_components = metadata.get("score_components", {})
+        temporal_decay = score_components.get("temporal_decay")
+
+        decay_data.append({
+            "checked_at": snapshot.get("checked_at"),
+            "freshness_score": snapshot.get("freshness_score"),
+            "temporal_decay": temporal_decay,
+            "evidence_recency": score_components.get("evidence_recency"),
+            "verdict": snapshot.get("verdict"),
+        })
+
+    # Estimate effective half-life from score decay
+    scores_with_time = [(s["checked_at"], s["freshness_score"]) for s in decay_data if s["freshness_score"] is not None and s["checked_at"] is not None]
+    half_life_estimate = None
+    if len(scores_with_time) >= 2:
+        # Simple linear regression on score vs time
+        import numpy as np
+        try:
+            times = [(t[0] - scores_with_time[0][0]) / 3600.0 for t in scores_with_time]  # hours since first
+            scores = [t[1] for t in scores_with_time]
+            if len(times) >= 2 and max(scores) > min(scores):
+                # Fit exponential decay: score = a * exp(-b * t)
+                log_scores = np.log([max(1, s) for s in scores])
+                coeffs = np.polyfit(times, log_scores, 1)
+                decay_rate = -coeffs[0]
+                if decay_rate > 0:
+                    half_life_estimate = int(np.log(2) / decay_rate * 3600)  # convert to seconds
+        except (ValueError, np.linalg.LinAlgError):
+            pass
+
+    return {
+        "claim_fingerprint": fingerprint,
+        "decay_data": decay_data,
+        "half_life_estimate_seconds": half_life_estimate,
+    }
+
+
+def export_prediction_accuracy(
+    claim_id: str,
+    *,
+    store: Optional[SQLiteFeatureStore] = None,
+) -> dict[str, Any]:
+    """Compare predictions vs actual outcomes for a claim."""
+    # For now, return placeholder since we need claim_id to fingerprint mapping
+    return {
+        "claim_fingerprint": claim_id,
+        "predictions": [],
+        "actual_outcomes": [],
+        "accuracy_metrics": {},
+        "note": "Prediction accuracy tracking requires historical predicted vs actual data.",
+    }
+
+
+def export_knowledge_base(
+    fingerprint: str,
+    *,
+    format: str = "json",
+    store: Optional[SQLiteFeatureStore] = None,
+) -> dict[str, Any]:
+    """Export ISO 25964-compliant knowledge base entry."""
+    repository = store or get_feature_store()
+    history = repository.list_snapshots(fingerprint, 1, 0)
+
+    if not history:
+        return {
+            "claim_fingerprint": fingerprint,
+            "error": "No verification history found.",
+        }
+
+    latest = history[0]
+    metadata = latest.get("metadata", {})
+
+    kb_entry = {
+        "identifier": fingerprint,
+        "claim_text": latest.get("claim_text"),
+        "category": latest.get("category"),
+        "current_verdict": latest.get("verdict"),
+        "current_score": latest.get("freshness_score"),
+        "last_verified": latest.get("checked_at"),
+        "verification_id": latest.get("verification_id"),
+        "sources": latest.get("sources", []),
+        "score_components": metadata.get("score_components", {}),
+        "confidence": metadata.get("confidence"),
+        "explanation": metadata.get("explanation"),
+    }
+
+    if format == "json":
+        return kb_entry
+    elif format == "xml":
+        # Simple XML conversion
+        def to_xml(d, root="knowledge_base"):
+            lines = [f"<{root}>"]
+            for k, v in d.items():
+                if isinstance(v, dict):
+                    lines.append(to_xml(v, k))
+                elif isinstance(v, list):
+                    lines.append(f"<{k}>")
+                    for item in v:
+                        if isinstance(item, dict):
+                            lines.append(to_xml(item, "item"))
+                        else:
+                            lines.append(f"<item>{item}</item>")
+                    lines.append(f"</{k}>")
+                else:
+                    lines.append(f"<{k}>{v}</{k}>")
+            lines.append(f"</{root}>")
+            return "\n".join(lines)
+        return {"xml": to_xml(kb_entry)}
+    elif format == "csv":
+        # Flatten for CSV
+        import csv
+        import io
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["field", "value"])
+        for k, v in kb_entry.items():
+            writer.writerow([k, str(v)])
+        return {"csv": output.getvalue()}
+
+    return kb_entry

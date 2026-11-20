@@ -49,6 +49,11 @@ class MonitorRequest(BaseModel):
     jurisdiction: Optional[str] = Field(default=None, max_length=120)
     baseline: Optional[MonitoringBaseline] = None
 
+    # Phase 6: Email scheduling
+    enable_predictive_scheduling: bool = True
+    check_interval_override: Optional[int] = Field(default=None, ge=300, le=2_592_000)
+    email_schedule: Optional[str] = Field(default=None, description="Cron expression or interval (e.g., '0 9 * * *' or 'daily')")
+
     @field_validator("claim_text")
     @classmethod
     def strip_claim_text(cls, value: str) -> str:
@@ -225,3 +230,70 @@ async def acknowledge_alert(alert_id: str, req: Request):
     if not changed:
         raise HTTPException(status_code=404, detail="Alert not found")
     return await asyncio.to_thread(store.get_alert, alert_id)
+
+
+# Phase 6: Watchtower Email Schedule API Endpoints
+class EmailScheduleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = True
+    cron_expression: Optional[str] = Field(default=None, description="Cron expression (e.g., '0 9 * * *' for daily at 9 AM)")
+    interval_seconds: Optional[int] = Field(default=None, ge=300, le=2_592_000, description="Interval in seconds (alternative to cron)")
+    recipient_email: Optional[str] = Field(default=None, description="Override default admin email")
+
+
+class EmailTestRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    recipient_email: Optional[str] = Field(default=None)
+
+
+@router.post("/email/schedule")
+async def set_email_schedule(request: EmailScheduleRequest, req: Request):
+    """Configure scheduled email reports for watchtower."""
+    user, store = _scoped(req)
+
+    # Store email schedule in user metadata or config
+    # For now, update the watchtower service config
+    watchtower_service.config.admin_email = request.recipient_email or watchtower_service.config.admin_email
+
+    # Store schedule in user preferences (could be a separate table)
+    metadata = {
+        "email_schedule": {
+            "enabled": request.enabled,
+            "cron_expression": request.cron_expression,
+            "interval_seconds": request.interval_seconds,
+            "recipient_email": request.recipient_email,
+        }
+    }
+
+    # Update user metadata
+    from core.persistence import get_feature_store
+    fs = get_feature_store()
+    await asyncio.to_thread(fs.update_user_metadata, user["_id"], metadata)
+
+    return {"status": "configured", "schedule": metadata["email_schedule"]}
+
+
+@router.get("/email/schedule")
+async def get_email_schedule(req: Request):
+    """Get current email schedule configuration."""
+    user, store = _scoped(req)
+    from core.persistence import get_feature_store
+    fs = get_feature_store()
+    metadata = await asyncio.to_thread(fs.get_user_metadata, user["_id"])
+    schedule = metadata.get("email_schedule", {}) if metadata else {}
+    return {"schedule": schedule}
+
+
+@router.post("/email/test")
+async def send_test_email(request: EmailTestRequest, req: Request):
+    """Send a test email to verify SMTP configuration."""
+    user, store = _scoped(req)
+    recipient = request.recipient_email or watchtower_service.config.admin_email
+
+    if not recipient:
+        raise HTTPException(status_code=400, detail="No recipient email configured")
+
+    success = await watchtower_service._get_email_service()
+    result = await watchtower_service._email_service.send_test_email([recipient])
+
+    return {"sent": result, "recipient": recipient}

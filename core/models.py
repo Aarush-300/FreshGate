@@ -22,6 +22,7 @@ class Source(BaseModel):
     authority_score: float = 0.5
     is_primary: bool = False
     relevance_score: float = 0.5
+    source_type: str = "web"  # "web" | "api" | "document" | "academic" | "government"
 
 
 class Claim(BaseModel):
@@ -51,6 +52,30 @@ class Claim(BaseModel):
     verification_timestamp: Optional[str] = None
     verification_id: Optional[str] = None
     claim_fingerprint: Optional[str] = None
+
+    # Phase 1: Temporal Freshness Scoring
+    last_verified_at: Optional[str] = None          # ISO timestamp
+    freshness_half_life_seconds: Optional[int] = None  # per claim type
+    degradation_curve: str = "exponential"          # "linear" | "exponential" | "step"
+
+    # Phase 3: Predictive Claim Decomposition
+    volatility_score: float = 0.5           # 0.0-1.0, likelihood of future change
+    evidence_gap: float = 0.5               # confidence in evidence coverage
+    temporal_stability: Optional[str] = None # "high" | "medium" | "low"
+    predicted_flip_probability: Optional[float] = None
+    recommended_check_interval: Optional[int] = None  # seconds
+
+    # Phase 1: Temporal Freshness Scoring
+    last_verified_at: Optional[str] = None          # ISO timestamp
+    freshness_half_life_seconds: Optional[int] = None  # per claim type
+    degradation_curve: str = "exponential"          # "linear" | "exponential" | "step"
+
+    # Phase 3: Predictive Claim Decomposition
+    volatility_score: float = 0.5           # 0.0-1.0, likelihood of future change
+    evidence_gap: float = 0.5               # confidence in evidence coverage
+    temporal_stability: Optional[str] = None # "high" | "medium" | "low"
+    predicted_flip_probability: Optional[float] = None
+    recommended_check_interval: Optional[int] = None  # seconds
 
 
 class ExtractionResult(BaseModel):

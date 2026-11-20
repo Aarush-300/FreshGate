@@ -9,12 +9,13 @@ import time
 from typing import Any, Callable, Awaitable, Optional
 
 from core.config import FreshGateConfig, get_config
-from core.models import Claim, VerificationResult
+from core.models import Claim, VerificationResult, Source
 from core.history import save_claim_snapshot
 from core.persistence import SQLiteFeatureStore, get_feature_store
 from core.pipeline import FreshGatePipeline
 from core.policies import get_policy
 from core.audit_helpers import write_audit
+from core.scorer import compute_temporal_decay
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,7 @@ class WatchtowerService:
         self._run_lock = asyncio.Lock()
         self._task: Optional[asyncio.Task] = None
         self._stopping = asyncio.Event()
+        self._email_service = None
 
     @property
     def store(self) -> SQLiteFeatureStore:
@@ -90,7 +92,27 @@ class WatchtowerService:
             )
             if not rows:
                 return []
-            return list(await asyncio.gather(*(self._check_leased(row) for row in rows)))
+
+            # Phase 4: Priority queue - sort by flip probability descending
+            claims_for_sorting = []
+            for row in rows:
+                claim = Claim(
+                    id=row["id"],
+                    text=row["claim_text"],
+                    type=row["category"],
+                    volatility_score=row.get("volatility_score", 0.5),
+                    evidence_gap=row.get("evidence_gap", 0.5),
+                    freshness_half_life_seconds=row.get("freshness_half_life_seconds"),
+                    degradation_curve=row.get("degradation_curve", "exponential"),
+                    last_verified_at=row.get("last_verified_at"),
+                )
+                claims_for_sorting.append((claim, row))
+
+            # Sort by flip probability (highest first)
+            claims_for_sorting.sort(key=lambda x: self.calculate_flip_probability(x[0]), reverse=True)
+            sorted_rows = [row for _, row in claims_for_sorting]
+
+            return list(await asyncio.gather(*(self._check_leased(row) for row in sorted_rows)))
 
     async def check_now(self, claim_id: str, owner_id: Optional[str] = None) -> Optional[dict[str, Any]]:
         target_store = (
@@ -289,6 +311,114 @@ class WatchtowerService:
         finally:
             if is_ephemeral and active_pipeline and hasattr(active_pipeline, "verifier") and hasattr(active_pipeline.verifier, "tavily_client"):
                 await active_pipeline.verifier.tavily_client.aclose()
+
+    # Phase 4: Predictive Monitoring Methods
+    def predict_optimal_check_interval(self, claim: Claim) -> int:
+        """
+        Predict optimal check interval based on claim volatility, evidence freshness, and half-life.
+
+        Returns interval in seconds.
+        """
+        if claim.volatility_score > 0.7:
+            half_life = claim.freshness_half_life_seconds or 86400
+            return min(half_life, 3600)  # Max 1 hour for high volatility
+        return claim.freshness_half_life_seconds or 86400  # Default 24 hours
+
+    def calculate_flip_probability(self, claim: Claim) -> float:
+        """
+        Calculate probability that claim's verdict will flip on next verification.
+
+        Based on:
+        - volatility_score: inherent volatility of the claim type (0-1)
+        - evidence_gap: confidence in evidence coverage (0-1, lower is better)
+        - temporal decay: how fresh the evidence is (0-1, lower is better)
+        """
+        from core.scorer import compute_temporal_decay
+
+        volatility = max(0.0, min(1.0, claim.volatility_score))
+        evidence_confidence = 1.0 - max(0.0, min(1.0, claim.evidence_gap))
+        temporal_freshness = compute_temporal_decay(claim)
+
+        # Probability increases with volatility, decreases with evidence coverage and freshness
+        base_prob = volatility * (1.0 - evidence_confidence) * (1.0 - temporal_freshness)
+
+        # Scale to 0-1 range
+        return max(0.0, min(1.0, base_prob))
+
+    def get_priority_queue_order(self, claims: list[Claim]) -> list[Claim]:
+        """
+        Sort claims by flip probability descending for priority checking.
+
+        High-probability claims are checked first within concurrency limit.
+        """
+        return sorted(claims, key=lambda c: self.calculate_flip_probability(c), reverse=True)
+
+    # Phase 6: Email Integration
+    async def _get_email_service(self):
+        """Get or create email service instance."""
+        if self._email_service is None:
+            from core.email import get_email_service
+            self._email_service = get_email_service(self.config)
+        return self._email_service
+
+    async def send_scheduled_report(self, owner_id: Optional[str] = None) -> bool:
+        """
+        Generate and send scheduled watchtower report via email.
+
+        Returns True if email sent successfully.
+        """
+        email_service = await self._get_email_service()
+        if not email_service._is_configured():
+            logger.warning("Email not configured, skipping scheduled report")
+            return False
+
+        # Get all monitored claims for this owner
+        store = self.store.for_owner(owner_id) if (owner_id and hasattr(self.store, "for_owner")) else self.store
+        monitored = await asyncio.to_thread(store.list_monitored_claims, owner_id)
+
+        if not monitored:
+            logger.info("No monitored claims for scheduled report")
+            return True
+
+        # Get latest verification for each claim
+        claims = []
+        alerts = []
+        for row in monitored:
+            # Get latest snapshot
+            snapshot = await asyncio.to_thread(store.get_latest_snapshot, row["claim_fingerprint"])
+            if snapshot:
+                # Reconstruct claim from snapshot
+                claim = Claim(
+                    id=row["id"],
+                    text=snapshot["claim_text"],
+                    type=snapshot["category"],
+                    verdict=snapshot["verdict"],
+                    score=snapshot["freshness_score"],
+                    sources=[Source(**s) for s in snapshot.get("sources", [])],
+                    last_verified_at=snapshot.get("checked_at"),
+                    volatility_score=row.get("volatility_score", 0.5),
+                    evidence_gap=row.get("evidence_gap", 0.5),
+                    predicted_flip_probability=row.get("predicted_flip_probability"),
+                    recommended_check_interval=row.get("recommended_check_interval"),
+                )
+                claims.append(claim)
+
+            # Get recent alerts
+            claim_alerts = await asyncio.to_thread(store.get_alerts_for_claim, row["id"], limit=5)
+            for alert in claim_alerts:
+                alerts.append({
+                    "title": f"Verdict Change: {alert['previous_verdict']} → {alert['current_verdict']}",
+                    "message": alert["reason"],
+                })
+
+        # Send report to admin email
+        if self.config.admin_email:
+            return await email_service.send_watchtower_report(
+                to=[self.config.admin_email],
+                claims=claims,
+                alerts=alerts,
+            )
+        return False
 
 
 class _InsufficientEvidence(Exception):

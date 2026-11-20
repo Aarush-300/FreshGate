@@ -21,6 +21,13 @@ class CategoryDefinition:
     preferred_domains: List[str] = field(default_factory=list)
     search_query_builder: Optional[Callable[[Claim], str]] = None
 
+    # Phase 1: Temporal Freshness Scoring
+    freshness_half_life_seconds: Optional[int] = None
+    degradation_curve: Optional[str] = None  # "linear" | "exponential" | "step"
+
+    # Phase 3: Predictive Claim Decomposition
+    volatility_pattern: Optional[str] = None
+
 
 CATEGORY_ALIASES: Dict[str, str] = {
     # Version aliases
@@ -226,7 +233,10 @@ class CategoryRegistry:
             default_ttl_seconds=3600,  # 1 hour
             min_confidence=0.85,
             preferred_domains=["pricing", "plans", "billing", "store"],
-            search_query_builder=lambda c: f"{c.text.rstrip('.')} official current pricing"
+            search_query_builder=lambda c: f"{c.text.rstrip('.')} official current pricing",
+            freshness_half_life_seconds=3600,
+            degradation_curve="exponential",
+            volatility_pattern=r"(will|expected|announced|coming|planned).*(price|price increase|price change|cost|fee|tier|plan)"
         ))
 
         # 2. Software Versions
@@ -238,7 +248,10 @@ class CategoryRegistry:
             default_ttl_seconds=21600,  # 6 hours
             min_confidence=0.8,
             preferred_domains=["github.com", "pypi.org", "npmjs.com", "docs", "python.org"],
-            search_query_builder=lambda c: f"{c.text.rstrip('.')} latest stable release version supported branches"
+            search_query_builder=lambda c: f"{c.text.rstrip('.')} latest stable release version supported branches",
+            freshness_half_life_seconds=21600,
+            degradation_curve="step",
+            volatility_pattern=r"(will release|expected|announced|coming|planned|beta|rc|release candidate).*(version|release|update)"
         ))
 
         # 3. Laws & Regulations
@@ -250,7 +263,10 @@ class CategoryRegistry:
             default_ttl_seconds=604800,  # 7 days
             min_confidence=0.9,
             preferred_domains=[".gov", ".europa.eu", "legislation.gov.uk", "courtlistener.com"],
-            search_query_builder=lambda c: f"{c.text.rstrip('.')} bill signed vetoed current legal status"
+            search_query_builder=lambda c: f"{c.text.rstrip('.')} bill signed vetoed current legal status",
+            freshness_half_life_seconds=604800,
+            degradation_curve="linear",
+            volatility_pattern=r"(pending|proposed|draft|will be|expected to).*(bill|law|regulation|act|statute|ruling)"
         ))
 
         # 4. Leadership & Executive Roles
@@ -262,7 +278,10 @@ class CategoryRegistry:
             default_ttl_seconds=86400,  # 24 hours
             min_confidence=0.85,
             preferred_domains=["reuters.com", "apnews.com", "bloomberg.com", "sec.gov"],
-            search_query_builder=lambda c: f"{c.text.rstrip('.')} current who is executive"
+            search_query_builder=lambda c: f"{c.text.rstrip('.')} current who is executive",
+            freshness_half_life_seconds=86400,
+            degradation_curve="exponential",
+            volatility_pattern=r"(will|expected|announced|appointed|nominated|resigning|stepping down).*(ceo|chief|director|minister|leader|executive)"
         ))
 
         # 5. Product Availability
@@ -273,7 +292,10 @@ class CategoryRegistry:
             is_volatile=True,
             default_ttl_seconds=14400,  # 4 hours
             min_confidence=0.8,
-            search_query_builder=lambda c: f"{c.text.rstrip('.')} available launch status discontinued"
+            search_query_builder=lambda c: f"{c.text.rstrip('.')} available launch status discontinued",
+            freshness_half_life_seconds=14400,
+            degradation_curve="step",
+            volatility_pattern=r"(will|expected|announced|coming|planned|launching|discontinuing|eol).*(available|launch|stock|discontinued|end of life)"
         ))
 
         # 6. Cybersecurity Vulnerabilities
@@ -285,7 +307,10 @@ class CategoryRegistry:
             default_ttl_seconds=14400,  # 4 hours
             min_confidence=0.9,
             preferred_domains=["nvd.nist.gov", "cve.org", "cisa.gov", "github.com/advisories"],
-            search_query_builder=lambda c: f"{c.text.rstrip('.')} CVE security advisory patch"
+            search_query_builder=lambda c: f"{c.text.rstrip('.')} CVE security advisory patch",
+            freshness_half_life_seconds=14400,
+            degradation_curve="exponential",
+            volatility_pattern=r"(zero.day|0.day|new|emerging|active exploit|in the wild|patch released).*(cve|vulnerability|exploit|security)"
         ))
 
         # 7. Financial Information
@@ -297,7 +322,10 @@ class CategoryRegistry:
             default_ttl_seconds=3600,  # 1 hour
             min_confidence=0.9,
             preferred_domains=["sec.gov", "bloomberg.com", "cnbc.com", "investor."],
-            search_query_builder=lambda c: f"{c.text.rstrip('.')} latest earnings report SEC filing rate"
+            search_query_builder=lambda c: f"{c.text.rstrip('.')} latest earnings report SEC filing rate",
+            freshness_half_life_seconds=3600,
+            degradation_curve="exponential",
+            volatility_pattern=r"(will|expected|projected|forecast|guidance|q[1-4]|quarter|annual).*(earnings|revenue|profit|rate|interest|valuation|market cap)"
         ))
 
         # 8. Government Policy
@@ -309,7 +337,10 @@ class CategoryRegistry:
             default_ttl_seconds=172800,  # 48 hours
             min_confidence=0.85,
             preferred_domains=[".gov", ".europa.eu", "state.gov"],
-            search_query_builder=lambda c: f"{c.text.rstrip('.')} official policy announcement rule"
+            search_query_builder=lambda c: f"{c.text.rstrip('.')} official policy announcement rule",
+            freshness_half_life_seconds=172800,
+            degradation_curve="linear",
+            volatility_pattern=r"(proposed|draft|pending|will|expected|announced|considering).*(policy|directive|order|ban|tariff|subsidy|control)"
         ))
 
         # 9. Public Health Guidance
@@ -321,7 +352,10 @@ class CategoryRegistry:
             default_ttl_seconds=86400,  # 24 hours
             min_confidence=0.95,
             preferred_domains=["cdc.gov", "who.int", "fda.gov", "nih.gov"],
-            search_query_builder=lambda c: f"{c.text.rstrip('.')} CDC WHO official health guidance"
+            search_query_builder=lambda c: f"{c.text.rstrip('.')} CDC WHO official health guidance",
+            freshness_half_life_seconds=86400,
+            degradation_curve="step",
+            volatility_pattern=r"(will|expected|pending|under review|emergency|outbreak|alert|new variant).*(guidance|recommendation|approval|vaccine|health)"
         ))
 
         # 10. Scientific Findings
@@ -333,7 +367,10 @@ class CategoryRegistry:
             default_ttl_seconds=604800,  # 7 days
             min_confidence=0.8,
             preferred_domains=["nature.com", "science.org", "arxiv.org", "ncbi.nlm.nih.gov"],
-            search_query_builder=lambda c: f"{c.text.rstrip('.')} journal publication retraction status"
+            search_query_builder=lambda c: f"{c.text.rstrip('.')} journal publication retraction status",
+            freshness_half_life_seconds=604800,
+            degradation_curve="linear",
+            volatility_pattern=r"(preprint|submitted|under review|retracted|replication|challenged).*(study|paper|finding|discovery|research)"
         ))
 
         # 11. Company Information
@@ -344,7 +381,10 @@ class CategoryRegistry:
             is_volatile=True,
             default_ttl_seconds=86400,  # 24 hours
             min_confidence=0.8,
-            search_query_builder=lambda c: f"{c.text.rstrip('.')} acquisition merger headquarters"
+            search_query_builder=lambda c: f"{c.text.rstrip('.')} acquisition merger headquarters",
+            freshness_half_life_seconds=86400,
+            degradation_curve="exponential",
+            volatility_pattern=r"(will|expected|announced|pending|proposed|merging|acquiring|relocating).*(merger|acquisition|headquarters|bankruptcy|corporate)"
         ))
 
         # Dated events and outcomes require evidence even when the event is historical.
@@ -355,7 +395,10 @@ class CategoryRegistry:
             is_volatile=True,
             default_ttl_seconds=86400,
             min_confidence=0.8,
-            search_query_builder=lambda c: f"{c.text.rstrip('.')} official result outcome"
+            search_query_builder=lambda c: f"{c.text.rstrip('.')} official result outcome",
+            freshness_half_life_seconds=86400,
+            degradation_curve="step",
+            volatility_pattern=r"(upcoming|scheduled|will|expected).*(event|competition|election|award|tournament|match)"
         ))
 
         # Other / Non-Volatile Static Facts
@@ -366,7 +409,10 @@ class CategoryRegistry:
             is_volatile=False,
             default_ttl_seconds=86400,
             min_confidence=0.7,
-            search_query_builder=lambda c: c.text.rstrip(".")
+            search_query_builder=lambda c: c.text.rstrip("."),
+            freshness_half_life_seconds=86400,
+            degradation_curve="linear",
+            volatility_pattern=None
         ))
 
 

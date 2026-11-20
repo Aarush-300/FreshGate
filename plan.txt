@@ -1,0 +1,347 @@
+# FreshGate Strategic Implementation Plan
+
+## Context
+FreshGate is a web-based AI gateway middleware with React dashboard that verifies time-sensitive factual claims in AI responses. The system needs strategic enhancements to meet GeekRoom AI Hackathon requirements, focusing on differentiation through advanced verification capabilities, predictive monitoring, and improved user experience.
+
+## Codebase Analysis Summary (from exploration)
+
+**Key Architectural Patterns Found:**
+- **Modular Pipeline**: Extraction → Triage → Verification → Scoring → Persistence → Monitoring
+- **Immutable Snapshots**: Verification results are append-only with database triggers enforcing immutability
+- **Lease-based Concurrency**: Watchtower uses atomic lease system to prevent duplicate processing
+- **Fail-Open Design**: Default `fail_open: true` for production availability
+- **Request-Scoped Credentials**: Provider keys used once per request, never persisted
+- **Configuration-Driven**: Environment-based config with validation in `core/config.py`
+- **Single-Page React App**: Hash-based routing, 7 views, centralized polling, no external state library
+
+**Existing Capabilities to Leverage (Critical - Do Not Rebuild):**
+- `scorer.py`: Discrete linear decay (1.0 at 30 days → 0.5 at 365 days) — **enhance with multiple decay curves**
+- `SourceValidator` (`sources.py`): Sophisticated multi-source evidence triangulation with domain authority tiers — **extend with new source types**
+- `WatchtowerService` (`watchtower.py`): Complete scheduling, retry, lease, and alert infrastructure — **add prediction methods**
+- `history.py` + `persistence.py`: Immutable snapshot storage with replay/compare APIs — **build export on this foundation**
+
+## Core Implementation Strategy
+
+### Phase 1: Temporal Freshness Scoring Engine (Enhance #1)
+**Files to modify:** `core/triage.py`, `core/scorer.py`, `core/models.py`, `core/config.py`, `core/categories.py`
+
+**Refined Approach (ENHANCE existing linear decay — do not replace):**
+1. **Enhance `Claim` model** (`models.py`):
+   ```python
+   # ADD to Claim model:
+   last_verified_at: Optional[str] = None          # ISO timestamp
+   freshness_half_life_seconds: Optional[int] = None  # per claim type
+   degradation_curve: str = "exponential"          # "linear" | "exponential" | "step"
+   ```
+
+2. **Extend `scorer.py`** (add alongside existing `compute_recency_factor()`):
+   - Add `compute_temporal_decay(claim: Claim, now: float) -> float` supporting multiple curves
+   - Add per-claim-type decay parameters in `compute_score_dimensions()` output
+   - Maintain full backward compatibility with existing linear decay
+
+3. **Update `FreshGateConfig`** (`config.py`):
+   - Add `freshness_half_life_defaults: dict[str, int]` mapping claim type → seconds
+   - Add `default_degradation_curve: str = "exponential"`
+   - Add `min_temporal_score: int = 0`
+
+4. **Add to `CategoryDefinition`** (`categories.py`):
+   - Add `freshness_half_life_seconds: Optional[int] = None`
+   - Add `degradation_curve: Optional[str] = None`
+
+5. **Pipeline integration** (`pipeline.py`):
+   - `FreshGatePipeline.verify()` → `compute_score_dimensions()` → auto-populate `last_verified_at`
+   - Database already has `checked_at` in `verification_snapshots`
+
+**Why this works**: Existing `compute_recency_factor()` (lines 98-104) is production-tested. Adding `compute_temporal_decay()` as a new function with config-driven curve selection preserves compatibility.
+
+---
+
+### Phase 2: Multi-Source Evidence Triangulation (Enhance #3)
+**Files to modify:** `core/verifier.py`, `core/sources.py`, `core/config.py`
+
+**Refined Approach (EXTEND existing SourceValidator — do not rebuild):**
+1. **Enhance `Source` model** (`models.py`):
+   ```python
+   # ADD to Source:
+   source_type: str = "web"  # "web" | "api" | "document" | "academic" | "government"
+   ```
+
+2. **Extend `SourceValidator`** (`sources.py`):
+   - Add source type authority multipliers in `evaluate_source()`
+   - Extend `filter_independent_sources()` with cross-source consensus scoring
+   - Add new domain authority tiers for API sources (Wikipedia, GitHub, Crossref)
+
+3. **Create `MultiSourceSearchClient`** (`verifier.py` - new class):
+   ```python
+   class MultiSourceSearchClient:
+       def __init__(self, config: FreshGateConfig):
+           self.clients = {
+               "web": TavilySearchClient(...),
+               "wikipedia": WikipediaSearchClient() if config.enable_wikipedia else None,
+               "github": GitHubSearchClient() if config.enable_github else None,
+               "academic": CrossrefSearchClient() if config.enable_academic else None,
+           }
+       
+       async def search_all(self, query: str, claim_type: str) -> dict[str, list[Source]]:
+           # Parallel search, filter by claim type relevance
+   ```
+
+4. **Update `ClaimVerifier.verify_claim()`** (`verifier.py`):
+   - Call `MultiSourceSearchClient.search_all()` before LLM judge
+   - Pass multi-source evidence to judge with source type annotations
+   - Keep existing fallback to `HeuristicEvidenceJudge`
+
+5. **Config additions** (`config.py`):
+   - `enable_wikipedia_search: bool = False`
+   - `enable_github_search: bool = False`
+   - `enable_academic_search: bool = False`
+   - `search_api_keys: dict[str, str]` (optional per-source keys)
+
+**Critical**: Do NOT modify `core/llm.py` or `core/llm_manager.py` — these handle LLM providers, not search sources.
+
+---
+
+### Phase 3: Predictive Claim Decomposition (Enhance #4)
+**Files to modify:** `core/extractor.py`, `core/models.py`, `core/pipeline.py`, `core/categories.py`
+
+**Approach:**
+1. **Extend `Claim` model** (`models.py`):
+   ```python
+   volatility_score: float = 0.5           # 0.0-1.0, likelihood of future change
+   evidence_gap: float = 0.5               # confidence in evidence coverage
+   temporal_stability: Optional[str] = None # "high" | "medium" | "low"
+   predicted_flip_probability: Optional[float] = None
+   recommended_check_interval: Optional[int] = None  # seconds
+   ```
+
+2. **Enhance `ClaimExtractor`** (`extractor.py`):
+   - Update `SYSTEM_PROMPT` to request volatility metadata
+   - Add pattern detection for future-dated claims: "will release", "expected Q3", "announced for"
+   - Implement confidence scoring for predictions
+   - Add `extract_from_file(file_content: bytes, filename: str) -> ExtractionResult` for file upload
+
+3. **Update category registry** (`categories.py`):
+   - Add `volatility_pattern: Optional[str] = None` to `CategoryDefinition`
+   - Map claim types to expected volatility (e.g., pricing=high, law=low)
+
+4. **Integrate in pipeline** (`pipeline.py`):
+   - Use `volatility_score` to prioritize verification order
+   - Add `evidence_gap` to scoring weight
+   - Generate monitoring suggestions for high-volatility claims (return in `VerificationResult`)
+
+---
+
+### Phase 4: Proactive Monitoring (Enhance #6)
+**Files to modify:** `core/watchtower.py`, `core/scorer.py`, `core/models.py`, `server/routes/watchtower.py`
+
+**Refined Approach (BUILD ON existing WatchtowerService):**
+1. **Add prediction methods to `WatchtowerService`** (`watchtower.py`):
+   ```python
+   def predict_optimal_check_interval(self, claim: Claim) -> int:
+       # Based on volatility_score + evidence freshness + half-life
+       if claim.volatility_score > 0.7:
+           return min(claim.freshness_half_life_seconds or 86400, 3600)
+       return claim.freshness_half_life_seconds or 86400
+   
+   def calculate_flip_probability(self, claim: Claim) -> float:
+       # volatility_score * (1 - evidence_confidence) * recency_factor
+   ```
+
+2. **Enhance `_scheduler_loop()`** (`watchtower.py`):
+   - Add priority queue: sort due claims by `flip_probability` descending
+   - Check high-probability claims first within concurrency limit
+
+3. **Enhance scoring with predictive indicators** (`scorer.py`):
+   - Add `predicted_flip_probability` and `recommended_interval` to `compute_score_dimensions()` output
+   - Store these in `Claim` and persist via `save_claim_snapshot()`
+
+4. **Update `MonitorRequest`** (`server/routes/watchtower.py`):
+   - Add `enable_predictive_scheduling: bool = True`
+   - Add `check_interval_override: Optional[int] = None`
+
+---
+
+### Phase 5: Executive Summary Export (Implement #10)
+**Files to modify:** `core/history.py`, `core/persistence.py`, `server/routes/export.py` (new), `dashboard/src/`
+
+**Approach:**
+1. **Add export functions to `history.py`**:
+   ```python
+   def export_executive_summary(fingerprint: str, store=None) -> dict:
+       # Summary of claim history with trends, verdict distribution, score timeline
+   
+   def export_temporal_trends(fingerprint: str, store=None) -> dict:
+       # Score/verdict timeline with decay visualization data
+   
+   def export_prediction_accuracy(claim_id: str, store=None) -> dict:
+       # Compare predictions vs actual outcomes
+   
+   def export_knowledge_base(fingerprint: str, format: str = "json", store=None) -> dict:
+       # ISO 25964-compliant knowledge base entry
+   ```
+
+2. **Add API endpoints** (`server/routes/export.py` - new file):
+   - `GET /api/export/claim/{fingerprint}/executive-summary`
+   - `GET /api/export/claim/{fingerprint}/temporal-trends`
+   - `GET /api/export/claim/{fingerprint}/prediction-accuracy`
+   - `GET /api/export/claim/{fingerprint}/knowledge-base?format=json|xml|csv`
+
+3. **Dashboard**: Add "Reports" section in navigation or under Replay with export buttons and visualizations
+
+---
+
+### Phase 6: Watchtower Mail Feature (New Feature #1)
+**Files to modify:** `core/config.py`, `core/email.py` (new), `core/watchtower.py`, `server/routes/watchtower.py`, `dashboard/src/App.tsx`, `dashboard/src/types.ts`
+
+**Approach:**
+1. **Add SMTP config to `FreshGateConfig`** (`config.py`):
+   ```python
+   smtp_host: str = ""
+   smtp_port: int = 587
+   smtp_user: str = ""
+   smtp_password: str = ""
+   smtp_from: str = ""
+   smtp_tls: bool = True
+   admin_email: str = ""
+   ```
+
+2. **Create `EmailService` class** (`core/email.py`):
+   ```python
+   class EmailService:
+       def __init__(self, config: FreshGateConfig): ...
+       async def send_html(self, to: list[str], subject: str, html: str) -> bool: ...
+       async def send_watchtower_report(self, claims: list[WatchClaim], alerts: list[WatchAlert]) -> bool: ...
+   ```
+
+3. **Add `send_scheduled_report()` to `WatchtowerService`** (`watchtower.py`):
+   - Generate HTML with claim summary, verdict changes, evidence links
+   - Schedule periodic delivery (configurable interval per user)
+   - Track delivery status in claim `metadata_json`
+
+4. **API endpoints** (`server/routes/watchtower.py`):
+   - `POST /api/watchtower/email/schedule` — configure email schedule
+   - `GET /api/watchtower/email/schedule` — get current schedule
+   - `POST /api/watchtower/email/test` — send test email
+
+5. **Dashboard UI**: Add email schedule config in Watchtower view (cron expression or interval dropdown)
+
+---
+
+### Phase 7: File Upload Feature (New Feature #2)
+**Files to modify:** `server/app.py`, `core/extractor.py`, `core/security.py`, `core/config.py`, `dashboard/src/App.tsx`, `dashboard/src/types.ts`, `dashboard/src/api.ts`
+
+**Approach:**
+1. **Add multipart handling** (`server/app.py`):
+   - Add `python-multipart` to requirements.txt
+   - Create new endpoint `POST /verify/upload` accepting `multipart/form-data`
+   - Fields: `answer` (str), `file` (UploadFile, optional), `policy_id`, `provider`, `base_url`, `model`
+   - Headers: `X-LLM-API-Key`, `X-Tavily-API-Key`
+
+2. **File validation** (`core/security.py`):
+   ```python
+   ALLOWED_UPLOAD_TYPES = {".pdf", ".txt", ".md", ".json", ".docx"}
+   MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10MB
+   
+   def validate_upload(file: UploadFile) -> tuple[bool, str]:
+       # Check extension, MIME type, size
+       # Scan for malicious content (basic)
+   ```
+
+3. **Enhance `ClaimExtractor`** (`extractor.py`):
+   - Add `extract_from_file(file_content: bytes, filename: str) -> ExtractionResult`
+   - Extract text from PDF (PyMuPDF/fitz), DOCX (python-docx), JSON, markdown, plain text
+   - Merge file-extracted claims with text claims (deduplicate by normalized text)
+
+4. **Config additions** (`config.py`):
+   - `allowed_upload_types: list[str] = [".pdf", ".txt", ".md", ".json", ".docx"]`
+   - `max_upload_size_bytes: int = 10485760`
+
+5. **Discard after processing**: Files read into memory via `await file.read()`, processed, then discarded — **never written to disk**
+
+6. **Dashboard UI** (`App.tsx`):
+   - Add file upload zone in Verify view with drag-and-drop
+   - Show filename, size, type before submit
+   - Clear file after verification completes
+
+---
+
+## Verification Plan
+
+**Testing Strategy:**
+1. Unit tests: Add to existing `_test.py` files for each module
+2. Integration tests: `make test-core PROVIDER=openai` for verification pipeline
+3. E2E tests: `make run-e2e FLOW=verify` for dashboard upload flow
+4. Manual: Test email with local SMTP (MailHog), test file uploads
+
+**Dependencies to Add (requirements.txt / pyproject.toml):**
+- `python-multipart` — for file upload handling
+- `pymupdf` (fitz) — for PDF text extraction  
+- `python-docx` — for DOCX text extraction
+- `aiosmtplib` — for async email
+- `wikipedia-api` — optional, for Wikipedia search
+- `httpx` — already present, used for GitHub/Crossref APIs
+
+**Success Metrics:**
+- All existing tests pass (`make test-core`, `make test-mcp`)
+- New endpoints return 200 with valid schemas
+- Email sends successfully in staging
+- File uploads process and discard correctly
+- No regression in verification accuracy (benchmark suite)
+
+---
+
+## Critical Files to Modify (Consolidated Priority Order)
+
+| Priority | File | Purpose |
+|----------|------|---------|
+| **P0** | `core/models.py` | Add temporal, volatility, file upload, source_type fields |
+| **P0** | `core/scorer.py` | Add `compute_temporal_decay()`, predictive indicators |
+| **P0** | `core/extractor.py` | Add volatility detection, `extract_from_file()` |
+| **P0** | `core/verifier.py` | Add `MultiSourceSearchClient`, modify `verify_claim()` |
+| **P0** | `core/sources.py` | Add source types, extend `SourceValidator` |
+| **P0** | `core/watchtower.py` | Add prediction methods, email integration |
+| **P0** | `core/config.py` | Freshness decay, SMTP, upload, search API config |
+| **P0** | `core/pipeline.py` | Consume volatility metadata, monitoring suggestions |
+| **P0** | `core/categories.py` | Add half-life, degradation_curve, volatility_pattern |
+| **P1** | `core/history.py` | Export functions |
+| **P1** | `core/email.py` (new) | Email service with templates |
+| **P1** | `server/routes/watchtower.py` | Email schedule API endpoints |
+| **P1** | `server/app.py` | New `/verify/upload` endpoint |
+| **P1** | `server/routes/export.py` (new) | Knowledge base export endpoints |
+| **P1** | `core/security.py` | Upload validation |
+| **P2** | `dashboard/src/types.ts` | New TypeScript interfaces (Claim, Source, Policy, etc.) |
+| **P2** | `dashboard/src/api.ts` | New API calls for upload, email, export |
+| **P2** | `dashboard/src/App.tsx` | UI for email, upload, reports |
+| **P2** | `dashboard/src/styles.css` | Any new component styles |
+
+---
+
+## Database Migration Notes
+
+**Schema updates needed** (in `core/persistence.py` `_migrate_to_v3`):
+```sql
+-- monitored_claims table
+ALTER TABLE monitored_claims ADD COLUMN volatility_score REAL DEFAULT 0.5;
+ALTER TABLE monitored_claims ADD COLUMN evidence_gap REAL DEFAULT 0.5;
+ALTER TABLE monitored_claims ADD COLUMN temporal_stability TEXT;
+ALTER TABLE monitored_claims ADD COLUMN predicted_flip_probability REAL;
+ALTER TABLE monitored_claims ADD COLUMN recommended_check_interval INTEGER;
+ALTER TABLE monitored_claims ADD COLUMN email_schedule TEXT; -- cron or interval
+
+-- verification_snapshots table  
+ALTER TABLE verification_snapshots ADD COLUMN volatility_score REAL;
+ALTER TABLE verification_snapshots ADD COLUMN evidence_gap REAL;
+ALTER TABLE verification_snapshots ADD COLUMN predicted_flip_probability REAL;
+ALTER TABLE verification_snapshots ADD COLUMN recommended_check_interval INTEGER;
+```
+
+---
+
+## Plan Status
+**Ready for approval.** This refined approach:
+- ✅ Builds on existing codebase patterns (no parallel systems)
+- ✅ Preserves backward compatibility
+- ✅ Leverages substantial existing investment (SourceValidator, WatchtowerService, scorer, persistence)
+- ✅ Identifies exact files and integration points
+- ✅ Includes database migration strategy
+- ✅ Maps to dashboard TypeScript types and UI patterns

@@ -15,6 +15,7 @@ export type Category = { name: string; volatile: boolean };
 export type Source = {
   url: string; domain?: string; published?: string | null; snippet?: string;
   authority_score?: number; is_primary?: boolean; relevance_score?: number;
+  source_type?: string;
 };
 export type Claim = {
   id: string; text: string; type: string; entities?: string[]; temporal_anchor?: string | null;
@@ -22,6 +23,14 @@ export type Claim = {
   confidence?: number; sources?: Source[]; supporting_sources?: Source[];
   contradicting_sources?: Source[]; verification_id?: string | null;
   claim_fingerprint?: string | null; verification_timestamp?: string | null;
+  last_verified_at?: string | null;
+  freshness_half_life_seconds?: number | null;
+  degradation_curve?: string;
+  volatility_score?: number;
+  evidence_gap?: number;
+  temporal_stability?: "high" | "medium" | "low" | null;
+  predicted_flip_probability?: number | null;
+  recommended_check_interval?: number | null;
 };
 export type VerificationResult = {
   claims: Claim[];
@@ -45,6 +54,9 @@ export type WatchClaim = {
   id: string; claim_text: string; category: string; enabled: boolean; last_verdict?: string | null;
   last_score?: number | null; last_checked_at?: number | null; last_error?: string | null;
   next_check_at?: number | null; policy_id?: string | null; claim_fingerprint: string;
+  volatility_score?: number; evidence_gap?: number; temporal_stability?: string | null;
+  predicted_flip_probability?: number | null; recommended_check_interval?: number | null;
+  email_schedule?: string | null;
 };
 export type WatchAlert = {
   id: string; monitored_claim_id: string; previous_verdict?: string | null;
@@ -81,4 +93,28 @@ export type UserSettings = {
 export type User = {
   email: string;
   settings: UserSettings;
+};
+
+export type ExecutiveSummary = {
+  claim_fingerprint: string;
+  total_verifications: number;
+  average_score: number | null;
+  verdict_distribution: Record<string, number>;
+  score_trend: string;
+  score_timeline: Array<{ checked_at: number; score: number | null; verdict: string; verification_id?: string }>;
+  first_verified?: number | null;
+  last_verified?: number | null;
+};
+
+export type TemporalTrends = {
+  claim_fingerprint: string;
+  decay_data: Array<{ checked_at: number; freshness_score: number | null; temporal_decay?: number; evidence_recency?: number; verdict: string }>;
+  half_life_estimate_seconds?: number | null;
+};
+
+export type EmailScheduleConfig = {
+  enabled: boolean;
+  cron_expression?: string | null;
+  interval_seconds?: number | null;
+  recipient_email?: string | null;
 };

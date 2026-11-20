@@ -407,3 +407,29 @@ class MongoFeatureStore:
                 {"$set": {"acknowledged_at": ack}},
             )
         return True
+
+    def get_latest_snapshot(self, fingerprint: str) -> Optional[dict[str, Any]]:
+        doc = self.db.verification_snapshots.find_one(
+            self._scope({"claim_fingerprint": fingerprint}),
+            sort=[("checked_at", DESCENDING)],
+        )
+        return self._clean(doc)
+
+    def get_alerts_for_claim(self, claim_id: str, limit: int = 5) -> list[dict[str, Any]]:
+        cursor = (
+            self.db.watchtower_alerts.find(self._scope({"monitored_claim_id": claim_id}))
+            .sort([("created_at", DESCENDING)])
+            .limit(limit)
+        )
+        return [self._clean(d) for d in cursor]  # type: ignore[misc]
+
+    def update_user_metadata(self, user_id: str, metadata: dict[str, Any]) -> None:
+        self.db.users.update_one(
+            {"_id": user_id},
+            {"$set": {f"metadata.{k}": v for k, v in metadata.items()}},
+            upsert=False,
+        )
+
+    def get_user_metadata(self, user_id: str) -> dict[str, Any]:
+        doc = self.db.users.find_one({"_id": user_id}, {"metadata": 1})
+        return doc.get("metadata", {}) if doc else {}

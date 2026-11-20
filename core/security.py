@@ -450,3 +450,26 @@ def sanitize_error_detail(error: Exception) -> str:
         return "Internal verification service error"
     # Bound error message length
     return error_str[:120] if error_str else "Unknown verification error"
+
+
+# Phase 7: File Upload Validation
+ALLOWED_UPLOAD_TYPES = {".pdf", ".txt", ".md", ".json", ".docx", ".csv"}
+MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10MB
+
+
+def validate_upload(filename: Optional[str], size: int) -> Tuple[bool, str]:
+    """Validate uploaded file extension and size limits."""
+    if not filename:
+        return False, "Filename cannot be empty"
+
+    ext = ("." + filename.rsplit(".", 1)[-1].lower()) if "." in filename else ""
+    if ext not in ALLOWED_UPLOAD_TYPES:
+        return False, f"Unsupported file type '{ext}'. Allowed types: {', '.join(sorted(ALLOWED_UPLOAD_TYPES))}"
+
+    if size > MAX_UPLOAD_SIZE:
+        return False, f"File size ({size} bytes) exceeds maximum limit of {MAX_UPLOAD_SIZE // (1024*1024)}MB"
+
+    if size <= 0:
+        return False, "File is empty"
+
+    return True, "Valid"

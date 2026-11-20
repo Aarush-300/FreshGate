@@ -10,7 +10,7 @@ import codecs
 from typing import Optional, Dict, Any, Tuple
 from pathlib import Path
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Request, Response, BackgroundTasks, Depends, status, Query
+from fastapi import FastAPI, HTTPException, Request, Response, BackgroundTasks, Depends, status, Query, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
@@ -58,12 +58,14 @@ from core.security import (
     require_api_key_strict,
     verify_admin_key,
     sanitize_error_detail,
+    validate_upload,
 )
 from core.metrics import metrics
 from server.routes.policies import router as policies_router
 from server.routes.watchtower import router as watchtower_router, watchtower_service
 from server.routes.replay import history_router, replay_router
 from server.routes.providers import router as providers_router, SUPPORTED_PROVIDER_IDS
+from server.routes.export import router as export_router
 from core.logging_config import CorrelationIdMiddleware, get_correlation_id
 from core.audit import audit_store
 from core.circuit_breaker import circuit_breaker
@@ -176,6 +178,7 @@ app.include_router(history_router)
 app.include_router(replay_router)
 app.include_router(providers_router)
 app.include_router(profile_router)
+app.include_router(export_router)
 
 EMAIL_REGEX = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 class AuthBody(BaseModel):
@@ -688,6 +691,180 @@ async def verify_answer(
         await write_audit_failure(
             req.answer,
             source="verify",
+            mode=None,
+            reason=safe_msg,
+            corr_id=getattr(request.state, "correlation_id", None),
+            owner_id=(user["_id"] if user else None),
+        )
+        raise HTTPException(status_code=500, detail=safe_msg)
+    finally:
+        if is_ephemeral and hasattr(req_pipeline, "verifier") and hasattr(req_pipeline.verifier, "tavily_client"):
+            await req_pipeline.verifier.tavily_client.aclose()
+
+
+@app.post("/verify/upload", response_model=VerificationResult)
+async def verify_upload(
+    request: Request,
+    req_pipeline_dep: Optional[FreshGatePipeline] = Depends(get_request_pipeline),
+):
+    """
+    Phase 7: Direct verification endpoint with file upload support.
+    Supports multipart/form-data and application/json.
+    Extracts text in-memory from .pdf, .docx, .txt, .md, .json, .csv files,
+    combines with user answer text, verifies, and discards all file data without saving to disk.
+    """
+    content_type = request.headers.get("content-type", "").lower()
+    answer_text = ""
+    file_bytes = b""
+    filename = ""
+    policy_id = None
+    provider = None
+    base_url = None
+    model = None
+
+    if "multipart/form-data" in content_type:
+        body = await request.body()
+        import email
+        from email import policy as email_policy
+        ct_header = f"Content-Type: {request.headers.get('content-type')}\r\n\r\n".encode("utf-8")
+        msg = email.message_from_bytes(ct_header + body, policy=email_policy.default)
+        if msg.is_multipart():
+            for part in msg.iter_parts():
+                name = part.get_param("name", header="content-disposition")
+                part_filename = part.get_filename()
+                if part_filename:
+                    filename = part_filename
+                    file_bytes = part.get_payload(decode=True) or b""
+                elif name == "answer":
+                    content = part.get_content()
+                    answer_text = content if isinstance(content, str) else content.decode("utf-8", errors="replace")
+                elif name == "policy_id":
+                    policy_id = str(part.get_content()).strip() or None
+                elif name == "provider":
+                    provider = str(part.get_content()).strip() or None
+                elif name == "base_url":
+                    base_url = str(part.get_content()).strip() or None
+                elif name == "model":
+                    model = str(part.get_content()).strip() or None
+    elif "application/json" in content_type:
+        data = await request.json()
+        answer_text = data.get("answer", "")
+        filename = data.get("filename", "")
+        raw_content = data.get("file_content") or data.get("file_base64", "")
+        if raw_content:
+            import base64
+            try:
+                file_bytes = base64.b64decode(raw_content)
+            except Exception:
+                file_bytes = raw_content.encode("utf-8")
+        policy_id = data.get("policy_id")
+        provider = data.get("provider")
+        base_url = data.get("base_url")
+        model = data.get("model")
+    else:
+        body = await request.body()
+        answer_text = body.decode("utf-8", errors="replace")
+
+    # If a file was uploaded, validate and extract text
+    extracted_file_text = ""
+    if file_bytes and filename:
+        is_valid, reason = validate_upload(filename, len(file_bytes))
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=reason)
+        from core.extractor import extract_text_from_file_bytes
+        extracted_file_text = extract_text_from_file_bytes(file_bytes, filename)
+
+    combined_text = f"{answer_text.strip()}\n\n{extracted_file_text.strip()}".strip() if answer_text.strip() else extracted_file_text.strip()
+    if not combined_text:
+        raise HTTPException(status_code=400, detail="No content provided to verify. Submit answer text or a valid document.")
+
+    verify_req = VerifyRequest(
+        answer=combined_text,
+        policy_id=policy_id,
+        provider=provider,
+        base_url=base_url,
+        model=model,
+    )
+
+    user = optional_current_user(request)
+    req_pipeline: FreshGatePipeline
+    is_ephemeral = False
+
+    if req_pipeline_dep is not None:
+        req_pipeline = req_pipeline_dep
+        is_ephemeral = False
+    elif user:
+        creds = load_credentials(user)
+        if creds is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Finish your Profile first: pick a provider and model, add your API key (if required) and your Tavily key.",
+            )
+        req_pipeline = build_user_pipeline(creds, user["_id"], base=pipeline)
+        is_ephemeral = True
+    else:
+        header_provider = request.headers.get("X-LLM-Provider") or provider
+        llm_key = (
+            request.headers.get("X-LLM-API-Key")
+            or request.headers.get("X-OpenAI-API-Key")
+            or request.headers.get("X-OpenAI-Key")
+        )
+        tavily_key = (
+            request.headers.get("X-Tavily-API-Key")
+            or request.headers.get("X-Tavily-Key")
+        )
+        header_base_url = request.headers.get("X-LLM-Base-URL") or base_url
+        header_model = request.headers.get("X-LLM-Model") or model
+
+        if header_base_url:
+            try:
+                header_base_url = validate_base_url(header_base_url)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+
+        if header_provider is not None:
+            if header_provider not in SUPPORTED_PROVIDER_IDS:
+                raise HTTPException(status_code=400, detail="Choose a supported AI provider.")
+            if header_provider != "ollama" and (not llm_key or not is_valid_credential(llm_key)):
+                raise HTTPException(status_code=400, detail="The selected AI provider API key is invalid or missing.")
+
+        if not llm_key and header_provider != "ollama" and not tavily_key:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Please log in.")
+
+        req_pipeline = build_request_pipeline(
+            llm_key,
+            tavily_key,
+            header_base_url,
+            header_model,
+        )
+        is_ephemeral = True
+
+    policy = _load_policy(verify_req, user)
+    try:
+        t0 = time.perf_counter()
+        result = await req_pipeline.verify(
+            combined_text,
+            single_flight_scope=getattr(request.state, "correlation_id", None),
+            policy=policy,
+            owner_id=(user["_id"] if user else None),
+        )
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        await write_audit(
+            result,
+            text=combined_text[:1000],
+            source="upload",
+            mode=None,
+            latency_ms=latency_ms,
+            corr_id=getattr(request.state, "correlation_id", None),
+            owner_id=(user["_id"] if user else None),
+        )
+        return result
+    except Exception as e:
+        safe_msg = sanitize_error_detail(e)
+        logger.error("Upload verification failed: %s", safe_msg)
+        await write_audit_failure(
+            combined_text[:1000],
+            source="upload",
             mode=None,
             reason=safe_msg,
             corr_id=getattr(request.state, "correlation_id", None),

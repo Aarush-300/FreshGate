@@ -167,31 +167,55 @@ class SQLiteFeatureStore:
 
     @staticmethod
     def _migrate_to_v2(conn: sqlite3.Connection) -> None:
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            monitored = {row[1] for row in conn.execute("PRAGMA table_info(monitored_claims)")}
-            for name, definition in (
-                ("retry_count", "INTEGER NOT NULL DEFAULT 0"),
-                ("last_error", "TEXT"),
-                ("last_score", "INTEGER"),
-                ("last_successful_at", "REAL"),
-                ("lease_token", "TEXT"),
-                ("lease_until", "REAL"),
-            ):
-                if name not in monitored:
-                    conn.execute(f"ALTER TABLE monitored_claims ADD COLUMN {name} {definition}")
-            alerts = {row[1] for row in conn.execute("PRAGMA table_info(watchtower_alerts)")}
-            if "transition_key" not in alerts:
-                conn.execute("ALTER TABLE watchtower_alerts ADD COLUMN transition_key TEXT")
-            conn.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_unresolved_transition "
-                "ON watchtower_alerts(monitored_claim_id, transition_key) "
-                "WHERE acknowledged_at IS NULL AND transition_key IS NOT NULL"
-            )
-            conn.execute("PRAGMA user_version = 2")
-        except Exception:
-            conn.rollback()
-            raise
+        monitored = {row[1] for row in conn.execute("PRAGMA table_info(monitored_claims)")}
+        for name, definition in (
+            ("retry_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("last_error", "TEXT"),
+            ("last_score", "INTEGER"),
+            ("last_successful_at", "REAL"),
+            ("lease_token", "TEXT"),
+            ("lease_until", "REAL"),
+        ):
+            if name not in monitored:
+                conn.execute(f"ALTER TABLE monitored_claims ADD COLUMN {name} {definition}")
+        alerts = {row[1] for row in conn.execute("PRAGMA table_info(watchtower_alerts)")}
+        if "transition_key" not in alerts:
+            conn.execute("ALTER TABLE watchtower_alerts ADD COLUMN transition_key TEXT")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_unresolved_transition "
+            "ON watchtower_alerts(monitored_claim_id, transition_key) "
+            "WHERE acknowledged_at IS NULL AND transition_key IS NOT NULL"
+        )
+
+        # Strategic schema additions (Phase 1, 3, 4, 6)
+        SQLiteFeatureStore._migrate_to_v3(conn)
+        conn.execute("PRAGMA user_version = 2")
+
+    @staticmethod
+    def _migrate_to_v3(conn: sqlite3.Connection) -> None:
+        monitored = {row[1] for row in conn.execute("PRAGMA table_info(monitored_claims)")}
+        for name, definition in (
+            ("volatility_score", "REAL DEFAULT 0.5"),
+            ("evidence_gap", "REAL DEFAULT 0.5"),
+            ("temporal_stability", "TEXT"),
+            ("predicted_flip_probability", "REAL"),
+            ("recommended_check_interval", "INTEGER"),
+            ("email_schedule", "TEXT"),
+        ):
+            if name not in monitored:
+                conn.execute(f"ALTER TABLE monitored_claims ADD COLUMN {name} {definition}")
+
+        snapshots = {row[1] for row in conn.execute("PRAGMA table_info(verification_snapshots)")}
+        for name, definition in (
+            ("volatility_score", "REAL"),
+            ("evidence_gap", "REAL"),
+            ("predicted_flip_probability", "REAL"),
+            ("recommended_check_interval", "INTEGER"),
+        ):
+            if name not in snapshots:
+                conn.execute(f"ALTER TABLE verification_snapshots ADD COLUMN {name} {definition}")
+
+        conn.execute("PRAGMA user_version = 3")
 
     @staticmethod
     def _json(value: Any) -> str:
@@ -305,6 +329,12 @@ class SQLiteFeatureStore:
             "enabled": bool(claim.get("enabled", True)),
             "created_at": float(claim.get("created_at", time.time())),
             "metadata": claim.get("metadata", {}),
+            "volatility_score": float(claim.get("volatility_score", 0.5)),
+            "evidence_gap": float(claim.get("evidence_gap", 0.5)),
+            "temporal_stability": claim.get("temporal_stability"),
+            "predicted_flip_probability": claim.get("predicted_flip_probability"),
+            "recommended_check_interval": claim.get("recommended_check_interval"),
+            "email_schedule": claim.get("email_schedule"),
         }
         with self._lock, self._connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -315,13 +345,16 @@ class SQLiteFeatureStore:
             conn.execute(
                 "INSERT INTO monitored_claims (id, claim_fingerprint, claim_text, category, policy_id, "
                 "monitoring_interval, next_check_at, last_checked_at, last_successful_at, last_verdict, last_score, "
-                "retry_count, last_error, enabled, created_at, metadata_json) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "retry_count, last_error, enabled, created_at, metadata_json, "
+                "volatility_score, evidence_gap, temporal_stability, predicted_flip_probability, recommended_check_interval, email_schedule) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (record["id"], fingerprint, text, category, record["policy_id"], interval,
                  record["next_check_at"], record["last_checked_at"], record["last_successful_at"],
                  record["last_verdict"], record["last_score"],
                  record["retry_count"], record["last_error"],
-                 int(record["enabled"]), record["created_at"], self._json(record["metadata"])),
+                 int(record["enabled"]), record["created_at"], self._json(record["metadata"]),
+                 record["volatility_score"], record["evidence_gap"], record["temporal_stability"],
+                 record["predicted_flip_probability"], record["recommended_check_interval"], record["email_schedule"]),
             )
         return record
 
@@ -468,16 +501,23 @@ class SQLiteFeatureStore:
             "cached": bool(snapshot.get("cached", False)),
             "verification_duration": snapshot.get("verification_duration"),
             "metadata": snapshot.get("metadata", {}),
+            "volatility_score": snapshot.get("volatility_score"),
+            "evidence_gap": snapshot.get("evidence_gap"),
+            "predicted_flip_probability": snapshot.get("predicted_flip_probability"),
+            "recommended_check_interval": snapshot.get("recommended_check_interval"),
         }
         with self._lock, self._connection() as conn:
             conn.execute(
                 "INSERT INTO verification_snapshots (id, verification_id, claim_fingerprint, claim_text, category, "
-                "verdict, freshness_score, sources_json, policy_id, checked_at, cached, verification_duration, metadata_json) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "verdict, freshness_score, sources_json, policy_id, checked_at, cached, verification_duration, metadata_json, "
+                "volatility_score, evidence_gap, predicted_flip_probability, recommended_check_interval) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (record["id"], record["verification_id"], record["claim_fingerprint"], text, category,
                  record["verdict"], record["freshness_score"], self._json(record["sources"]), record["policy_id"],
                  record["checked_at"], int(record["cached"]), record["verification_duration"],
-                 self._json(record["metadata"])),
+                 self._json(record["metadata"]),
+                 record["volatility_score"], record["evidence_gap"],
+                 record["predicted_flip_probability"], record["recommended_check_interval"]),
             )
         return record
 
@@ -573,6 +613,44 @@ class SQLiteFeatureStore:
                 (acknowledged_at if acknowledged_at is not None else time.time(), alert_id),
             )
             return cursor.rowcount > 0
+
+    def get_latest_snapshot(self, fingerprint: str) -> Optional[dict[str, Any]]:
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM verification_snapshots WHERE claim_fingerprint = ? ORDER BY checked_at DESC LIMIT 1",
+                (fingerprint,)
+            ).fetchone()
+        return self._row_json(row, ("sources_json", "metadata_json"))
+
+    def get_alerts_for_claim(self, claim_id: str, limit: int = 5) -> list[dict[str, Any]]:
+        with self._connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM watchtower_alerts WHERE monitored_claim_id = ? ORDER BY created_at DESC LIMIT ?",
+                (claim_id, limit)
+            ).fetchall()
+        return [self._row_json(row, ("old_evidence_json", "new_evidence_json", "metadata_json")) for row in rows]  # type: ignore[misc]
+
+    def update_user_metadata(self, user_id: str, metadata: dict[str, Any]) -> None:
+        with self._lock, self._connection() as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS user_metadata (user_id TEXT PRIMARY KEY, metadata_json TEXT NOT NULL DEFAULT '{}')"
+            )
+            existing = conn.execute("SELECT metadata_json FROM user_metadata WHERE user_id = ?", (user_id,)).fetchone()
+            current = json.loads(existing[0]) if existing else {}
+            current.update(metadata)
+            conn.execute(
+                "INSERT INTO user_metadata (user_id, metadata_json) VALUES (?, ?) "
+                "ON CONFLICT(user_id) DO UPDATE SET metadata_json = excluded.metadata_json",
+                (user_id, self._json(current))
+            )
+
+    def get_user_metadata(self, user_id: str) -> dict[str, Any]:
+        with self._connection() as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS user_metadata (user_id TEXT PRIMARY KEY, metadata_json TEXT NOT NULL DEFAULT '{}')"
+            )
+            row = conn.execute("SELECT metadata_json FROM user_metadata WHERE user_id = ?", (user_id,)).fetchone()
+            return json.loads(row[0]) if row else {}
 
 
 def _validate_page(limit: int, offset: int) -> None:

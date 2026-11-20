@@ -252,6 +252,172 @@ class HeuristicEvidenceJudge:
         return None
 
 
+# Phase 2: Multi-Source Evidence Triangulation Search Clients
+class WikipediaSearchClient:
+    """Client for Wikipedia REST Search API."""
+
+    def __init__(self, timeout: float = 5.0):
+        self.timeout = timeout
+
+    async def search(self, query: str, max_results: int = 3) -> List[Dict[str, Any]]:
+        url = "https://en.wikipedia.org/w/api.php"
+        params = {
+            "action": "query",
+            "list": "search",
+            "srsearch": query,
+            "format": "json",
+            "utf8": 1,
+            "srlimit": max_results,
+        }
+        headers = {"User-Agent": "FreshGate/1.0 (https://freshgate.ai; bot@freshgate.ai)"}
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                resp = await client.get(url, params=params, headers=headers)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    search_results = data.get("query", {}).get("search", [])
+                    results = []
+                    for item in search_results:
+                        title = item.get("title", "")
+                        snippet = re.sub(r"<[^>]+>", "", item.get("snippet", ""))
+                        results.append({
+                            "url": f"https://en.wikipedia.org/wiki/{title.replace(' ', '_')}",
+                            "content": snippet,
+                            "published": item.get("timestamp"),
+                            "source_type": "web",
+                        })
+                    return results
+        except Exception as e:
+            logger.debug("Wikipedia search failed: %s", e)
+        return []
+
+
+class GitHubSearchClient:
+    """Client for GitHub Search API for software version, releases, and vulnerability data."""
+
+    def __init__(self, api_key: Optional[str] = None, timeout: float = 5.0):
+        self.api_key = api_key
+        self.timeout = timeout
+
+    async def search(self, query: str, max_results: int = 3) -> List[Dict[str, Any]]:
+        url = "https://api.github.com/search/repositories"
+        params = {"q": query, "per_page": max_results}
+        headers = {"User-Agent": "FreshGate/1.0", "Accept": "application/vnd.github+json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                resp = await client.get(url, params=params, headers=headers)
+                if resp.status_code == 200:
+                    items = resp.json().get("items", [])
+                    results = []
+                    for item in items:
+                        desc = item.get("description") or ""
+                        full_name = item.get("full_name", "")
+                        stars = item.get("stargazers_count", 0)
+                        results.append({
+                            "url": item.get("html_url", ""),
+                            "content": f"{full_name}: {desc} (Stars: {stars})",
+                            "published": item.get("updated_at"),
+                            "source_type": "api",
+                        })
+                    return results
+        except Exception as e:
+            logger.debug("GitHub search failed: %s", e)
+        return []
+
+
+class CrossrefSearchClient:
+    """Client for Crossref Academic Works API."""
+
+    def __init__(self, timeout: float = 5.0):
+        self.timeout = timeout
+
+    async def search(self, query: str, max_results: int = 3) -> List[Dict[str, Any]]:
+        url = "https://api.crossref.org/works"
+        params = {"query": query, "rows": max_results}
+        headers = {"User-Agent": "FreshGate/1.0 (mailto:info@freshgate.ai)"}
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                resp = await client.get(url, params=params, headers=headers)
+                if resp.status_code == 200:
+                    items = resp.json().get("message", {}).get("items", [])
+                    results = []
+                    for item in items:
+                        title = (item.get("title") or [""])[0]
+                        doi = item.get("DOI", "")
+                        abstract = item.get("abstract", "")
+                        clean_abstract = re.sub(r"<[^>]+>", "", abstract) if abstract else ""
+                        snippet = f"{title}. {clean_abstract}".strip()
+                        results.append({
+                            "url": f"https://doi.org/{doi}" if doi else item.get("URL", ""),
+                            "content": snippet[:400],
+                            "published": str(item.get("created", {}).get("date-time") or ""),
+                            "source_type": "academic",
+                        })
+                    return results
+        except Exception as e:
+            logger.debug("Crossref search failed: %s", e)
+        return []
+
+
+class MultiSourceSearchClient:
+    """Orchestrates multi-source search across Web (Tavily), Wikipedia, GitHub, and Crossref."""
+
+    def __init__(
+        self,
+        tavily_client: Optional[TavilySearchClient] = None,
+        config: Optional[Any] = None,
+    ):
+        cfg = config or get_config()
+        self.tavily = tavily_client or TavilySearchClient()
+        self.wikipedia = WikipediaSearchClient(timeout=cfg.search_timeout) if getattr(cfg, "enable_wikipedia_search", False) else None
+        self.github = GitHubSearchClient(timeout=cfg.search_timeout) if getattr(cfg, "enable_github_search", False) else None
+        self.academic = CrossrefSearchClient(timeout=cfg.search_timeout) if getattr(cfg, "enable_academic_search", False) else None
+
+    async def search_all(
+        self,
+        query: str,
+        claim_type: str = "other",
+        policy: Optional[Any] = None,
+        entities: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        tasks = []
+        # 1. Primary Tavily search
+        if policy and policy.verification_mode == "enforce" and policy.preferred_domains:
+            tasks.append(("web", self.tavily.search(query, max_results=5, include_domains=policy.preferred_domains)))
+        else:
+            tasks.append(("web", self.tavily.search(query, max_results=5)))
+
+        # 2. Wikipedia search if enabled
+        if self.wikipedia:
+            tasks.append(("web", self.wikipedia.search(query, max_results=3)))
+
+        # 3. GitHub search for software and tech claims
+        if self.github and claim_type in ("version", "cybersecurity", "product_availability"):
+            tasks.append(("api", self.github.search(query, max_results=2)))
+
+        # 4. Crossref academic search for scientific/health claims
+        if self.academic and claim_type in ("scientific_findings", "public_health"):
+            tasks.append(("academic", self.academic.search(query, max_results=2)))
+
+        results = []
+        if tasks:
+            task_names, coros = zip(*tasks)
+            completed = await asyncio.gather(*coros, return_exceptions=True)
+            for name, res in zip(task_names, completed):
+                if isinstance(res, list):
+                    for r in res:
+                        if isinstance(r, dict):
+                            if "source_type" not in r:
+                                r["source_type"] = name
+                            results.append(r)
+                elif isinstance(res, Exception):
+                    logger.debug("MultiSource search error for %s: %s", name, res)
+
+        return results
+
+
 class ClaimVerifier:
     """Verifies factual claims against live web evidence using an LLM judge with fallback heuristics."""
 
@@ -263,6 +429,7 @@ class ClaimVerifier:
         concurrency_cap: int = 5,
     ):
         self.tavily_client = tavily_client or TavilySearchClient()
+        self.multi_source_client = MultiSourceSearchClient(tavily_client=self.tavily_client)
         self.judge_llm = judge_llm or llm_client or OpenAILLMClient(request_type="judging")
         self.concurrency_cap = concurrency_cap
         self._semaphore = asyncio.Semaphore(concurrency_cap)
@@ -318,16 +485,13 @@ class ClaimVerifier:
         async with self._semaphore:
             query = self._build_search_query(claim)
 
-            # Step 1: Tavily search
+            # Step 1: Multi-source search (Tavily Web + optional Wikipedia, GitHub, Crossref)
             try:
-                if policy and policy.verification_mode == "enforce" and policy.preferred_domains:
-                    raw_results = await self.tavily_client.search(
-                        query, max_results=5, include_domains=policy.preferred_domains
-                    )
-                else:
-                    raw_results = await self.tavily_client.search(query, max_results=5)
+                raw_results = await self.multi_source_client.search_all(
+                    query, claim_type=claim.type, policy=policy, entities=claim.entities
+                )
             except Exception as e:
-                logger.error("Tavily search failed for claim %s: %s. Returning unverifiable.", claim.id, e)
+                logger.error("Multi-source search failed for claim %s: %s. Returning unverifiable.", claim.id, e)
                 claim.verdict = "unverifiable"
                 claim.explanation = f"Search retrieval failed or service was unreachable: {e}"
                 claim.sources = []
@@ -343,12 +507,13 @@ class ClaimVerifier:
                 claim.correction = None
                 return claim
 
-            # Step 2: Validate and score sources
+            # Step 2: Validate and score sources with source_type multipliers
             scored_sources: List[Source] = []
             for item in raw_results:
                 url = item.get("url") or ""
                 snippet = item.get("content") or item.get("snippet") or ""
                 published = item.get("published_date") or item.get("published")
+                source_type = item.get("source_type", "web")
                 if url and snippet and is_safe_url(url):
                     scored = self.source_validator.evaluate_source(
                         url=url,
@@ -356,6 +521,7 @@ class ClaimVerifier:
                         category=claim.type,
                         entities=claim.entities,
                         published=published,
+                        source_type=source_type,
                     )
                     scored_sources.append(scored)
 
@@ -394,8 +560,9 @@ class ClaimVerifier:
                 safe_url = escape(src.url, quote=True)
                 date_str = f" date=\"{escape(str(src.published), quote=True)}\"" if src.published else ""
                 auth_str = f" authority=\"{escape(str(src.authority_score), quote=True)}\""
+                type_str = f" type=\"{escape(str(src.source_type), quote=True)}\""
                 evidence_blocks.append(
-                    f"<source index=\"{i}\" url=\"{safe_url}\"{date_str}{auth_str}>\n"
+                    f"<source index=\"{i}\" url=\"{safe_url}\"{type_str}{date_str}{auth_str}>\n"
                     f"{escape(src.snippet)}\n"
                     f"</source>"
                 )

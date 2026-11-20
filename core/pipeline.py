@@ -18,13 +18,15 @@ from core.models import (
 from core.extractor import ClaimExtractor
 from core.triage import triage_claims
 from core.verifier import ClaimVerifier
-from core.scorer import calculate_score
+from core.scorer import calculate_score, compute_score_dimensions, calculate_flip_probability, calculate_recommended_interval
 from core.cache import ClaimCacheBase, get_cache, single_flight
 from core.metrics import metrics
 from core.policy_models import PolicyConfig
 from core.policies import cached_result_is_eligible, evaluate_policy_result
 from core.history import record_claims
 from core.persistence import SQLiteFeatureStore
+from core.categories import category_registry
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -248,6 +250,40 @@ class FreshGatePipeline:
                 verified = await self.verifier.verify_claim(c, policy=policy) if policy else await self.verifier.verify_claim(c)
                 verified.score = calculate_score(verified)
                 verified.cached = False
+
+                # Phase 1 & 3: Populate temporal and predictive fields
+                # Use category registry to get half-life and curve if not already set
+                cat_def = category_registry.get(verified.type)
+                if verified.freshness_half_life_seconds is None and cat_def.freshness_half_life_seconds is not None:
+                    verified.freshness_half_life_seconds = cat_def.freshness_half_life_seconds
+                if verified.degradation_curve == "exponential" and cat_def.degradation_curve is not None:
+                    verified.degradation_curve = cat_def.degradation_curve
+
+                # Set last_verified_at to now
+                verified.last_verified_at = datetime.now(timezone.utc).isoformat()
+
+                # Phase 3: Compute predictive indicators
+                dimensions = compute_score_dimensions(verified)
+                verified.predicted_flip_probability = dimensions.get("predicted_flip_probability")
+                verified.recommended_check_interval = dimensions.get("recommended_check_interval")
+                # Volatility score and evidence gap should be set by extractor, but compute here if missing
+                if verified.volatility_score == 0.5 and cat_def.volatility_pattern is not None:
+                    # Default based on category volatility
+                    verified.volatility_score = 0.8 if cat_def.is_volatile else 0.2
+                if verified.evidence_gap == 0.5:
+                    # Estimate based on number of sources
+                    num_sources = len(verified.sources)
+                    verified.evidence_gap = max(0.1, min(0.9, 1.0 - (num_sources / 5.0)))
+                # Temporal stability
+                if verified.temporal_stability is None:
+                    temporal_decay = dimensions.get("temporal_decay", 1.0)
+                    if temporal_decay > 0.8:
+                        verified.temporal_stability = "high"
+                    elif temporal_decay > 0.5:
+                        verified.temporal_stability = "medium"
+                    else:
+                        verified.temporal_stability = "low"
+
                 if cache_enabled:
                     ttl_override = policy.cache_ttl_seconds.get(c.type) if policy else None
                     await asyncio.to_thread(

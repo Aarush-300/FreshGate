@@ -5,12 +5,13 @@ import {
   Activity, AlertTriangle, ArrowDownRight, ArrowUpRight, BookOpen, Check, ChevronDown,
   ChevronRight, CircleHelp, Clock3, FileClock, FlaskConical, Gauge, History, Leaf,
   LoaderCircle, LockKeyhole, Menu, Plus, RefreshCw, Search, Settings2, ShieldCheck,
-  Sprout, Sun, Moon, Eye, EyeOff, Trash2, X,
+  Sprout, Sun, Moon, Eye, EyeOff, Trash2, X, Upload, FileText, Download, Mail,
 } from "lucide-react";
 import { api, jsonBody, patchBody, putBody, deleteReq, setUnauthorizedHandler } from "./api";
 import type {
   ApiStatus, AuditRecord, Benchmark, Category, Claim, Health, Policy, RecordValue, Replay,
   ProviderOption, Source, VerificationResult, WatchAlert, WatchClaim, User, UserSettings,
+  EmailScheduleConfig,
 } from "./types";
 
 type Section = "verify" | "system" | "benchmarks" | "audits" | "policies" | "watchtower" | "replay" | "profile";
@@ -866,6 +867,7 @@ function ProfileView({ user, onSaved }: { user: User; onSaved: (settings: UserSe
 
 function VerifyView({ user, policies, onMonitor }: { user?: User | null; policies: Policy[]; onMonitor: (claim: Claim, result: VerificationResult) => Promise<void> }) {
   const [answer, setAnswer] = useState("");
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [policyId, setPolicyId] = useState("");
   const [result, setResult] = useState<VerificationResult | null>(null);
   const [selectedClaimId, setSelectedClaimId] = useState<string | null>(null);
@@ -890,8 +892,8 @@ function VerifyView({ user, policies, onMonitor }: { user?: User | null; policie
       setError("Finish your Profile before checking responses.");
       return;
     }
-    if (!answer.trim()) {
-      setError("Paste a response before starting a check.");
+    if (!answer.trim() && !selectedFile) {
+      setError("Paste a response or attach a document before starting a check.");
       return;
     }
     setBusy(true);
@@ -900,10 +902,22 @@ function VerifyView({ user, policies, onMonitor }: { user?: User | null; policie
     setResult(null);
     setSelectedClaimId(null);
     try {
-      const data = await api<VerificationResult>("/verify", jsonBody({
-        answer,
-        ...(policyId ? { policy_id: policyId } : {}),
-      }));
+      let data: VerificationResult;
+      if (selectedFile) {
+        const formData = new FormData();
+        if (answer.trim()) formData.append("answer", answer.trim());
+        formData.append("file", selectedFile);
+        if (policyId) formData.append("policy_id", policyId);
+        data = await api<VerificationResult>("/verify/upload", {
+          method: "POST",
+          body: formData,
+        });
+      } else {
+        data = await api<VerificationResult>("/verify", jsonBody({
+          answer,
+          ...(policyId ? { policy_id: policyId } : {}),
+        }));
+      }
       setResult(data);
       setSelectedClaimId(data.claims[0]?.id ?? null);
       setMessage(data.summary.message ?? "Verification finished.");
@@ -968,9 +982,50 @@ function VerifyView({ user, policies, onMonitor }: { user?: User | null; policie
             value={answer}
             onChange={(event) => setAnswer(event.target.value)}
             maxLength={50000}
-            placeholder="Paste an AI response to check its freshness and factual claims…"
+            placeholder="Paste an AI response or attach a document below to check its freshness and factual claims…"
             aria-describedby="response-help"
           />
+
+          <div className="file-upload-section">
+            {!selectedFile ? (
+              <label className="file-drop-area">
+                <input
+                  type="file"
+                  accept=".pdf,.txt,.md,.json,.docx,.csv"
+                  style={{ display: "none" }}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) {
+                      if (file.size > 10 * 1024 * 1024) {
+                        setError("File size exceeds 10MB limit.");
+                        return;
+                      }
+                      setSelectedFile(file);
+                      setError(null);
+                    }
+                  }}
+                />
+                <span className="file-drop-prompt">
+                  <Upload size={15} /> <strong>Attach document</strong> (PDF, DOCX, TXT, MD, JSON · up to 10MB)
+                </span>
+              </label>
+            ) : (
+              <div className="file-selected-badge">
+                <FileText size={15} />
+                <span className="file-name">{selectedFile.name}</span>
+                <span className="file-size">({(selectedFile.size / 1024).toFixed(1)} KB)</span>
+                <button
+                  type="button"
+                  className="icon-button"
+                  title="Remove file"
+                  aria-label="Remove attached file"
+                  onClick={() => setSelectedFile(null)}
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            )}
+          </div>
 
           <div id="response-help" className="field-hint">
             {user?.settings?.is_complete ? (
@@ -1005,7 +1060,7 @@ function VerifyView({ user, policies, onMonitor }: { user?: User | null; policie
             <button
               className="primary-button"
               type="submit"
-              disabled={busy || !answer.trim() || !user?.settings?.is_complete}
+              disabled={busy || (!answer.trim() && !selectedFile) || !user?.settings?.is_complete}
             >
               {busy ? <><LoaderCircle size={16} className="spin" /> Checking</> : <>Check response <ArrowUpRight size={16} /></>}
             </button>
@@ -1089,7 +1144,34 @@ function ClaimFolio({ claim, onMonitor }: { claim: Claim; onMonitor: () => void 
     <section className="claim-folio">
       <div className="folio-margin"><span className="folio-caption">SELECTED CLAIM</span><span className="folio-id">{claim.id.slice(0, 8)}</span></div>
       <div className="folio-main"><div className="claim-folio-head"><h3>{claim.text}</h3><button className="text-button" onClick={onMonitor}><Clock3 size={15} /> Monitor claim</button></div>
-        <div className="claim-meta"><span>{display(claim.type)}</span><StatusMark value={claim.verdict} /><span>Score {claim.score ?? "—"}</span><span>Checked {dateTime(claim.verification_timestamp)}</span></div>
+        <div className="claim-meta">
+          <span>{display(claim.type)}</span>
+          <StatusMark value={claim.verdict} />
+          <span>Score {claim.score ?? "—"}</span>
+          <span>Checked {dateTime(claim.verification_timestamp ?? claim.last_verified_at)}</span>
+        </div>
+        <div className="claim-meta predictive-indicators-bar">
+          {claim.temporal_stability && (
+            <span className={`predictive-indicator-tag stability-${claim.temporal_stability}`}>
+              Stability: {display(claim.temporal_stability)}
+            </span>
+          )}
+          {claim.predicted_flip_probability != null && (
+            <span className="predictive-indicator-tag">
+              Flip Risk: {Math.round(claim.predicted_flip_probability * 100)}%
+            </span>
+          )}
+          {claim.recommended_check_interval != null && (
+            <span className="predictive-indicator-tag">
+              Interval: {Math.round(claim.recommended_check_interval / 3600)}h
+            </span>
+          )}
+          {claim.degradation_curve && (
+            <span className="predictive-indicator-tag">
+              Curve: {display(claim.degradation_curve)}
+            </span>
+          )}
+        </div>
         {claim.explanation && <p className="claim-explanation">{claim.explanation}</p>}
         <div className="source-notes"><div className="notes-heading"><h4>Source notes</h4><span>{sources.length ? `${sources.length} ${sources.length === 1 ? "source" : "sources"}` : "No sources returned"}</span></div>
           {sources.length ? sources.map((source, index) => <SourceNote key={`${source.url}-${index}`} source={source} index={index + 1} />) : <p className="muted-line">The verification returned no source citations for this claim.</p>}
@@ -1105,7 +1187,12 @@ function SourceNote({ source, index }: { source: Source; index: number }) {
       <span className="source-number">{new Intl.NumberFormat(undefined, { minimumIntegerDigits: 2, useGrouping: false }).format(index)}</span>
       <div className="source-body"><a href={source.url} target="_blank" rel="noreferrer">{source.domain || source.url}<ArrowUpRight size={13} /></a>
         <p>{source.snippet || "No source excerpt was returned."}</p>
-        <div className="source-meta"><span>{source.is_primary ? "Primary source" : "Evidence source"}</span><span>Published {dateTime(source.published)}</span>{source.authority_score !== undefined && <span>Authority {new Intl.NumberFormat(undefined, { style: "percent", maximumFractionDigits: 0 }).format(source.authority_score)}</span>}</div>
+        <div className="source-meta">
+          <span>{source.is_primary ? "Primary source" : "Evidence source"}</span>
+          {source.source_type && <span className="source-type-pill">{display(source.source_type).toUpperCase()}</span>}
+          <span>Published {dateTime(source.published)}</span>
+          {source.authority_score !== undefined && <span>Authority {new Intl.NumberFormat(undefined, { style: "percent", maximumFractionDigits: 0 }).format(source.authority_score)}</span>}
+        </div>
       </div>
     </article>
   );
@@ -1489,11 +1576,66 @@ function WatchtowerView({ claims, alerts, categories, policies, onRefresh, onErr
   const [policyId, setPolicyId] = useState("");
   const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null);
 
+  // Phase 6: Email monitoring schedule state
+  const [emailRecipient, setEmailRecipient] = useState("");
+  const [emailCron, setEmailCron] = useState("0 9 * * *");
+  const [emailBusy, setEmailBusy] = useState(false);
+  const [emailNotice, setEmailNotice] = useState<string | null>(null);
+
   const volatileCategories = useMemo(() => categories.filter((item) => item.volatile), [categories]);
 
   useEffect(() => {
     if (!category && volatileCategories.length) setCategory(volatileCategories[0].name);
   }, [category, volatileCategories]);
+
+  useEffect(() => {
+    void api<{ schedule: EmailScheduleConfig }>("/api/watchtower/email/schedule")
+      .then((data) => {
+        if (data?.schedule?.recipient_email) {
+          setEmailRecipient(data.schedule.recipient_email);
+        }
+        if (data?.schedule?.cron_expression) {
+          setEmailCron(data.schedule.cron_expression);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const saveEmailSchedule = async () => {
+    setEmailBusy(true);
+    setEmailNotice(null);
+    try {
+      await api("/api/watchtower/email/schedule", jsonBody({
+        enabled: true,
+        cron_expression: emailCron,
+        recipient_email: emailRecipient.trim(),
+      }));
+      setEmailNotice("Email monitoring schedule saved successfully.");
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "Failed to save email schedule.");
+    } finally {
+      setEmailBusy(false);
+    }
+  };
+
+  const sendTestEmail = async () => {
+    setEmailBusy(true);
+    setEmailNotice(null);
+    try {
+      const res = await api<{ sent: boolean; recipient: string }>("/api/watchtower/email/test", jsonBody({
+        recipient_email: emailRecipient.trim() || undefined,
+      }));
+      if (res.sent) {
+        setEmailNotice(`Test report sent successfully to ${res.recipient}!`);
+      } else {
+        onError("Could not send test email. Ensure SMTP credentials are configured on the server.");
+      }
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "Failed to trigger test email.");
+    } finally {
+      setEmailBusy(false);
+    }
+  };
 
   const addClaim = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault(); setBusy("adding"); onError(null); setNotice(null);
@@ -1583,7 +1725,19 @@ function WatchtowerView({ claims, alerts, categories, policies, onRefresh, onErr
                   <span className={`watch-pulse ${claim.enabled ? "enabled" : "disabled"}`} />
                   <div>
                     <h3>{claim.claim_text}</h3>
-                    <span>{display(claim.category)} · Next check {dateTime(claim.next_check_at)}</span>
+                    <div className="watch-meta-tags">
+                      <span>{display(claim.category)} · Next check {dateTime(claim.next_check_at)}</span>
+                      {claim.predicted_flip_probability != null && (
+                        <span className="predictive-indicator-tag">
+                          Flip Risk: {Math.round(claim.predicted_flip_probability * 100)}%
+                        </span>
+                      )}
+                      {claim.volatility_score != null && (
+                        <span className="predictive-indicator-tag">
+                          Volatility: {Math.round(claim.volatility_score * 100)}%
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
                 <div className="watch-state">
@@ -1644,6 +1798,58 @@ function WatchtowerView({ claims, alerts, categories, policies, onRefresh, onErr
             ))}
           </div>
         )}
+      </section>
+
+      <section className="folio-panel watch-panel email-schedule-panel">
+        <div className="list-heading">
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <Mail size={17} />
+            <h2>Email Monitoring Reports</h2>
+          </div>
+          <span className="panel-index">DIGESTS</span>
+        </div>
+        <p className="panel-copy">
+          Configure automated email digest reports delivering active alerts, claim flip probabilities, and verification summaries.
+        </p>
+        <div className="email-config-grid">
+          <label className="field-group">
+            <span className="field-label">Recipient email</span>
+            <input
+              type="email"
+              value={emailRecipient}
+              onChange={(e) => setEmailRecipient(e.target.value)}
+              placeholder="alerts-recipient@example.com"
+            />
+          </label>
+          <label className="field-group">
+            <span className="field-label">Delivery schedule</span>
+            <select value={emailCron} onChange={(e) => setEmailCron(e.target.value)}>
+              <option value="0 9 * * *">Daily at 9:00 AM UTC</option>
+              <option value="0 */6 * * *">Every 6 hours</option>
+              <option value="0 */12 * * *">Every 12 hours</option>
+              <option value="0 9 * * 1">Weekly on Monday</option>
+            </select>
+          </label>
+          <div className="email-schedule-actions">
+            <button
+              className="primary-button"
+              type="button"
+              disabled={emailBusy || !emailRecipient.trim()}
+              onClick={() => void saveEmailSchedule()}
+            >
+              {emailBusy ? <LoaderCircle size={15} className="spin" /> : <Check size={15} />} Save schedule
+            </button>
+            <button
+              className="secondary-button"
+              type="button"
+              disabled={emailBusy || !emailRecipient.trim()}
+              onClick={() => void sendTestEmail()}
+            >
+              {emailBusy ? <LoaderCircle size={15} className="spin" /> : <Mail size={15} />} Send test report
+            </button>
+          </div>
+        </div>
+        {emailNotice && <InlineNotice variant="success" onDismiss={() => setEmailNotice(null)}>{emailNotice}</InlineNotice>}
       </section>
 
       <section className="folio-panel watch-panel alerts-panel">
@@ -1780,6 +1986,57 @@ function ReplayView({ claims, initialFingerprint }: { claims: WatchClaim[]; init
               </>
             )}
           </section>
+          {snapshots.length > 0 && (
+            <section className="folio-panel export-panel">
+              <div className="list-heading">
+                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <Download size={17} />
+                  <h2>Executive Summary & Knowledge Base Export</h2>
+                </div>
+                <span className="panel-index">REPORTS</span>
+              </div>
+              <p className="panel-copy">
+                Export ISO 25964-compliant knowledge base entries and comprehensive executive verification reports for compliance and auditing.
+              </p>
+              <div className="export-actions-grid">
+                <a
+                  href={`/api/export/claim/${encodeURIComponent(fingerprint)}/knowledge-base?format=json`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="secondary-button"
+                  download={`freshgate-kb-${fingerprint.slice(0, 8)}.json`}
+                >
+                  <Download size={14} /> Export JSON
+                </a>
+                <a
+                  href={`/api/export/claim/${encodeURIComponent(fingerprint)}/knowledge-base?format=xml`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="secondary-button"
+                  download={`freshgate-kb-${fingerprint.slice(0, 8)}.xml`}
+                >
+                  <Download size={14} /> Export XML (ISO 25964)
+                </a>
+                <a
+                  href={`/api/export/claim/${encodeURIComponent(fingerprint)}/knowledge-base?format=csv`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="secondary-button"
+                  download={`freshgate-kb-${fingerprint.slice(0, 8)}.csv`}
+                >
+                  <Download size={14} /> Export CSV
+                </a>
+                <a
+                  href={`/api/export/claim/${encodeURIComponent(fingerprint)}/full-report?format=html`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="primary-button"
+                >
+                  <BookOpen size={14} /> Full Executive Report (HTML)
+                </a>
+              </div>
+            </section>
+          )}
           {comparison && <ComparisonView value={comparison} />}
         </>
       )}
