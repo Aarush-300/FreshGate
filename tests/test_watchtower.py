@@ -194,3 +194,66 @@ async def test_unresolved_transition_does_not_create_duplicate_alert(watch_store
     await service.check_now(claim["id"])
     await service.check_now(claim["id"])
     assert len(watch_store.list_alerts()) == 1
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["sqlite", "mongo"])
+async def test_email_includes_baselines_pending_latest_and_all_pages(tmp_path, backend):
+    from unittest.mock import AsyncMock
+    from core.config import FreshGateConfig
+    from core.email import EmailService
+    if backend == "mongo":
+        import mongomock
+        from core.mongo_store import MongoFeatureStore, _ANY
+        root = MongoFeatureStore(owner_id=_ANY, db=mongomock.MongoClient().db)
+    else:
+        root = SQLiteFeatureStore(str(tmp_path / "digest.db"))
+    store = root.for_owner("alice")
+    rows = []
+    for index in range(101):
+        rows.append(store.save_monitored_claim({
+            "claim_text": f"Version claim {index}", "category": "version", "monitoring_interval": 3600,
+            "last_verdict": "confirmed" if index else None,
+            "last_score": 90 if index else None,
+            "last_successful_at": 100 if index else None,
+            "metadata": {"last_evidence": [{"url": "https://example.com/baseline", "snippet": "Baseline evidence"}]},
+        }))
+    store.save_snapshot({
+        "claim_fingerprint": rows[1]["claim_fingerprint"],
+        "claim_text": rows[1]["claim_text"], "category": "version",
+        "verdict": "contradicted", "freshness_score": 12, "checked_at": 200,
+    })
+    alert = store.save_alert({"monitored_claim_id": rows[1]["id"],
+                              "previous_verdict": "confirmed", "current_verdict": "contradicted",
+                              "reason": "Updated evidence", "transition_key": "change"})
+    store.acknowledge_alert(alert["id"])
+    if backend == "mongo":
+        root.for_owner("bob").save_monitored_claim({"claim_text": "Private Bob claim", "category": "version", "monitoring_interval": 3600})
+    config = FreshGateConfig(brevo_api_key="fake-test-credential")
+    email = EmailService(config)
+    email.send_html = AsyncMock(return_value=True)
+    service = WatchtowerService(store=root, config=config)
+    service._email_service = email
+    assert await service.send_scheduled_report("alice", "alice@example.com")
+    html = email.send_html.call_args.args[2]
+    assert html.count('class="claim-text"') == 101
+    assert "No claims are currently" not in html
+    assert "Pending" in html
+    assert "12/100" in html
+    assert "1970-01-01T00:03:20+00:00" in html
+    assert "https://example.com/baseline" in html
+    assert "Updated evidence" not in html
+    assert "Private Bob claim" not in html
+
+
+@pytest.mark.asyncio
+async def test_failed_digest_does_not_advance_schedule(watch_store):
+    from unittest.mock import AsyncMock, Mock
+    service = make_service(watch_store, FakePipeline(make_result()))
+    service._email_service = Mock()
+    service._email_service._is_configured.return_value = True
+    service.send_scheduled_report = AsyncMock(return_value=False)
+    schedule = {"enabled": True, "next_run_at": 1, "interval_seconds": 60,
+                "recipient_email": "alice@example.com"}
+    watch_store.update_user_metadata("alice", {"email_schedule": schedule})
+    assert await service.run_due_email_reports() == []
+    assert watch_store.get_user_metadata("alice")["email_schedule"] == schedule

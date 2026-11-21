@@ -253,10 +253,6 @@ async def set_email_schedule(request: EmailScheduleRequest, req: Request):
     """Configure scheduled email reports for watchtower."""
     user, store = _scoped(req)
 
-    # Store email schedule in user metadata or config
-    # For now, update the watchtower service config
-    watchtower_service.config.admin_email = request.recipient_email or watchtower_service.config.admin_email
-
     interval_seconds = request.interval_seconds
     if not interval_seconds and request.custom_amount and request.custom_unit:
         unit = request.custom_unit.lower()

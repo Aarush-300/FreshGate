@@ -423,11 +423,11 @@ class EmailService:
                 <div class="claim">
                     <div class="claim-header">
                         <span class="claim-type">{claim.type}</span>
-                        <span class="claim-score {score_class}">{score}/100</span>
+                        <span class="claim-score {score_class}">{str(score) + '/100' if claim.score is not None else 'Pending'}</span>
                     </div>
                     <div class="claim-text">{claim.text}</div>
                     <div class="claim-meta">
-                        <span><span class="verdict-badge {verdict_class}">{claim.verdict or 'unknown'}</span></span>
+                        <span><span class="verdict-badge {verdict_class}">{claim.verdict or 'pending'}</span></span>
                         <span>📅 {claim.last_verified_at or 'Never'}</span>
                         <span>🔮 Flip prob: {getattr(claim, 'predicted_flip_probability', 'N/A')}</span>
                     </div>

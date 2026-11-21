@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Any, Callable, Awaitable, Optional
 
 from core.config import FreshGateConfig, get_config
@@ -391,39 +392,60 @@ class WatchtowerService:
 
         # Get all monitored claims for this owner
         store = self.store.for_owner(owner_id) if (owner_id and hasattr(self.store, "for_owner")) else self.store
-        monitored = await asyncio.to_thread(store.list_monitored_claims)
+        # Store listings are paginated; a digest must include every enrolled claim.
+        monitored = []
+        while True:
+            page = await asyncio.to_thread(store.list_monitored_claims, 100, len(monitored))
+            monitored.extend(page)
+            if len(page) < 100:
+                break
 
-        # Get latest verification for each claim
         claims = []
         alerts = []
-        if monitored:
-            for row in monitored:
-                # Get latest snapshot
-                snapshot = await asyncio.to_thread(store.get_latest_snapshot, row["claim_fingerprint"])
-                if snapshot:
-                    # Reconstruct claim from snapshot
-                    claim = Claim(
-                        id=row["id"],
-                        text=snapshot["claim_text"],
-                        type=snapshot["category"],
-                        verdict=snapshot["verdict"],
-                        score=snapshot["freshness_score"],
-                        sources=[Source(**s) for s in snapshot.get("sources", [])],
-                        last_verified_at=snapshot.get("checked_at"),
-                        volatility_score=row.get("volatility_score", 0.5),
-                        evidence_gap=row.get("evidence_gap", 0.5),
-                        predicted_flip_probability=row.get("predicted_flip_probability"),
-                        recommended_check_interval=row.get("recommended_check_interval"),
-                    )
-                    claims.append(claim)
+        for row in monitored:
+            snapshot = await asyncio.to_thread(store.get_latest_snapshot, row["claim_fingerprint"])
+            metadata = row.get("metadata") or {}
+            # Enrollment stores a baseline on the monitored row without creating a
+            # snapshot. Failed checks also leave the last successful result intact.
+            verified_at = row.get("last_successful_at") or row.get("last_checked_at")
+            use_snapshot = snapshot is not None and (
+                row.get("last_verdict") is None
+                or (snapshot.get("checked_at") or 0) >= (verified_at or 0)
+            )
+            if use_snapshot:
+                verdict = snapshot.get("verdict")
+                score = snapshot.get("freshness_score")
+                sources = snapshot.get("sources", [])
+                verified_at = snapshot.get("checked_at")
+            else:
+                verdict = row.get("last_verdict")
+                score = row.get("last_score")
+                sources = metadata.get("last_evidence", [])
+            if isinstance(verified_at, (int, float)):
+                verified_at = datetime.fromtimestamp(verified_at, timezone.utc).isoformat()
+            claims.append(Claim(
+                id=row["id"], text=row["claim_text"], type=row["category"],
+                verdict=verdict, score=score,
+                sources=[Source(**source) for source in sources],
+                last_verified_at=verified_at,
+                volatility_score=row.get("volatility_score", 0.5),
+                evidence_gap=row.get("evidence_gap", 0.5),
+                predicted_flip_probability=row.get("predicted_flip_probability"),
+                recommended_check_interval=row.get("recommended_check_interval"),
+            ))
 
-                # Get recent alerts
-                claim_alerts = await asyncio.to_thread(store.get_alerts_for_claim, row["id"], limit=5)
-                for alert in claim_alerts:
-                    alerts.append({
-                        "title": f"Verdict Change: {alert['previous_verdict']} → {alert['current_verdict']}",
-                        "message": alert["reason"],
-                    })
+        # Only unacknowledged alerts belong in the active-alert summary.
+        offset = 0
+        while True:
+            page = await asyncio.to_thread(store.list_alerts, 100, offset, True)
+            for alert in page:
+                alerts.append({
+                    "title": f"Verdict Change: {alert['previous_verdict']} ? {alert['current_verdict']}",
+                    "message": alert["reason"],
+                })
+            offset += len(page)
+            if len(page) < 100:
+                break
 
         # Send report to target recipient or admin email
         target_recipient = recipient_email or self.config.admin_email
@@ -495,8 +517,9 @@ class WatchtowerService:
                         owner_id=user_id,
                         recipient_email=recipient,
                     )
-                    if success:
-                        sent_recipients.append(recipient)
+                    if not success:
+                        continue
+                    sent_recipients.append(recipient)
                     await asyncio.to_thread(
                         fs.update_user_metadata,
                         user_id,
