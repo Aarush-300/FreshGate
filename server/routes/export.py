@@ -6,9 +6,12 @@ ISO 25964-compliant knowledge base exports.
 
 import asyncio
 import logging
+from datetime import datetime, timezone
+from html import escape
+from urllib.parse import urlsplit
 from typing import Literal, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from core.history import (
@@ -32,7 +35,7 @@ async def get_executive_summary(
     limit: int = Query(default=100, ge=1, le=1000),
 ):
     """Get executive summary of claim verification history."""
-    user, store = current_user(req), get_feature_store().for_owner(current_user(req)["_id"])
+    store = get_feature_store().for_owner(current_user(req)["_id"])
     result = await asyncio.to_thread(export_executive_summary, fingerprint, limit=limit, store=store)
     return result
 
@@ -44,7 +47,7 @@ async def get_temporal_trends(
     limit: int = Query(default=100, ge=1, le=1000),
 ):
     """Get temporal trends with decay visualization data."""
-    user, store = current_user(req), get_feature_store().for_owner(current_user(req)["_id"])
+    store = get_feature_store().for_owner(current_user(req)["_id"])
     result = await asyncio.to_thread(export_temporal_trends, fingerprint, limit=limit, store=store)
     return result
 
@@ -55,7 +58,7 @@ async def get_prediction_accuracy(
     req: Request,
 ):
     """Get prediction accuracy comparison for a claim."""
-    user, store = current_user(req), get_feature_store().for_owner(current_user(req)["_id"])
+    store = get_feature_store().for_owner(current_user(req)["_id"])
     result = await asyncio.to_thread(export_prediction_accuracy, fingerprint, store=store)
     return result
 
@@ -65,10 +68,16 @@ async def get_knowledge_base(
     fingerprint: str,
     req: Request,
     format: Literal["json", "xml", "csv"] = Query(default="json"),
+    download: bool = False,
 ):
     """Export ISO 25964-compliant knowledge base entry."""
-    user, store = current_user(req), get_feature_store().for_owner(current_user(req)["_id"])
+    store = get_feature_store().for_owner(current_user(req)["_id"])
     result = await asyncio.to_thread(export_knowledge_base, fingerprint, format=format, store=store)
+    if download and format in ("xml", "csv"):
+        if format not in result:
+            raise HTTPException(404, "No verification history found.")
+        mime = "application/xml" if format == "xml" else "text/csv"
+        return Response(result[format], media_type=mime, headers={"Content-Disposition": "attachment"})
     return result
 
 
@@ -77,9 +86,10 @@ async def get_full_report(
     fingerprint: str,
     req: Request,
     format: Literal["json", "html"] = Query(default="json"),
+    download: bool = False,
 ):
     """Get comprehensive report combining all export types."""
-    user, store = current_user(req), get_feature_store().for_owner(current_user(req)["_id"])
+    store = get_feature_store().for_owner(current_user(req)["_id"])
 
     # Gather all export data
     executive = await asyncio.to_thread(export_executive_summary, fingerprint, limit=100, store=store)
@@ -99,6 +109,8 @@ async def get_full_report(
     if format == "html":
         # Generate HTML report
         html = _generate_html_report(full_report)
+        if download:
+            return Response(html, media_type="text/html", headers={"Content-Disposition": 'attachment; filename="freshgate-report.html"'})
         return {"html": html, "filename": f"freshgate-report-{fingerprint[:8]}.html"}
 
     return full_report
@@ -163,8 +175,8 @@ def _generate_html_report(report: dict) -> str:
         f"""
                 <div class="header">
                     <h1>📊 FreshGate Verification Report</h1>
-                    <p>Claim: {kb.get('claim_text', 'Unknown')[:100]}...</p>
-                    <p>Category: {kb.get('category', 'Unknown')} • Generated: {__import__('datetime').datetime.fromtimestamp(report.get('generated_at', 0)).strftime('%B %d, %Y %H:%M UTC')}</p>
+                    <p>Claim: {escape(str(kb.get('claim_text') or 'Unknown')[:100])}...</p>
+                    <p>Category: {escape(str(kb.get('category', 'Unknown')))} • Generated: {datetime.fromtimestamp(report.get('generated_at', 0), timezone.utc).strftime('%B %d, %Y %H:%M UTC')}</p>
                 </div>
                 <div class="content">
         """,
@@ -200,7 +212,7 @@ def _generate_html_report(report: dict) -> str:
                     <div style="display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 20px;">
         """)
         for verdict, count in verdict_dist.items():
-            html_parts.append(f'<span class="verdict-badge {verdict}">{verdict.replace("_", " ").title()}: {count}</span>')
+            html_parts.append(f'<span class="verdict-badge {escape(str(verdict))}">{escape(str(verdict.replace("_", " ").title()))}: {escape(str(count))}</span>')
         html_parts.append("</div>")
 
     html_parts.append("</div>")
@@ -209,16 +221,16 @@ def _generate_html_report(report: dict) -> str:
     html_parts.append(f"""
                 <div class="section">
                     <h2>📄 Knowledge Base Entry</h2>
-                    <p><strong>Claim:</strong> {kb.get('claim_text', 'N/A')}</p>
-                    <p><strong>Category:</strong> {kb.get('category', 'N/A')}</p>
-                    <p><strong>Current Verdict:</strong> <span class="verdict-badge {kb.get('current_verdict', 'unknown')}">{kb.get('current_verdict', 'unknown').replace('_', ' ').title()}</span></p>
-                    <p><strong>Current Score:</strong> {kb.get('current_score', 'N/A')}/100</p>
-                    <p><strong>Last Verified:</strong> {__import__('datetime').datetime.fromtimestamp(kb.get('last_verified', 0)).strftime('%B %d, %Y %H:%M UTC') if kb.get('last_verified') else 'N/A'}</p>
-                    <p><strong>Confidence:</strong> {kb.get('confidence', 'N/A')}</p>
+                    <p><strong>Claim:</strong> {escape(str(kb.get('claim_text', 'N/A')))}</p>
+                    <p><strong>Category:</strong> {escape(str(kb.get('category', 'N/A')))}</p>
+                    <p><strong>Current Verdict:</strong> <span class="verdict-badge {escape(str(kb.get('current_verdict', 'unknown')))}">{escape(str(kb.get('current_verdict', 'unknown').replace('_', ' ').title()))}</span></p>
+                    <p><strong>Current Score:</strong> {escape(str(kb.get('current_score', 'N/A')))}/100</p>
+                    <p><strong>Last Verified:</strong> {datetime.fromtimestamp(kb.get('last_verified', 0), timezone.utc).strftime('%B %d, %Y %H:%M UTC') if kb.get('last_verified') else 'N/A'}</p>
+                    <p><strong>Confidence:</strong> {escape(str(kb.get('confidence', 'N/A')))}</p>
     """)
 
     if kb.get("explanation"):
-        html_parts.append(f'<p><strong>Explanation:</strong> {kb.get("explanation")}</p>')
+        html_parts.append(f'<p><strong>Explanation:</strong> {escape(str(kb.get("explanation")))}</p>')
 
     # Sources
     sources = kb.get("sources", [])
@@ -228,7 +240,16 @@ def _generate_html_report(report: dict) -> str:
                     <div class="source-list">
         """)
         for src in sources:
-            html_parts.append(f'<div class="source-item"><a href="{src.get("url", "#")}" target="_blank">{src.get("domain", "Unknown")}</a> — {src.get("snippet", "")[:150]}...</div>')
+            url = str(src.get("url") or "")
+            domain = escape(str(src.get("domain") or "Unknown"))
+            try:
+                parsed = urlsplit(url)
+                linkable = parsed.scheme in {"http", "https"} and bool(parsed.hostname)
+            except ValueError:
+                linkable = False
+            label = f'<a href="{escape(url)}" target="_blank" rel="noreferrer">{domain}</a>' if linkable else domain
+            snippet = escape(str(src.get("snippet") or "")[:150])
+            html_parts.append(f'<div class="source-item">{label} — {snippet}</div>')
         html_parts.append("</div>")
 
     html_parts.append("</div>")
@@ -255,12 +276,12 @@ def _generate_html_report(report: dict) -> str:
             score = item.get("freshness_score")
             verdict = item.get("verdict")
             if checked_at:
-                date_str = __import__('datetime').datetime.fromtimestamp(checked_at).strftime('%b %d, %Y %H:%M')
+                date_str = datetime.fromtimestamp(checked_at, timezone.utc).strftime('%b %d, %Y %H:%M')
                 html_parts.append(f"""
                         <div class="timeline-item">
                             <div class="timeline-date">{date_str}</div>
-                            <div class="timeline-score">Score: {score}/100</div>
-                            <div class="timeline-verdict"><span class="verdict-badge {verdict}">{verdict.replace('_', ' ').title()}</span></div>
+                            <div class="timeline-score">Score: {escape(str(score))}/100</div>
+                            <div class="timeline-verdict"><span class="verdict-badge {escape(str(verdict))}">{escape(str(verdict.replace('_', ' ').title()))}</span></div>
                         </div>
                 """)
 
@@ -274,7 +295,7 @@ def _generate_html_report(report: dict) -> str:
 
     predictions = report.get("prediction_accuracy", {})
     if predictions.get("note"):
-        html_parts.append(f'<p style="color: #666;">{predictions["note"]}</p>')
+        html_parts.append(f'<p style="color: #666;">{escape(str(predictions["note"]))}</p>')
     else:
         html_parts.append('<p>Prediction accuracy tracking requires historical predicted vs actual data.</p>')
 

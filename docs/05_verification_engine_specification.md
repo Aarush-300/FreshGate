@@ -1,66 +1,15 @@
-# FreshGate: Verification Engine Specification
+# From an answer to a verification result
 
-## 1. Claim Extraction Architecture
+1. **Extract statements.** The extractor asks the configured language model for factual claims, then parses and normalizes the response. It records extraction status, method, dropped candidates and fallback use. A heuristic path can recover some claims when model extraction degrades.
+2. **Select volatile claims.** Triage maps aliases to the category registry. Pricing, releases, leadership, law and product availability are examples of categories that change. A selected policy can narrow the categories further.
+3. **Resolve cached work.** The pipeline checks eligible cache entries before running live checks. Cache misses can run concurrently. In-flight coalescing reduces duplicate work within a matching request scope.
+4. **Retrieve and judge.** Each uncached check gets evidence, applies eligible-source rules and attempts a verdict. A search failure, an empty result set and conflicting evidence can produce different explanations even when the verdict is the same.
+5. **Score and record.** The pipeline assigns a freshness score, adds temporal indicators, evaluates the selected policy and attempts to save snapshots. History identifiers let the reader reopen a claim later.
 
-The Claim Extraction subsystem (`core/extractor.py`) is responsible for decomposing unstructured assistant responses into normalized, discrete atomic factual claims.
+## Reading the contract
 
-### 1.1 Atomic Decomposition Requirements
-- **Multi-Claim Splitting:** A sentence containing multiple factual statements (e.g. *"Python 3.12 is the latest release, and ChatGPT Plus costs $20/month"*) is split into discrete atomic objects.
-- **Table & List Parsing:** Markdown tables and bulleted lists are deconstructed row-by-row into standalone assertions.
-- **Entity Resolution:** Pronouns (*"he"*, *"it"*, *"they"*) are resolved to their explicit named entities so each claim is self-contained.
-- **Entity & Numeric Extraction:** Specific entities (e.g., `["AWS", "S3"]`), numerical values (`"$0.023 per GB"`), and temporal anchors (`"October 2023"`) are structured as discrete metadata fields.
+`summary.total` describes the extracted population. `summary.checked` describes the checked set, including eligible cache hits. `summary.stale` is the number classified as contradicted. `avg_score` averages available scores and can be null. Inspect the individual claims whenever an application decision depends on a specific fact.
 
-### 1.2 Normalization & Deduplication
-To prevent duplicate verification queries for identical claims expressed with minor punctuation or whitespace variations:
-```python
-clean = text.lower().strip()
-clean = re.sub(r"\s+", " ", clean)
-clean = clean.translate(str.maketrans("", "", string.punctuation))
-```
-Claims sharing normalized representations within a single response are deduplicated.
+Check the top-level and summary status before interpreting zeroes. A no-claims result, an extraction failure and a completed check with zero contradictions describe different outcomes. Partial extraction and insufficient evidence can also lead to warnings. Look at `verification_method`, `cached`, source records and the explanation when tracing an individual result.
 
----
-
-## 2. Category Registry & Volatility Triage
-
-The Category Registry (`core/categories.py`) provides an extensible framework for defining factual domains.
-
-### 2.1 Registered Volatile Categories
-| Category | Scope & Examples | Targeted Search Strategy | Default TTL |
-| :--- | :--- | :--- | :--- |
-| `pricing` | Subscription rates, token prices, cloud tiers | `"<entity> official pricing tier cost"` | 12 hours |
-| `version` | Software releases, LTS support, deprecations | `"<entity> latest release version changelog"` | 24 hours |
-| `law` | Statutes, court rulings, regulatory orders | `"<entity> regulation statute enacted legal text"` | 7 days |
-| `leadership` | CEOs, board chairs, cabinet officials | `"<entity> current CEO leadership executive appointment"` | 48 hours |
-| `product_availability` | General availability, waitlists, shutdowns | `"<entity> product release status availability discontinued"` | 24 hours |
-| `cybersecurity` | CVE vulnerabilities, active exploits, patches | `"<entity> CVE security vulnerability advisory patch"` | 6 hours |
-| `financial` | Benchmark interest rates, quarterly earnings | `"<entity> financial metrics rate earnings report"` | 12 hours |
-| `government_policy` | Sanctions, clean energy subsidies, tax credits | `"<entity> government policy directive rule"` | 7 days |
-| `public_health` | CDC/WHO isolation directives, vaccine guidance | `"<entity> official public health advisory guidance"` | 3 days |
-| `scientific_findings` | Replications, breakthrough discoveries, models | `"<entity> scientific findings paper replication nature"` | 7 days |
-| `company_info` | Mergers, acquisitions, headquarters relocations | `"<entity> acquisition merger company corporate announcement"` | 48 hours |
-| `dated_event` | Results of dated events, competitions, elections, and awards | Claim text plus official result/outcome | 24 hours |
-| `other` | Timeless facts (math, geography, universal syntax) | Filtered out during triage | N/A |
-
-### 2.2 Volatility Triage (`core/triage.py`)
-Claims classified as `other` (timeless geography, mathematical truths, universal syntax) bypass web search. Claims about dated events and outcomes remain eligible for evidence checks, including when they describe historical events.
-
----
-
-## 3. Four-State Verdict System
-
-Every evaluated volatile claim is assigned exactly one of four distinct states:
-
-```mermaid
-stateDiagram-v2
-    [*] --> Evaluating
-    Evaluating --> Confirmed: Evidence directly corroborates claim
-    Evaluating --> Contradicted: Authoritative evidence refutes claim
-    Evaluating --> PartiallySupported: Claim is partially accurate with crucial nuance
-    Evaluating --> Unverifiable: No authoritative evidence / ambiguous entities
-```
-
-1. **`confirmed`**: Authoritative evidence directly verifies that the claim is currently accurate. Score: **85 - 100**.
-2. **`contradicted`**: Authoritative evidence refutes the assertion. A factual correction supported by evidence is attached. Score: **0 - 25**.
-3. **`partially_supported`**: The statement contains accurate elements but omits critical qualification (e.g. tier restrictions or preconditions). Score: **60 - 75**.
-4. **`unverifiable`**: Search results yielded no credible primary citations or entities are ambiguous. Assigned abbreviated TTL (300s). Score: **40 - 55**.
+The [response models](../core/models.py) define the wire fields. The [pipeline](../core/pipeline.py) defines the execution order and summary logic. For evidence selection, continue to [evidence evaluation](06_evidence_evaluation_and_aggregation.md).

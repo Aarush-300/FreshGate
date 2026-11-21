@@ -278,25 +278,21 @@ def export_knowledge_base(
     if format == "json":
         return kb_entry
     elif format == "xml":
-        # Simple XML conversion
-        def to_xml(d, root="knowledge_base"):
-            lines = [f"<{root}>"]
-            for k, v in d.items():
-                if isinstance(v, dict):
-                    lines.append(to_xml(v, k))
-                elif isinstance(v, list):
-                    lines.append(f"<{k}>")
-                    for item in v:
-                        if isinstance(item, dict):
-                            lines.append(to_xml(item, "item"))
-                        else:
-                            lines.append(f"<item>{item}</item>")
-                    lines.append(f"</{k}>")
-                else:
-                    lines.append(f"<{k}>{v}</{k}>")
-            lines.append(f"</{root}>")
-            return "\n".join(lines)
-        return {"xml": to_xml(kb_entry)}
+        from xml.etree import ElementTree as ET
+
+        def populate(node, value):
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    populate(ET.SubElement(node, key), child)
+            elif isinstance(value, list):
+                for child in value:
+                    populate(ET.SubElement(node, "item"), child)
+            elif value is not None:
+                node.text = str(value)
+
+        root = ET.Element("knowledge_base")
+        populate(root, kb_entry)
+        return {"xml": ET.tostring(root, encoding="unicode")}
     elif format == "csv":
         # Flatten for CSV
         import csv

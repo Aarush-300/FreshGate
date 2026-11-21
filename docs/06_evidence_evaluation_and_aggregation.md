@@ -1,52 +1,15 @@
-# FreshGate: Evidence Evaluation and Aggregation Specification
+# Evaluating the evidence for a claim
 
-## 1. Domain Authority Architecture
+The verifier builds a query from the normalized claim and searches with Tavily. Optional Wikipedia, GitHub and academic search clients can supplement retrieval according to configuration and claim type. A retrieved result needs a usable URL and snippet to enter source evaluation. Publication dates can be missing.
 
-Search engine ranking does not equate to factual credibility. FreshGate implements an independent Source Validation Engine (`core/sources.py`) to systematically assess every retrieved citation.
+## How a source affects judgment
 
-### 1.1 Authority Tier Hierarchy
+A source record carries a URL, domain, snippet, publication date when available, authority and primary-source indicators. The verifier selects independent evidence before judging. An enforced policy can exclude sources by domain, authority or age and require a minimum source count. If too few sources qualify, the result explains the evidence gap.
 
-| Source Tier | Domain Patterns / Characteristics | Base Authority Score |
-| :--- | :--- | :--- |
-| **Tier 1: Government & Regulatory** | `.gov`, `.mil`, `europa.eu`, `who.int`, `nist.gov` | **0.95** |
-| **Tier 2: Primary Documentation** | Official vendor documentation (e.g. `docs.python.org`, `aws.amazon.com`, `learn.microsoft.com`) | **0.90** |
-| **Tier 3: Reputable News & Wires** | `reuters.com`, `apnews.com`, `bloomberg.com`, `nature.com` | **0.85** |
-| **Tier 4: General Technology Press** | `theverge.com`, `techcrunch.com`, `arstechnica.com` | **0.70** |
-| **Tier 5: Secondary Blogs / Medium** | `medium.com`, `substack.com`, generic blogs | **0.50** |
-| **Tier 6: Low-Authority / Forums** | `reddit.com`, generic forums, unverified discussion boards | **0.30** |
+The judge receives the claim and selected material. It can classify evidence as supporting or contradicting, explain the verdict, and propose a correction. Source references from the judgment are matched against retrieved URLs. If judging fails, a fallback can attempt an evidence-based result or return an unverifiable verdict. The recorded method identifies that path.
 
-### 1.2 Primary Source Identification
-If a retrieved URL originates from the official primary domain of the entity named in the claim (e.g., an `openai.com` citation for a ChatGPT Plus pricing claim), the source is marked `is_primary = True` and receives an additional **+0.10 authority boost** (capped at 1.0).
+## Reviewing a disputed result
 
----
+Suppose an article quotes an old price and a vendor page lists a new price. First match product, tier, currency, region and billing period. Then check the effective date on the page. A recently retrieved snippet can still describe an older offer. Open the cited source before using a suggested correction. If the policy excluded the vendor page, inspect its eligibility rules and preview a change in Policy Studio.
 
-## 2. Syndication & Duplicate Reporting Filtration
-
-Major news wires frequently syndicate articles across hundreds of regional portals. Treating 10 copies of the exact same syndicated wire article as 10 independent confirmations artificially inflates agreement metrics.
-
-FreshGate applies two filtering rules:
-1. **Domain Deduplication:** Only the highest-authority URL from a given root domain (e.g., `reuters.com`) is retained in the evaluation set.
-2. **Snippet Hash Distance:** Snippets exhibiting high token overlap (>80% Jaccard index) from secondary republishers are clustered into a single provenance node.
-
----
-
-## 3. Evidence Aggregation & Conflict Resolution
-
-When retrieved evidence yields divergent claims (e.g., a forum user claiming a service is \$10, while the vendor pricing page states \$15):
-
-```
-       [ Discrepancy Detected ]
-                 │
-                 ▼
-  Evaluate Authority Differential:
-  Auth(Vendor) = 0.95 vs Auth(Forum) = 0.30
-                 │
-                 ▼
-  Delta ≥ 0.25 ?
-    ├── YES ──► Authoritative Primary Source Overrides Low-Tier Source
-    └── NO  ──► Genuine Controversy ──► Mark "unverifiable" or "partially_supported"
-```
-
-1. **Authority-Weighted Consensus:** High-tier primary sources systematically override lower-tier secondary discussions.
-2. **Recency Disambiguation:** If two authoritative sources disagree, publication dates are checked. The newer timestamped announcement supersedes older documentation.
-3. **Missing vs Contradictory Evidence:** If no source addresses the claim, FreshGate marks it `unverifiable`. It is never falsely marked confirmed.
+The [verifier](../core/verifier.py) handles retrieval and judgment. [Source evaluation](../core/sources.py) supplies source attributes. The [scoring guide](07_scoring_methodology.md) explains how those attributes influence the numerical result.

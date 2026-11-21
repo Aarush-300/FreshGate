@@ -1,42 +1,21 @@
-# Feature architecture
+# How stored features fit together
 
-Policy Studio, Watchtower, and Replay share the SQLite feature store configured by `FRESHGATE_FEATURE_DB`. It is separate from the expiring claim cache and the existing whole-request audit store.
+Start with the object being investigated. One request can create several records with different identifiers and owners.
 
-```mermaid
-flowchart LR
-  Dashboard[Dashboard / API] --> Pipeline[Existing verification pipeline]
-  Pipeline --> Extract[Extract and triage claims]
-  Extract --> Cache[Expiring claim cache]
-  Extract --> Verify[Existing evidence verifier]
-  Verify --> Policy[Optional policy evaluation]
-  Verify --> History[Immutable snapshot writer]
-  Watchtower[Lifecycle scheduler] --> Lease[SQLite job lease]
-  Lease --> Pipeline
-  History --> Store[(SQLite feature store)]
-  Policy --> Store
-  Watchtower --> Store
-  Store --> Replay[Read-only history and comparison]
-  Replay --> Dashboard
-  CLI[Developer CLI] -->|HTTP /verify, /health| API[FreshGate API]
-  API --> Pipeline
-```
+| Record | Identity and purpose |
+| --- | --- |
+| Policy | A saved ID plus an update timestamp. Defines category, evidence, mode and cache rules. |
+| Checked claim | A response-local claim ID and, when history is recorded, a stable fingerprint and verification ID. |
+| Snapshot | One observation of that fingerprint with verdict, score, evidence and policy context. |
+| Monitored claim | A mutable enrollment with its own ID, enabled state, baseline, last attempt and next check. |
+| Alert | A recorded transition or evidence issue linked to a monitored claim. Acknowledgment tracks review. |
+| Audit record | Request-level activity with source, status, summary and correlation information. |
+| Digest schedule | Per-user delivery metadata including interval, recipient and next due time. |
 
-## Data boundaries
+## Follow a claim across features
 
-- `core/cache.py` remains a reusable expiring result cache; it is not historical storage.
-- `core/persistence.py` owns versioned SQLite schemas for policies, monitored claims, snapshots, and alerts. Snapshots are append-only by SQLite triggers.
-- `core/policies.py` validates policy configuration and evaluates evidence constraints. Policy selection is optional for direct verification.
-- `core/watchtower.py` uses SQLite leases, bounded concurrency, and the normal verification pipeline. It stores no request credentials.
-- `core/history.py` writes a snapshot for each checked volatile claim and returns its verification ID.
-- `core/replay.py` compares snapshots and produces timeline events without mutating storage.
+Verify produces a result and attempts to record a snapshot. **Monitor claim** copies the displayed verdict, score and sources onto the enrollment as a baseline when available. A Watchtower check leases the enrollment, resolves a pipeline, evaluates the claim and updates its scheduling metadata. A qualifying transition creates an alert. Replay uses the fingerprint to retrieve observations across these checks. The digest reads stored results for enrolled claims and outstanding alerts.
 
-The current database target is SQLite on one host with durable local storage. A free ephemeral deployment is a demo only. Multi-host scheduling and managed SQL support require a separate deployment-specific design.
+Changing a policy affects future evaluations. An earlier snapshot retains the context captured at check time. A cache entry may expire while that snapshot remains available. Clearing reusable verification data, acknowledging an alert and deleting an enrollment are different state changes.
 
-## Quality checks and local measurements
-
-- `python -m pytest -m "not live"` runs the full offline suite. The Phase 7 run completed **165 passed, 1 deselected**. The only deselected test requires live providers; the suite reported one upstream Starlette/httpx deprecation warning.
-- `python bench/evaluate.py --suite unit` keeps the original labelled dataset unchanged. The latest deterministic 50-item run measured 100% precision, 90% recall, 94.7% F1, 0% false positives, 10% false negatives, 87.3% source-authority accuracy, 21.82 ms cold p50, 37.26 ms cold p95, 12.51 ms warm mean, and a 100% warm cache hit rate. These local timings include immutable snapshot writes and will vary by host. Precision/recall and source-authority values are dataset results, not production guarantees.
-- `python bench/evaluate_features.py` exercises ten synthetic feature scenarios without network access. The last run passed all ten. It observed three concurrent Watchtower checks at the configured limit of three and a 116.85 ms batch duration for those three synthetic jobs. Its policy, transition, Replay comparison, and CLI output timings are local microbenchmarks, not end-to-end provider or HTTP latency measurements.
-- `tests/test_feature_integration.py` performs the complete policy → verification → Watchtower alert → Replay comparison → CLI API-client workflow with deterministic fake evidence.
-
-The native Go plugin was not compiled here because the Go toolchain is absent. The HTTP proxy fallback and existing fail-open behavior are covered by the offline suite. Browser screenshots and interactive browser automation were unavailable in this environment; dashboard markup, JavaScript syntax, navigation wiring, and responsive rules are checked by the dashboard integration tests.
+MongoDB scopes feature data by owner for shared deployments. SQLite supports local single-account use. Audit records and cache entries use separately configured storage. The session secret is also required to reuse encrypted Profile credentials after a restore. [SQLite store](../core/persistence.py) · [MongoDB store](../core/mongo_store.py) · [History writer](../core/history.py)

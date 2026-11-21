@@ -1,64 +1,24 @@
-# FreshGate: Deployment and Rollback Guide
+# Deploy, validate and roll back FreshGate
 
-## 1. Phased Deployment Strategy
+A single-user installation can use SQLite. The Compose stack includes FreshGate, Bifrost, MongoDB and Redis. Compose connects FreshGate to Bifrost through the HTTP proxy. A native plugin deployment requires a compatible gateway build.
 
-To eliminate operational risk during real-world gateway adoption, FreshGate provides a 4-stage controlled rollout:
+## Start a deployment
 
-```
-[ Phase 1: Shadow Mode ] ──► [ Phase 2: Warning Mode ] ──► [ Phase 3: Enforce Mode ] ──► [ Phase 4: Active Policy ]
-  (Zero delay/mutation)        (Headers-only metadata)        (Enriched JSON payload)        (Rejection of Stale Claims)
-```
+1. For a local installation, follow the [root setup](../README.md#run-the-freshgate-page-locally). The Windows launcher prints the selected port, starting at 8127. The manual example uses 8000.
+2. For Compose, prepare the environment from the example if needed, preserving existing settings. Configure a persistent session secret, separate operator and integration keys, and server verification credentials. Check which variables Compose passes into each container.
+3. Run the following from the repository root.
 
-### Stage 1: Shadow Mode (`FRESHGATE_MODE=shadow`)
-- **Behavior:** The universal proxy forwards requests to Bifrost/LLM and returns the exact upstream answer immediately. Verification runs strictly in background tasks.
-- **Purpose:** Collect real-world metrics, warm cache entries, evaluate latency impact, and establish error baselines with zero client disruption.
-- **Verification:** Monitor Prometheus `freshgate_claims_extracted_total` and logs for correlation IDs.
-
-### Stage 2: Warning-Only Mode (`FRESHGATE_MODE=warn`)
-- **Behavior:** Verification runs inline. FreshGate attaches `X-FreshGate-Score`, `X-FreshGate-Stale-Count`, and `X-FreshGate-Latency-Ms` headers to HTTP responses, but **does not mutate the response JSON body**.
-- **Purpose:** Client applications can inspect headers to validate scoring thresholds without parsing new JSON fields.
-
-### Stage 3: Enforce Mode (`FRESHGATE_MODE=enforce`)
-- **Behavior:** Full production mode. The response JSON is enriched with the `"freshgate"` metadata block containing claims, citations, verdicts, and corrections.
-
-### Stage 4: Policy Enforcement (`FRESHGATE_BLOCK_STALE=true`)
-- **Behavior:** If a response contains confirmed stale claims or its score falls below `FRESHGATE_MIN_SCORE`, the gateway blocks the hallucinated response with `HTTP 422 Unprocessable Content`.
-
-### Feature database durability
-
-Policies, monitoring state, alerts, and Replay snapshots use FRESHGATE_FEATURE_DB (default freshgate_features.db). Mount this file on durable storage and include it in backups. In `render.yaml`, the default free plan uses `/tmp` for SQLite files (`FRESHGATE_CACHE_DB`, `FRESHGATE_AUDIT_DB`, `FRESHGATE_FEATURE_DB`), which resets across service restarts and redeploys. To make storage durable on Render, upgrade to `plan: starter` ($7/mo) with a 1 GB persistent disk mounted at `/data`. Scheduled Watchtower checks also require server-side OPENAI_API_KEY and TAVILY_API_KEY; dashboard request keys are never reused by background jobs.
-
-The SQLite feature store uses WAL mode with `synchronous=NORMAL` to keep snapshot writes consistent across process crashes while reducing per-write latency. As with SQLite's NORMAL synchronous mode generally, a sudden host or power failure may lose the most recent committed transaction; use managed durable storage and backups for production history.
-
----
-
-## 2. Instant Rollback Procedures
-
-If issues arise during production deployment, three rollback options are available depending on severity:
-
-### Option A: Immediate Upstream DNS / Port Bypass (0s downtime)
-Switch client routing directly to Bifrost core:
-- Change target endpoint from `http://freshgate:8000/v1/chat/completions` directly to `http://bifrost:8080/v1/chat/completions`.
-- Because FreshGate is an OpenAI-compatible proxy, client applications require zero code changes.
-
-### Option B: Runtime Dynamic Bypass via Environment
-If client endpoints cannot be immediately changed, set FreshGate to bypass mode:
 ```bash
-# In docker-compose.yml or environment:
-FRESHGATE_MODE=shadow
-FRESHGATE_TIMEOUT=0.01  # Immediate fail-open
+docker compose up --build -d
+docker compose ps
+curl -fsS http://127.0.0.1:8000/health/ready
 ```
-Reload containers:
-```bash
-docker-compose up -d freshgate
-```
-FreshGate immediately passes every response through untouched in $< 1\text{ ms}$.
 
-### Option C: Container Rollback
-```bash
-# Graceful stop
-docker-compose stop freshgate
+4. Configure a chat provider on Bifrost. Verify a dashboard answer using a Profile, then send a chat request through FreshGate. Check the completion, verification status and audit source. For a native deployment, perform the [plugin loading check](bifrost-notes.md) on that host.
+5. Configure HTTPS, secure cookies, durable storage and trusted proxy settings before opening a shared deployment. The supplied Render manifest uses MongoDB and temporary paths for some local files. Evaluate their lifetime and whether the runtime stays awake for monitoring. [Compose configuration](../docker-compose.yml) · [Render manifest](../render.yaml)
 
-# Re-route traffic or restart previous container tag
-docker-compose up -d --no-deps bifrost
-```
+## Roll back an application release
+
+Record the running image identifier, configuration version and plugin/toolchain pairing. Before rollout, back up accounts, feature storage, audit files and the matching session secret. Verify the backup using an isolated restore.
+
+If the new deployment degrades verification, capture an affected request's status and correlation ID. Route traffic back to the previous application image and compatible configuration using your deployment platform. Restore a compatible gateway and native plugin together. Recheck readiness, login, verification and an existing Replay record. Preserve persistent volumes during application rollback. Restoring older database contents can discard newer writes and requires a separate recovery decision.

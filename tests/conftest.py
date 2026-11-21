@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import tempfile, os
+os.environ["PYTHON_DOTENV_DISABLED"] = "1"
+os.environ["FRESHGATE_USERS_STORE"] = "mongo"
 _TMP = tempfile.mkdtemp(prefix="freshgate-tests-")
 os.environ["FRESHGATE_AUDIT_DB"]   = os.path.join(_TMP, "audit.db")
 os.environ["FRESHGATE_CACHE_DB"]   = os.path.join(_TMP, "cache.db")

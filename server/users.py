@@ -95,6 +95,12 @@ class SQLiteUsersCollection:
                     doc.pop(key, None)
         return doc
 
+    def single_account(self):
+        """Resolve local claims only when the database has exactly one owner."""
+        with self._connect() as conn:
+            rows = conn.execute("SELECT * FROM users LIMIT 2").fetchall()
+        return self._document(rows[0]) if len(rows) == 1 else None
+
     def count_documents(self, query: Optional[dict[str, Any]] = None) -> int:
         query = query or {}
         field_map = {"_id": "id", "email": "email"}
@@ -170,14 +176,6 @@ class SQLiteUsersCollection:
 
 
 def users_collection():
-    user_store = (os.getenv("FRESHGATE_USERS_STORE") or "").strip().lower()
-    if user_store == "sqlite":
-        db_path = os.getenv("FRESHGATE_USERS_DB") or os.getenv("FRESHGATE_FEATURE_DB", "freshgate_features.db")
-        return SQLiteUsersCollection(db_path)
-    # Tests install a mongomock client and rely on isolated, multi-user fixtures;
-    # keep those fixtures independent from the developer's local SQLite account.
-    if user_store == "mongo" or os.getenv("PYTEST_CURRENT_TEST"):
-        return get_db()["users"]
     if not uses_mongo_accounts():
         db_path = os.getenv("FRESHGATE_USERS_DB") or os.getenv("FRESHGATE_FEATURE_DB", "freshgate_features.db")
         return SQLiteUsersCollection(db_path)

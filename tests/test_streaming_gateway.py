@@ -207,3 +207,27 @@ async def test_streaming_async_verification_retrieval(admin_headers):
                 res_data = res_resp.json()
                 assert res_data["status"] == "completed"
                 assert res_data["result"]["summary"]["avg_score"] == 90
+
+@pytest.mark.asyncio
+async def test_stream_forwards_upstream_error_status_and_json():
+    import httpx
+    error = httpx.Response(429, json={"error": "provider rate limit"})
+    with patch("server.app.stream_from_upstream", new=AsyncMock(return_value=error)):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            result = await client.post("/v1/chat/completions", json={"stream": True})
+    assert result.status_code == 429
+    assert result.headers["content-type"].startswith("application/json")
+    assert result.json() == {"error": "provider rate limit"}
+
+
+@pytest.mark.asyncio
+async def test_proxy_fail_closed_with_unavailable_verifier():
+    completion = {"choices": [{"message": {"content": "Example answer."}}]}
+    with patch("server.app.FRESHGATE_FAIL_OPEN", False), \
+         patch("server.app.forward_to_upstream", new=AsyncMock(return_value=(200, completion, {}))), \
+         patch("server.app.pipeline.verify", side_effect=TimeoutError):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            result = await client.post("/v1/chat/completions", json={"stream": False})
+    assert result.status_code == 503
+    assert result.headers["X-FreshGate-Status"] == "fail-closed"
+    assert "choices" not in result.json()

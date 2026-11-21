@@ -16,6 +16,7 @@ def test_local_storage_uses_sqlite_without_touching_mongo(monkeypatch, tmp_path)
 
     monkeypatch.setenv("FRESHGATE_STORE", "sqlite")
     monkeypatch.setenv("FRESHGATE_USERS_STORE", "sqlite")
+    monkeypatch.delenv("FRESHGATE_USERS_DB", raising=False)
     monkeypatch.delenv("MONGODB_URI", raising=False)
     monkeypatch.setenv("FRESHGATE_FEATURE_DB", str(tmp_path / "features.sqlite3"))
     monkeypatch.setattr(users_module, "get_db", lambda: (_ for _ in ()).throw(AssertionError("MongoDB accessed")))
@@ -50,6 +51,7 @@ async def test_local_registration_and_login_work_without_session_secret(monkeypa
     monkeypatch.setenv("FRESHGATE_ENV", "development")
     monkeypatch.setenv("FRESHGATE_STORE", "sqlite")
     monkeypatch.setenv("FRESHGATE_USERS_STORE", "sqlite")
+    monkeypatch.delenv("FRESHGATE_USERS_DB", raising=False)
     monkeypatch.setenv("FRESHGATE_FEATURE_DB", str(tmp_path / "accounts.sqlite3"))
     monkeypatch.delenv("FRESHGATE_SESSION_SECRET", raising=False)
     monkeypatch.setattr("server.users._LOCAL_SESSION_SECRET_PATH", tmp_path / "session-secret")
@@ -274,3 +276,18 @@ async def test_placeholder_admin_key_returns_403():
             resp = await ac.get("/api/audits/recent", headers={"X-Admin-Key": "your_admin_secret_token_here"})
             assert resp.status_code == 403
             assert "not configured" in resp.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_watchtower_resolves_single_local_profile(tmp_path, monkeypatch):
+    from server.pipeline_factory import pipeline_for_owner
+    from server.users import users_collection
+
+    monkeypatch.setenv("FRESHGATE_USERS_STORE", "sqlite")
+    monkeypatch.setenv("FRESHGATE_USERS_DB", str(tmp_path / "accounts.db"))
+    users_collection().insert_one({"_id": "local", "email": "local@example.com", "password_hash": "hash"})
+    with patch("server.pipeline_factory.load_credentials", return_value={"model": "fixture"}) as creds, \
+         patch("server.pipeline_factory.build_user_pipeline") as build:
+        assert await pipeline_for_owner(None) is build.return_value
+        assert creds.call_args.args[0]["_id"] == "local"
+        build.assert_called_once_with({"model": "fixture"}, "local")

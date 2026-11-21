@@ -1,7 +1,7 @@
 // Package main implements FreshGate as a native Bifrost Go dynamic plugin.
 //
 // This plugin intercepts completed LLM responses, extracts and verifies volatile factual
-// claims against Tavily and an LLM judge via the FreshGate API (or embedded engine),
+// claims against Tavily and an LLM judge via the FreshGate API,
 // and decorates the response with freshness headers and a "freshgate" metadata payload.
 //
 // Compile with:
@@ -11,12 +11,14 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -30,43 +32,31 @@ type Config struct {
 	AsyncMode    bool   `json:"async_mode"`
 }
 
-var (
-	pluginConfig = Config{
-		FreshGateURL: "http://127.0.0.1:8000/api/plugin/verify",
-		APIKey:       "",
-		TimeoutSec:   4,
-		FailOpen:     true,
-		AsyncMode:    false,
-	}
-	httpClient = &http.Client{
-		Timeout: 4 * time.Second,
-	}
-)
+var activeConfig atomic.Pointer[Config]
 
 type VerifyRequest struct {
 	Answer string `json:"answer"`
 }
 
-type VerificationResult struct {
-	Claims []struct {
-		ID         string   `json:"id"`
-		Text       string   `json:"text"`
-		Type       string   `json:"type"`
-		Verdict    string   `json:"verdict"`
-		Score      int      `json:"score"`
-		Correction *string  `json:"correction"`
-		Cached     bool     `json:"cached"`
-	} `json:"claims"`
-	Summary struct {
-		Total    int `json:"total"`
-		Checked  int `json:"checked"`
-		Stale    int `json:"stale"`
-		AvgScore int `json:"avg_score"`
-	} `json:"summary"`
+// The transport and LLM hooks run with separate contexts. Bifrost forwards
+// values from the transport pre-hook into the core request context.
+const resultKey = schemas.BifrostContextKey("freshgate-verification")
+
+type requestResult struct {
+	body   json.RawMessage
+	status string
+	score  *int
+	stale  int
+}
+
+func HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	ctx.SetValue(resultKey, &atomic.Pointer[requestResult]{})
+	return nil, nil
 }
 
 // Init initializes the FreshGate plugin with configuration from config.json.
 func Init(config any) error {
+	pluginConfig := Config{FreshGateURL: "http://127.0.0.1:8000/api/plugin/verify", TimeoutSec: 4, FailOpen: true}
 	if values, ok := config.(map[string]any); ok {
 		if url, ok := values["freshgate_url"].(string); ok && url != "" {
 			pluginConfig.FreshGateURL = url
@@ -115,7 +105,7 @@ func Init(config any) error {
 	if pluginConfig.TimeoutSec <= 0 {
 		pluginConfig.TimeoutSec = 4
 	}
-	httpClient.Timeout = time.Duration(pluginConfig.TimeoutSec) * time.Second
+	activeConfig.Store(&pluginConfig)
 	fmt.Printf("[FreshGate Plugin] Initialized with endpoint: %s\n", pluginConfig.FreshGateURL)
 	return nil
 }
@@ -132,13 +122,15 @@ func Cleanup() error {
 }
 
 // verifyWithFreshGate calls the FreshGate verification endpoint with fail-open semantics.
-func verifyWithFreshGate(text string) (*VerificationResult, error) {
+func verifyWithFreshGate(text string, pluginConfig *Config) (*requestResult, error) {
 	reqPayload, err := json.Marshal(VerifyRequest{Answer: text})
 	if err != nil {
 		return nil, err
 	}
 
-	req, err := http.NewRequest("POST", pluginConfig.FreshGateURL, bytes.NewBuffer(reqPayload))
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(pluginConfig.TimeoutSec)*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "POST", pluginConfig.FreshGateURL, bytes.NewBuffer(reqPayload))
 	if err != nil {
 		return nil, err
 	}
@@ -147,7 +139,7 @@ func verifyWithFreshGate(text string) (*VerificationResult, error) {
 		req.Header.Set("X-API-Key", pluginConfig.APIKey)
 	}
 
-	resp, err := httpClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -157,12 +149,21 @@ func verifyWithFreshGate(text string) (*VerificationResult, error) {
 		return nil, fmt.Errorf("freshgate returned status: %d", resp.StatusCode)
 	}
 
-	var result VerificationResult
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	var body json.RawMessage
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		return nil, err
 	}
-
-	return &result, nil
+	var report struct {
+		Summary *struct {
+			Status string `json:"status"`
+			Score  *int   `json:"avg_score"`
+			Stale  int    `json:"stale"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal(body, &report); err != nil || report.Summary == nil || report.Summary.Status == "" {
+		return nil, fmt.Errorf("invalid FreshGate verification summary")
+	}
+	return &requestResult{body: body, status: report.Summary.Status, score: report.Summary.Score, stale: report.Summary.Stale}, nil
 }
 
 // PostLLMHook intercepts LLM provider responses before they leave Bifrost core.
@@ -187,28 +188,37 @@ func PostLLMHook(
 			return resp, bifrostErr, nil
 		}
 
+		pluginConfig := activeConfig.Load()
+		var slot *atomic.Pointer[requestResult]
+		if ctx != nil {
+			slot, _ = ctx.Value(resultKey).(*atomic.Pointer[requestResult])
+		}
 		if pluginConfig.AsyncMode {
+			if slot != nil {
+				slot.Store(&requestResult{status: "async"})
+			}
 			go func(text string) {
-				_, _ = verifyWithFreshGate(text)
+				_, _ = verifyWithFreshGate(text, pluginConfig)
 			}(assistantText)
 			return resp, bifrostErr, nil
 		}
 
-		verification, err := verifyWithFreshGate(assistantText)
+		verification, err := verifyWithFreshGate(assistantText, pluginConfig)
 		if err != nil {
 			if pluginConfig.FailOpen {
+				if slot != nil {
+					slot.Store(&requestResult{status: "fail-open"})
+				}
 				if ctx != nil {
 					ctx.Log(schemas.LogLevelWarn, fmt.Sprintf("[FreshGate] Verification failed open: %v", err))
 				}
 				return resp, bifrostErr, nil
 			}
-			return resp, bifrostErr, err
+			code := http.StatusServiceUnavailable
+			return nil, &schemas.BifrostError{IsBifrostError: true, StatusCode: &code, Error: &schemas.ErrorField{Message: "FreshGate verification unavailable"}}, nil
 		}
-
-		// Bifrost's ExtraFields is a fixed telemetry struct, not an extension
-		// map. Preserve FreshGate's result in RawResponse for the HTTP hook.
-		if fields := resp.GetExtraFields(); fields != nil {
-			fields.RawResponse = map[string]any{"freshgate": verification}
+		if slot != nil {
+			slot.Store(verification)
 		}
 	}
 
@@ -221,11 +231,43 @@ func HTTPTransportPostHook(
 	req *schemas.HTTPRequest,
 	resp *schemas.HTTPResponse,
 ) error {
-	if resp == nil || resp.Headers == nil {
+	if resp == nil {
 		return nil
 	}
-
-	// If PostLLMHook stored verification or score
+	if resp.Headers == nil {
+		resp.Headers = make(map[string]string)
+	}
 	resp.Headers["X-FreshGate-Plugin"] = "active"
+	if ctx == nil || resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	slot, _ := ctx.Value(resultKey).(*atomic.Pointer[requestResult])
+	if slot == nil {
+		return nil
+	}
+	result := slot.Load()
+	if result == nil {
+		return nil
+	}
+	resp.Headers["X-FreshGate-Status"] = result.status
+	if result.body == nil {
+		return nil
+	}
+	resp.Headers["X-FreshGate-Stale-Count"] = strconv.Itoa(result.stale)
+	score := "unavailable"
+	if result.score != nil {
+		score = strconv.Itoa(*result.score)
+	}
+	resp.Headers["X-FreshGate-Score"] = score
+	var completion map[string]json.RawMessage
+	if err := json.Unmarshal(resp.Body, &completion); err != nil || completion == nil {
+		return nil
+	}
+	completion["freshgate"] = result.body
+	body, err := json.Marshal(completion)
+	if err != nil {
+		return err
+	}
+	resp.Body = body
 	return nil
 }

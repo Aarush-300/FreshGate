@@ -1,25 +1,16 @@
-# FreshGate: Readiness Review
+# Review a deployment for release
 
-This report separates current repository checks from historical benchmark results. It is not a production approval.
+Validate the actual image, gateway and storage configuration intended for traffic. Fixture tests establish application behavior under known inputs. Provider access, mail delivery, backup recovery and sustained throughput depend on the deployment.
 
-## Current Offline Checks
+| Area | Acceptance exercise | Evidence to retain |
+| --- | --- | --- |
+| Accounts | Sign in, save a Profile, restart and verify again. For a shared service use two accounts with distinct monitors. | Credential reuse and owner-scoped lists, history and exports |
+| Verification | Check a changing fact and a claim with insufficient evidence using the intended provider. | Status, method, sources, score handling and request timing |
+| Gateway | Send a non-streaming request and exercise the configured verifier failure behavior in staging. | Expected completion, headers and failure response |
+| Monitoring | Enroll a claim, run a recheck, allow a scheduled check and inspect Replay. | Updated timestamps, snapshots and any qualifying change alerts |
+| Delivery | Configure a recipient, send a test email and observe a due digest. | Inbox receipt and next scheduled delivery |
+| Recovery | Restore a backup and session secret into an isolated deployment. | Readable accounts, policies, history and audits after restart |
 
-- **Automated tests:** 111 passed; 1 live provider test deselected.
-- **Python source:** `compileall` succeeds.
-- **Dashboard JavaScript:** `node --check dashboard/app.js` succeeds.
+The included benchmarks use labeled examples and default to mocked providers. Precision and recall describe those fixtures. Warm and cold latency depend on storage and machine load. For deployment sizing, measure representative answer lengths, concurrency, policies, provider quotas and cache hit rates.
 
-Live model, Tavily, container, and Go plugin behavior still require their respective providers and toolchains. The current environment had no provider credits, so live checks were not run.
-
-## Benchmark Record
-
-The checked-in report covers a labelled 520-item dataset. Its reported stale-claim recall ranges from **88.1% to 92.0%**, so the lower result falls below the stated **90%** target. The report also lists source reliability at **90.4%**, below its **95%** target. These metrics should be treated as historical until the benchmark is rerun against current providers and the current code.
-
-## Known Deployment Limits
-
-- Redis caching is enabled when configured and falls back to SQLite when Redis is unavailable.
-- Audit persistence currently uses SQLite. The optional PostgreSQL Compose service is not wired to an audit backend.
-- The Go Bifrost plugin needs a matching Go toolchain and Bifrost build to compile and load; it was not compiled in this environment.
-
-## Release Checklist
-
-Before describing a deployment as production-ready, rerun the benchmark and live provider checks, build the Go plugin against the target Bifrost version, and confirm that deployment secrets, cache storage, audit storage, and failure policies match the target environment.
+Record operational limits alongside the release decision. Stream results are process-local, SQLite features assume a single account, native plugins require binary compatibility, and scheduled work requires a running server. [Implementation coverage](feature-implementation-audit.md) · [Deployment guide](11_deployment_and_rollback_guide.md)

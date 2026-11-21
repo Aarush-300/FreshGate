@@ -1752,7 +1752,12 @@ function WatchtowerView({ claims, alerts, categories, policies, onRefresh, onErr
 
   const check = async (claim: WatchClaim) => {
     setBusy(claim.id); onError(null); setNotice(null);
-    try { await api(`/api/watchtower/claims/${encodeURIComponent(claim.id)}/check`, { method: "POST" }); await onRefresh(); setNotice("Claim checked. The latest result is now shown."); }
+    try {
+      const outcome = await api<{ status: string; error?: string }>(`/api/watchtower/claims/${encodeURIComponent(claim.id)}/check`, { method: "POST" });
+      await onRefresh();
+      if (outcome.status === "completed") setNotice("Claim checked. The latest result is now shown.");
+      else onError(outcome.error ?? "The claim could not be checked.");
+    }
     catch (cause) { onError(cause instanceof Error ? cause.message : "The claim could not be checked. Try again when providers are available."); }
     finally { setBusy(null); }
   };
@@ -2111,8 +2116,9 @@ function ReplayView({ claims, initialFingerprint }: { claims: WatchClaim[]; init
   }, [initialFingerprint]);
 
   const compare = async () => {
+    if (!replay) return;
     setError(null); setComparison(null); setLoading(true);
-    try { setComparison(await api<RecordValue>(`/api/replay/${encodeURIComponent(fingerprint.trim())}/compare?from=${encodeURIComponent(fromId)}&to=${encodeURIComponent(toId)}`)); }
+    try { setComparison(await api<RecordValue>(`/api/replay/${encodeURIComponent(replay.claim_fingerprint)}/compare?from=${encodeURIComponent(fromId)}&to=${encodeURIComponent(toId)}`)); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "These snapshots could not be compared."); }
     finally { setLoading(false); }
   };
@@ -2191,34 +2197,34 @@ function ReplayView({ claims, initialFingerprint }: { claims: WatchClaim[]; init
               </p>
               <div className="export-actions-grid">
                 <a
-                  href={`/api/export/claim/${encodeURIComponent(fingerprint)}/knowledge-base?format=json`}
+                  href={`/api/export/claim/${encodeURIComponent(replay.claim_fingerprint)}/knowledge-base?format=json`}
                   target="_blank"
                   rel="noreferrer"
                   className="secondary-button"
-                  download={`freshgate-kb-${fingerprint.slice(0, 8)}.json`}
+                  download={`freshgate-kb-${replay.claim_fingerprint.slice(0, 8)}.json`}
                 >
                   <Download size={14} /> Export JSON
                 </a>
                 <a
-                  href={`/api/export/claim/${encodeURIComponent(fingerprint)}/knowledge-base?format=xml`}
+                  href={`/api/export/claim/${encodeURIComponent(replay.claim_fingerprint)}/knowledge-base?format=xml&download=true`}
                   target="_blank"
                   rel="noreferrer"
                   className="secondary-button"
-                  download={`freshgate-kb-${fingerprint.slice(0, 8)}.xml`}
+                  download={`freshgate-kb-${replay.claim_fingerprint.slice(0, 8)}.xml`}
                 >
-                  <Download size={14} /> Export XML (ISO 25964)
+                  <Download size={14} /> Export XML
                 </a>
                 <a
-                  href={`/api/export/claim/${encodeURIComponent(fingerprint)}/knowledge-base?format=csv`}
+                  href={`/api/export/claim/${encodeURIComponent(replay.claim_fingerprint)}/knowledge-base?format=csv&download=true`}
                   target="_blank"
                   rel="noreferrer"
                   className="secondary-button"
-                  download={`freshgate-kb-${fingerprint.slice(0, 8)}.csv`}
+                  download={`freshgate-kb-${replay.claim_fingerprint.slice(0, 8)}.csv`}
                 >
                   <Download size={14} /> Export CSV
                 </a>
                 <a
-                  href={`/api/export/claim/${encodeURIComponent(fingerprint)}/full-report?format=html`}
+                  href={`/api/export/claim/${encodeURIComponent(replay.claim_fingerprint)}/full-report?format=html&download=true`}
                   target="_blank"
                   rel="noreferrer"
                   className="primary-button"

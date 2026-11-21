@@ -1,316 +1,178 @@
 # FreshGate
 
-FreshGate checks time-sensitive factual claims in AI answers against web evidence. It provides a React dashboard, a FastAPI verification service, an OpenAI-compatible gateway, and Watchtower for tracking claims over time.
+FreshGate checks the parts of an AI answer that can go out of date. Give it a paragraph about a software release, a subscription price and a company executive. It extracts the claims, selects the ones that depend on current facts, looks for web evidence, and returns a verdict and freshness score for each checked claim. A reader can open the sources, inspect a suggested correction, and enroll a claim for another check later.
 
-A verdict is evidence-based guidance, not a guarantee of correctness. Search coverage, source quality, and the configured language model affect results.
+There are two main ways to use it. **The FreshGate page** lets a person investigate an answer or document. **The native Bifrost plugin** checks the assistant's answer as it passes through the gateway, so an application can receive the completion and its verification in one response.
 
-## Capabilities
+## What distinguishes FreshGate
 
-| Component | Purpose |
+| Capability | What you can do with it |
 | --- | --- |
-| Verify | Extract claims from text or documents and return verdicts, freshness scores, corrections, and sources. |
-| Policy Studio | Configure categories, evidence requirements, domain preferences, jurisdiction, and enforcement mode. |
-| Watchtower | Enroll claims, schedule rechecks, retain the latest result, and raise change alerts. |
-| Email reports | Send saved monitoring results and active alerts on a separate delivery schedule. |
-| Replay | Inspect immutable verification history and compare evidence over time. |
-| Audit log | Record verification activity across dashboard, gateway, plugin, and monitoring paths. |
-| Gateway | Forward chat completions to Bifrost and verify generated answers. |
-| CLI | Verify text, process batches, inspect status, and run benchmarks. |
+| Claim-level evidence | See which sentence about a release is contradicted even when the pricing claim in the same answer is confirmed. Each checked claim carries its own verdict, score, evidence and verification method. |
+| Evidence policies | Require independent sources, prefer an official domain, set an evidence age limit for pricing, and preview the rule against sample evidence before applying it. Policy revisions scope cache reuse. |
+| Ongoing monitoring | Save a claim from a verification with its baseline evidence. Watchtower rechecks it and can raise an alert when the verdict changes, the score crosses a threshold, or the sources change materially. |
+| Evidence Replay | Follow the same claim across checks using its fingerprint. Compare two saved snapshots to find the changed verdict, score, correction or source. Export the latest record for use outside the dashboard. |
+| Gateway integration | Read freshness metadata from a Bifrost completion, or use the OpenAI-compatible proxy when a native plugin is impractical. The proxy can deliver streaming tokens while verification runs after the stream. |
 
-Supported volatile categories include pricing, versions, leadership, law, product availability, cybersecurity, financial information, government policy, public health, company information, and scientific findings.
+## Run the FreshGate page locally
 
-## Architecture and data flow
+Use Python 3.11 and Node.js 22 with npm to match the container build. The default development configuration uses SQLite for one local account. The page needs a configured AI provider and a Tavily search key for live verification. Bifrost is optional for this workflow.
 
-1. The extractor identifies factual claims using the configured language model, with heuristic fallback behavior.
-2. Triage selects claims that need freshness checks.
-3. The cache reuses eligible results according to category and policy settings.
-4. The verifier retrieves evidence through Tavily and asks an OpenAI-compatible model to evaluate it.
-5. The scorer assigns a freshness score and verdict: `confirmed`, `contradicted`, `partially_supported`, or `unverifiable`.
-6. History snapshots and audit records retain results for later inspection.
-7. Watchtower rechecks enrolled claims and emails summaries of persisted results.
+Create a local configuration if this is your first run. Keep an existing `.env` when updating the project.
 
-The dashboard uses the credentials saved in each user's Profile. The server's Watchtower resolver also loads the monitored claim owner's Profile credentials. Gateway and plugin integrations use server configuration.
-
-MongoDB provides owner-scoped feature storage. SQLite feature storage is intended for single-user local use: its `for_owner()` method does not isolate users. Cache and audit storage have separate SQLite paths; MongoDB does not automatically move these files into MongoDB.
-
-## Prerequisites
-
-- A Python installation compatible with [requirements.txt](requirements.txt); the Dockerfile defines the deployment runtime.
-- Node.js and npm for building the dashboard; the Dockerfile defines the frontend build runtime.
-- MongoDB for a multi-user installation and owner-aware scheduled checks.
-- An LLM provider account or supported local endpoint, plus a Tavily search key.
-- Optional Redis for shared caching/rate limiting and Bifrost for gateway use.
-
-## Local setup
-
-Run commands from the repository root. Do not overwrite an existing `.env` containing your configuration.
-
-### Windows PowerShell
+**Windows PowerShell**
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-Copy-Item .env.example .env
-Set-Location dashboard
-npm ci
-npm run build
-Set-Location ..
-python -m uvicorn server.app:app --reload --host 127.0.0.1 --port 8000
+if (!(Test-Path .env)) { Copy-Item .env.example .env }
+.\run.ps1
 ```
 
-Edit `.env` before starting the server. The supplied `run.ps1` can also prepare dependencies, build the dashboard, and launch the application.
+The launcher prepares the Python environment, installs dashboard dependencies, builds the page and prints the address. It starts looking for a free local port at **8127**. Use the address it prints for the page and for any clients connecting to that server.
 
-### macOS / Linux
+**Linux or macOS**
 
 ```bash
-python -m venv .venv
+test -f .env || cp .env.example .env
+python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
-cp .env.example .env
-cd dashboard
-npm ci
-npm run build
-cd ..
-python -m uvicorn server.app:app --reload --host 127.0.0.1 --port 8000
+npm ci --prefix dashboard
+npm run build --prefix dashboard
+python -m uvicorn server.app:app --host 127.0.0.1 --port 8000
 ```
 
-Open <http://localhost:8000>, register, and configure **Profile** with a provider, model, provider key, and Tavily key. Verify a short answer before enabling monitoring.
+Open [the local page](http://127.0.0.1:8000). For frontend development, run `npm run dev` in `dashboard/`. Vite's default API target is port 8127. Set `FRESHGATE_API_ORIGIN=http://127.0.0.1:8000` in the Vite process environment when using the manual backend command above.
 
-The application loads `.env`. A file named `env` without the leading dot is not the standard configuration file. Restart the backend after changing environment configuration.
+### Walk through an answer
 
-### Storage configuration
+1. **Register and open Profile.** Choose a provider and model, enter the provider credentials and save a Tavily key. The browser workflow uses the signed-in user's settings. The server-level keys described below serve gateway traffic.
+2. **Open Verify and select “Try an example.”** The supplied paragraph contains claims about a Python release, company leadership and model pricing. You can also paste your own answer or upload a TXT, Markdown, JSON, CSV, PDF or DOCX file. The default upload limit is 10 MiB.
+3. **Inspect one claim.** Read the verdict, score, explanation, source snippets and any suggested correction. Follow the source link and check whether its date and scope match the claim. Results depend on the evidence available at check time.
+4. **Use Policy Studio** to specify which sources and categories matter for your application. Select the saved policy in Verify and run the answer again. Shadow mode reports what would fail, warn mode records warnings, and enforce mode applies evidence eligibility requirements.
+5. **Choose Monitor claim**, open **Watchtower** and use **Check now** to run a recheck. Scheduled rechecks continue while the backend scheduler is running. An optional email digest summarizes saved results and active alerts on its own schedule.
+6. **Open Replay** from the monitored claim. After two snapshots exist, choose an earlier and a later record and compare them. The export controls provide JSON, XML, CSV and a readable HTML report.
 
-For single-user experimentation:
+**System** shows readiness and operational metrics. **Benchmarks** displays the packaged evaluation data. **Audit log** lets an operator with the configured admin key inspect verification activity, including the originating route and correlation ID.
 
-```dotenv
-FRESHGATE_ENV=development
-FRESHGATE_STORE=sqlite
-FRESHGATE_USERS_DB=freshgate_features.db
-FRESHGATE_FEATURE_DB=freshgate_features.db
-FRESHGATE_CACHE_DB=freshgate_cache.db
-FRESHGATE_AUDIT_DB=freshgate_audit.db
-```
+## How to read a verification
 
-For accounts with isolated monitoring data:
+Extraction identifies factual statements and normalizes categories such as pricing, versions, leadership and law. Triage selects volatile claims. For each selected claim, the pipeline checks for an eligible cached result or retrieves evidence through Tavily and evaluates it. The result records the verification method so a reader can distinguish an LLM judgment from a fallback.
 
-```dotenv
-FRESHGATE_STORE=mongo
-MONGODB_URI=mongodb://localhost:27017
-MONGODB_DATABASE=freshgate
-```
+| Verdict | How to interpret it |
+| --- | --- |
+| `confirmed` | The retrieved evidence supports the claim. |
+| `contradicted` | The retrieved evidence conflicts with the claim. Look for a correction and check the cited source. |
+| `partially_supported` | The evidence supports part of the statement or qualifies its scope. |
+| `unverifiable` | The available evidence is insufficient to settle the claim. |
 
-Replace the placeholder MongoDB URI in `.env.example` with a working connection string. The local SQLite feature store does not retain owner identity for the server's per-owner pipeline resolver; use MongoDB for the full multi-user Watchtower workflow.
+The **0–100 freshness score** combines the verdict, publication recency, source count and source authority. The scorer caps contradicted claims at 10 and unverifiable claims at 50. A score is an evidence summary, not a calibrated probability. The response's `summary.stale` counts contradicted claims. Read `summary.checked`, `summary.status` and the per-claim results alongside the average. An empty check can have a null average, and an extraction failure has its own status.
 
-Generate persistent secrets with:
+## Native Bifrost plugin
+
+The Go plugin runs inside a compatible Bifrost HTTP gateway. Its post-LLM hook takes the text of the first choice in a completed, non-streaming chat response and sends `{"answer":"…"}` to FreshGate's dedicated `POST /api/plugin/verify` endpoint. The service uses its server-side provider credentials and records the check with audit source `plugin`.
+
+In synchronous mode, the HTTP post-hook adds a top-level `freshgate` report alongside the provider's completion. Clients can read `freshgate.claims` for individual sources and corrections, or use `X-FreshGate-Status`, `X-FreshGate-Score` and `X-FreshGate-Stale-Count` for a summary. `X-FreshGate-Plugin: active` identifies the installed transport hook. Check the status and score headers to distinguish a completed verification from plugin presence alone.
+
+### Build and load
+
+1. Start FreshGate and set `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `LLM_MODEL` and `TAVILY_API_KEY` for its verification service. Set `FRESHGATE_API_KEY` to a shared secret and restart the service. Configure Bifrost's own chat provider as well.
+2. Build the plugin on the target OS and architecture with cgo enabled. The module pins Bifrost core **v1.15.1** and specifies **Go 1.27.3**. The Bifrost host must support Go dynamic plugins and share the toolchain, build settings and common dependency versions. On Windows, build and run the Linux gateway and plugin together under WSL2, or use the proxy below.
+3. From the repository root, build the shared object.
 
 ```bash
-python -c "import secrets; print(secrets.token_urlsafe(32))"
+cd plugin
+go test ./...
+CGO_ENABLED=1 go build -buildmode=plugin -o freshgate.so .
 ```
 
-Use separate values for `FRESHGATE_SESSION_SECRET`, `FRESHGATE_ADMIN_KEY`, and, where needed, `FRESHGATE_API_KEY`. Keep the session secret stable: it is used for sessions and stored credential encryption.
+4. Put the shared object where the Bifrost process can read it. Add the following entry to the gateway's `config.json`, merging it into the existing `plugins` array. Replace the path with the actual path **inside the gateway runtime**.
 
-### Frontend development
-
-Start the backend on port 8000, then run `npm run dev` inside `dashboard/`. Set `FRESHGATE_API_ORIGIN` to override the backend origin used by the Vite proxy. For example, in PowerShell:
-
-```powershell
-$env:FRESHGATE_API_ORIGIN = 'http://127.0.0.1:8000'
-npm run dev
+```json
+{
+  "plugins": [
+    {
+      "enabled": true,
+      "name": "freshgate",
+      "path": "/opt/bifrost/plugins/freshgate.so",
+      "config": {
+        "freshgate_url": "http://127.0.0.1:8000/api/plugin/verify",
+        "timeout_sec": 8,
+        "fail_open": true,
+        "async_mode": false
+      }
+    }
+  ]
+}
 ```
 
-## Watchtower workflow
+5. Set `FRESHGATE_API_KEY` in the Bifrost process environment to the same secret. Restart Bifrost and send a non-streaming request to **Bifrost's port** using a model configured there. Add your Bifrost authentication header if the gateway requires one.
 
-1. Verify an answer and choose **Monitor claim**, or add a claim directly in Watchtower.
-2. Check that the claim appears in the monitored list. Enrollment from a verification can include its baseline verdict, score, and sources.
-3. Set the monitoring interval. Registration schedules the first check after that interval; use **Check now** for an immediate check.
-4. Save working provider and Tavily credentials in the owner's Profile.
-5. Inspect the latest result, error, next check time, and history in Watchtower.
-6. Configure email delivery on the server and save an email schedule in Watchtower.
-
-Rechecks use leases to prevent concurrent processing of a claim, bounded concurrency, and retry backoff. Alerts cover selected verdict changes, score threshold crossings, material evidence changes, and repeated insufficient evidence. Acknowledging an alert removes it from the email's active-alert section.
-
-### What a digest contains
-
-Reports include all enrolled claims, including claims without history snapshots. They use a newer matching snapshot when available, otherwise the monitored claim's saved baseline/latest result and evidence. Claims awaiting a result remain visible as pending. Verification timestamps are formatted as UTC ISO timestamps.
-
-Email delivery and claim verification run on separate schedules. A digest summarizes stored results; sending a digest does not itself run a fresh verification. Paused claims remain enrolled and can still appear with their saved results.
-
-The scheduler runs a batch of due checks before evaluating email schedules. A large backlog can therefore leave some claims awaiting their next check when a digest is sent.
-
-### Scheduling behavior
-
-- `interval_seconds` supports 60 seconds through 30 days.
-- Custom minute/hour/day/week values are converted to intervals.
-- The recognized cron presets map to 6-hour, 12-hour, daily, or weekly intervals. This is not a general cron parser and does not promise delivery at a particular wall-clock time.
-- Saving a schedule sets its next delivery relative to the save time.
-- Delivery occurs on a scheduler poll after the report becomes due.
-- A successful send advances `last_sent_at` and `next_run_at`; a failed send leaves the schedule due for retry.
-- Pausing an email schedule stops its reports, independently of claim monitoring.
-
-## Email configuration
-
-The service selects delivery in this order: Brevo, Resend, SendGrid, then SMTP. Configure the intended provider and sender identity. HTTPS providers are useful when outbound SMTP is unavailable.
-
-Example using Brevo:
-
-```dotenv
-BREVO_API_KEY=<your-provider-key>
-FRESHGATE_SMTP_FROM=FreshGate Watchtower <verified-sender@example.com>
-FRESHGATE_ADMIN_EMAIL=reports@example.com
+```bash
+curl -i http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"openai/gpt-4o-mini","messages":[{"role":"user","content":"State the current stable Python release."}],"stream":false}'
 ```
 
-Alternatives are `RESEND_API_KEY` or `SENDGRID_API_KEY`. Sender validation and delivery restrictions depend on your provider account.
+The plugin defaults to a four-second timeout, synchronous checks and fail-open delivery. Increase the timeout to accommodate your search and judging latency. Fail-open returns the original completion on a verifier transport error. With `fail_open: false`, a synchronous verifier transport failure produces a gateway error. Async mode starts verification in the background and returns the completion without an inline report. Streaming chunks, tool-only responses and additional choices are outside the native text check.
 
-For SMTP:
+Plugin environment overrides are `FRESHGATE_URL` (the **full verification endpoint**), `FRESHGATE_API_KEY`, `FRESHGATE_TIMEOUT_SEC`, `FRESHGATE_FAIL_OPEN` and `FRESHGATE_ASYNC_MODE`. If FreshGate runs on another port or in another container, use its reachable service address. The manifest and hook implementation live in [plugin/](plugin/).
 
-```dotenv
-FRESHGATE_SMTP_HOST=smtp.example.com
-FRESHGATE_SMTP_PORT=587
-FRESHGATE_SMTP_USER=<smtp-username>
-FRESHGATE_SMTP_PASSWORD=<smtp-password>
-FRESHGATE_SMTP_FROM=reports@example.com
-FRESHGATE_SMTP_TLS=true
-FRESHGATE_ADMIN_EMAIL=reports@example.com
-```
+## OpenAI-compatible proxy
 
-Port 587 uses STARTTLS; port 465 uses implicit TLS. Save a recipient on each user's email schedule. `FRESHGATE_ADMIN_EMAIL` is the fallback recipient. One user's schedule does not change another user's fallback configuration.
+Point a chat client's base URL at `http://127.0.0.1:8000/v1` and set `BIFROST_UPSTREAM_URL` on FreshGate to your Bifrost address. FreshGate accepts `POST /v1/chat/completions` and the alias `POST /proxy/v1/chat/completions`. Use `X-API-Key` for the FreshGate integration key when configured. This path works with an ordinary Bifrost HTTP deployment. Choose a single integration path for a request to avoid checking the same completion twice.
 
-**Send test email** checks transport configuration with a test message; it does not send the monitored-claims digest. Wait for a scheduled report to validate digest contents.
-
-## Configuration reference
-
-See [.env.example](.env.example) and [core/config.py](core/config.py) for the full configuration surface.
-
-| Setting | Purpose / default |
+| Proxy mode | What the client receives |
 | --- | --- |
-| `FRESHGATE_ENV` | Development or production environment. |
-| `FRESHGATE_STORE` | Explicitly choose `sqlite` or `mongo`. |
-| `FRESHGATE_USERS_STORE` | Optional account-store override. |
-| `FRESHGATE_SESSION_SECRET` | Persistent session and credential-encryption secret. |
-| `FRESHGATE_ADMIN_KEY` | Protects administrative operations. |
-| `FRESHGATE_API_KEY` | Client key for protected integrations. |
-| `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `LLM_MODEL` | Server LLM configuration. |
-| `TAVILY_API_KEY` | Server search credential. |
-| `BIFROST_UPSTREAM_URL` | Upstream gateway address. |
-| `FRESHGATE_MODE` | `shadow`, `warn`, or `enforce`; default `enforce`. |
-| `FRESHGATE_TIMEOUT` | Verification budget, default 8 seconds. |
-| `FRESHGATE_FAIL_OPEN` | Preserve responses on verification failure, default true. |
-| `FRESHGATE_BLOCK_STALE`, `FRESHGATE_MIN_SCORE` | Optional enforcement thresholds. |
-| `REDIS_URL` | Optional Redis connection. |
-| `FRESHGATE_RATE_LIMIT_PER_MINUTE` | Default 60. |
-| `FRESHGATE_MAX_BODY_SIZE_BYTES` | General body limit, default 1 MiB. |
-| `FRESHGATE_MAX_UPLOAD_SIZE_BYTES` | Document limit, default 10 MiB. |
-| `FRESHGATE_WATCHTOWER_ENABLED` | Enable scheduler, default true. |
-| `FRESHGATE_WATCHTOWER_POLL_SECONDS` | Default 10 seconds. |
-| `FRESHGATE_WATCHTOWER_MAX_CONCURRENCY` | Default 2 checks. |
-| `FRESHGATE_WATCHTOWER_MAX_CLAIMS` | Enrollment cap, default 50; Compose overrides this. |
-| `FRESHGATE_WATCHTOWER_LEASE_SECONDS` | Default 900 seconds. |
-| `FRESHGATE_WATCHTOWER_MAX_RETRIES` | Default 3. |
-| `FRESHGATE_WATCHTOWER_RETRY_BASE_SECONDS` | Default 60 seconds. |
+| `shadow` or async | The upstream completion immediately. Verification runs in the background. |
+| `warn` | The upstream JSON plus verification headers. |
+| `enforce` | The completion plus a `freshgate` result. With `FRESHGATE_BLOCK_STALE=true`, a contradicted claim or an average below `FRESHGATE_MIN_SCORE` can produce HTTP 422. |
+| Streaming | Server-sent events as the provider emits them. FreshGate collects assistant text from the first choice and schedules a check when the stream ends. Look up the result at `/api/stream/verification/{completion_id}` with a session or admin credential. These results are process-local. |
 
-## API and integrations
+## Configuration and deployment
 
-Interactive API documentation is available at `/docs` while the backend is running. See [API reference](docs/13_api_reference.md) for additional details.
-
-| Route | Purpose |
+| Concern | Settings and behavior |
 | --- | --- |
-| `POST /verify` | Verify answer text. |
-| `POST /verify/upload` | Verify an uploaded document. |
-| `/api/policies` | Policy management. |
-| `POST /api/watchtower/monitor` | Enroll a claim. |
-| `GET /api/watchtower/claims` | List monitored claims. |
-| `POST /api/watchtower/claims/{id}/check` | Run an immediate check. |
-| `/api/watchtower/alerts` | Inspect alerts. |
-| `GET /api/watchtower/email/schedule` | Read the current user's schedule. |
-| `POST /api/watchtower/email/schedule` | Save a schedule. |
-| `POST /api/watchtower/email/schedule/stop` | Pause reports. |
-| `POST /api/watchtower/email/test` | Test email delivery. |
-| `/api/history/*`, `/api/replay/*` | History and comparisons. |
-| `/api/export/claim/{fingerprint}/*` | Claim exports and reports. |
-| `GET /api/audits/recent` | Admin audit records. |
-| `GET /health/live`, `GET /health/ready` | Health probes. |
+| Accounts and history | `FRESHGATE_STORE=sqlite` is a single-user setup. Use `FRESHGATE_STORE=mongo` and a reachable `MONGODB_URI` for owner-scoped accounts, policies, history and monitoring in a shared deployment. |
+| Session and credentials | Set a persistent `FRESHGATE_SESSION_SECRET` for deployed instances. It signs sessions and protects saved provider keys. Use separate values for the client `FRESHGATE_API_KEY` and operator `FRESHGATE_ADMIN_KEY`. |
+| Cache and audit | SQLite paths are configurable through `FRESHGATE_CACHE_DB` and `FRESHGATE_AUDIT_DB`. Redis is optional. Keep these files on durable storage, including when feature storage uses MongoDB. Audit records include verified input text. |
+| Monitoring and mail | Configure scheduler polling and concurrency through the Watchtower settings. For email delivery, configure Brevo, Resend, SendGrid or SMTP and a sender, then save the recipient and digest interval in Watchtower. Sending a digest reads existing results. |
+| Deployment | The Compose stack runs FreshGate, Bifrost, MongoDB and Redis. Set a persistent session secret in `.env`, then run `docker compose up --build`. FreshGate listens on 8000 and Bifrost on 8080. Compose connects them through the proxy path. |
 
-Dashboard feature routes require a signed-in session. Administrative routes use `X-Admin-Key`; integration routes have their own key requirements. Do not put provider keys into URLs.
+Generate a secret with `python -c "import secrets; print(secrets.token_urlsafe(32))"`. Keep the session secret with your backups so encrypted credentials remain readable. See the [environment example](.env.example), [Compose configuration](docker-compose.yml) and [deployment guide](docs/11_deployment_and_rollback_guide.md).
 
-### Gateway
+## API, CLI and validation
 
-Point an OpenAI-compatible client at `/v1` on FreshGate and configure Bifrost as the upstream. `shadow` verifies in the background, `warn` annotates responses with freshness headers, and `enforce` can include verification details and apply configured blocking thresholds.
-
-Streaming text is passed through and checked after completion. Retrieve its result through `/api/stream/verification/{id}` with the required authorization. See [plugin documentation](plugin/README.md) for the native Bifrost Go plugin and toolchain requirements.
-
-### CLI
+The running service exposes its interactive API reference at `/docs`. For direct text verification, send `POST /verify` with an `answer` field and optional `policy_id`. The dashboard supplies a session. The CLI can send provider credentials from its process environment. For the CLI, `FRESHGATE_URL` is the **server base URL**. Use `--url` to override it.
 
 ```bash
 python -m pip install -e .
-freshgate status
-freshgate verify --text "The latest stable release is version 3.13." --min-score 70
-freshgate batch --file answers.json --format markdown
-freshgate benchmark --suite unit
+freshgate status --url http://127.0.0.1:8000
+# Export OPENAI_API_KEY and TAVILY_API_KEY in this shell before verifying.
+freshgate verify --file answer.txt --format markdown
+freshgate batch --file answers.json --min-score 60 --fail-on-unverifiable
 ```
 
-Configure `FRESHGATE_URL` and provider credentials for your environment. The CLI supports score thresholds, output formats, and failure exit codes for CI. See [CLI guide](docs/developer-cli.md).
-
-## Deployment
-
-`docker compose up --build` starts FreshGate, MongoDB, Redis, and Bifrost. Set `FRESHGATE_SESSION_SECRET` before starting; configure integration/admin keys as appropriate. FreshGate listens on port 8000 and Bifrost on 8080. Named volumes retain data.
-
-The Compose service uses an explicit environment list. Add your selected email provider variables to the FreshGate service's environment or an appropriate `env_file`; placing them in the host `.env` alone does not automatically forward every variable into the container.
-
-[render.yaml](render.yaml) provides a deployment blueprint. Configure MongoDB connectivity, stable secrets, and email credentials in the hosting environment. Watchtower only runs while the backend process is awake. Use persistent storage for local cache/audit files if you need them across redeploys.
-
-Run a single scheduler process for email delivery: report schedules currently have no distributed delivery lease, so multiple backend workers can send duplicate reports. Claim checks have separate leases.
-
-See [deployment and rollback](docs/11_deployment_and_rollback_guide.md) and [operations](docs/10_production_operations_guide.md).
-
-## Troubleshooting
-
-| Symptom | Checks |
-| --- | --- |
-| Mail arrives but reports no claims | Confirm enrollment under the same account as the schedule. Install the report fix in this version and restart the backend; older reports skipped claims without matching snapshots. |
-| Claims appear but results remain old | Check next-check time, enabled state, errors, owner Profile credentials, and whether the backend is running. Email frequency does not control verification frequency. |
-| Report generation fails after a successful check | Inspect backend logs. This version converts numeric snapshot timestamps before building email claims. |
-| Test email works but scheduled mail does not | Confirm the schedule is enabled, its recipient and next-run time, and `FRESHGATE_WATCHTOWER_ENABLED`. |
-| No mail arrives | Check selected provider precedence, sender verification, credentials, delivery logs, and spam folder. |
-| Owner/credential error in SQLite monitoring | Use MongoDB for the server's owner-aware scheduled workflow. |
-| MongoDB connection failure | Replace example credentials/URI and verify network access and database permissions. |
-| Dashboard is missing | Run `npm ci` and `npm run build` in `dashboard/`. |
-| Virtual environment cannot find Python | Recreate it with the local Python installation; virtual environments copied from another machine are not portable. |
-| Configuration changes have no effect | Edit `.env` or deployment environment variables and restart the backend. |
-
-## Tests and validation
+A batch file can be a JSON array of answer strings. The CLI returns exit code 1 for failed evaluation conditions and 2 for configuration, API or transport errors. Use `--warning-only` to report evaluation failures without failing a build.
 
 ```bash
 python -m pip install -r requirements-dev.txt
-python -m pytest -q
-python -m pytest tests/test_watchtower.py tests/test_mongo_store_isolation.py -q
-cd dashboard
-npm run build
+python -m pytest -q -m "not live"
+npm ci --prefix dashboard
+npm run build --prefix dashboard
 ```
 
-Watchtower regression tests cover baselines without snapshots, pending claims, newer history results, timestamp conversion, pagination, acknowledged alerts, MongoDB owner isolation, and delivery failure scheduling. Tests mock email delivery and do not send real messages.
+Run the native Go checks from `plugin/`. Offline tests exercise application behavior with fixtures. A live verification also exercises the configured model, search provider and network, so its verdict and latency can differ from the fixture results.
 
-Benchmark tools live under `bench/`. Offline results measure the harness and fixtures; they should not be interpreted as live provider latency or general accuracy guarantees. Live runs require configured credentials and can incur provider charges.
+## Troubleshooting
 
-## Security and limitations
+| Symptom | First check |
+| --- | --- |
+| The page loads but cannot verify an answer | Open Profile and check the selected model, provider credentials and Tavily key. The plugin and proxy use separate server credentials. |
+| The native plugin shows as active with no score | Send a completed, non-streaming text choice. Check async mode, fail-open status, endpoint address and verifier timeout. |
+| Bifrost rejects the shared object | Match the host's Go compiler, platform and shared dependencies. Use the HTTP proxy if the host cannot load dynamic plugins. |
+| A monitored claim still shows its baseline | Inspect the next check, last error and enabled state. Use Check now to request a recheck. The backend must stay running for scheduled checks. |
+| The page is missing or the Vite API is unreachable | Build `dashboard/` for FastAPI, or point the Vite development proxy at the running backend port. Use `/health/live` for liveness and `/health/ready` for storage readiness. |
 
-Keep `.env`, provider credentials, session secrets, and database files out of version control. Stored provider keys are encrypted using the session secret. Audit records include verified text and should be treated as sensitive data.
+The verification pipeline is in [core/](core/), the FastAPI application in [server/](server/), and the React page in [dashboard/](dashboard/). More detail is available in the [Policy Studio guide](docs/policy-studio.md), [Watchtower guide](docs/watchtower.md), [Replay guide](docs/verification-replay.md) and [CLI guide](docs/developer-cli.md).
 
-Use MongoDB for multi-user feature isolation. The public-fact cache is shared, and audit persistence is SQLite-based. Preserve the session secret and back up durable data before deployment changes. See [security architecture](docs/03_security_architecture.md) and [threat model](docs/04_threat_model.md).
-
-## Repository layout
-
-```text
-core/        Verification, configuration, storage, history, Watchtower, email
-server/      FastAPI application, authentication, provider resolution, routes
-dashboard/   React / TypeScript / Vite interface
-cli/         Command-line HTTP client
-plugin/      Native Bifrost integration
-bench/       Benchmark datasets and evaluation tools
-tests/       Python regression and integration tests
-docs/        Architecture, API, deployment, and feature guides
-```
-
-## License
-
-MIT. See [LICENSE](LICENSE).
+Released under the [MIT License](LICENSE).

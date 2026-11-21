@@ -1,25 +1,20 @@
-# Watchtower
+# Monitor claims after publication
 
-Watchtower rechecks monitored volatile claims independently of synchronous chat and `/verify` requests. The dashboard can register a claim directly from a successful live verification, or API clients can register a claim and optionally provide its verified baseline.
+Watchtower persists a claim and schedules another check against the evidence. Enrollment from Verify can include the current verdict, score and source list as a baseline. The first scheduled check becomes due after the monitoring interval. Use **Check now** for an immediate attempt.
 
-## Scheduling and provider credentials
+## Enroll and inspect
 
-Monitoring intervals are seconds, from one hour to 30 days. The service bounds active registrations (`FRESHGATE_WATCHTOWER_MAX_CLAIMS`), concurrent reverifications, retry delay, lease duration, and scheduler polling. Defaults and environment variables are listed in `.env.example`.
+1. Save working AI-provider and Tavily settings in the owner's Profile.
+2. Choose **Monitor claim** on a volatile claim or add the text and category in Watchtower. Set the interval and, if appropriate, an enabled policy that covers the category.
+3. Inspect the monitored record's last check, last successful check, next check and error. The monitoring API accepts a standard interval from one hour through 30 days.
+4. Open the claim's history after a check. An alert can identify selected verdict changes, a score threshold crossing, material evidence changes or repeated insufficient evidence. Acknowledge an alert once reviewed.
 
-Scheduled checks use only server-configured `OPENAI_API_KEY` and `TAVILY_API_KEY`. Keys submitted in request headers for `/verify` are request-scoped and are never saved or reused by Watchtower. Without server credentials, manual and scheduled jobs are recorded as failed and retried; configure the server credentials before enabling scheduled checks.
+The scheduler polls for due claims and obtains leases before starting work. Its default concurrency is two. A failed attempt can be retried with backoff. After the configured retry threshold it returns to the regular interval. A failed recheck can retain the previous successful result. Read its timestamp alongside the latest attempt status. The backend must be running for scheduled work to advance.
 
-The scheduler starts and stops with FastAPI. SQLite leases are acquired transactionally, preventing two workers from running a check for the same claim. Expired leases become eligible again after a process crash or restart. This design supports multiple workers sharing the same SQLite database on a single host; it is not a substitute for a distributed database in multi-host deployments. Keep the feature database on durable storage.
+## Email delivery is a separate schedule
 
-## Change detection
+Configure a sender and one supported transport on the server. Selection order is Brevo, Resend, SendGrid, then SMTP. Save a recipient and digest interval in Watchtower. The test-email action exercises transport configuration. A scheduled digest summarizes saved claims and active alerts, including pending claims. Email frequency controls delivery independently of the claim recheck interval.
 
-Watchtower stores immutable verification snapshots and creates persistent alerts for confirmed-to-contradicted/partially-supported transitions, a score falling below the configured threshold, materially changed source sets, and repeated inconclusive evidence. A policy selected at registration is passed to the existing verification pipeline on every check.
+The email schedule supports a seconds interval, custom units and a limited set of cron-style presets mapped to intervals. Delivery occurs on a poll after the schedule becomes due. Check `next_run_at`, `last_sent_at` and the configured recipient when investigating delays. Pausing mail and pausing a monitored claim are separate actions.
 
-Provider errors, missing credentials, timeouts, rate limits, and failed extraction are recorded as failed attempts and retried with bounded exponential backoff. They do not change the saved verdict or generate stale-information alerts. Repeated inconclusive evidence is retried before Watchtower reports loss of evidence. Unresolved duplicate transitions share one alert; acknowledging an alert allows a later recurrence to create a new alert.
-
-## API and dashboard
-
-Use the `/api/watchtower` endpoints listed in the [API reference](13_api_reference.md). The dashboard displays monitoring counts, claim state, check controls, evidence links, Replay links, and acknowledgement actions. A claim must have a successful verification baseline for change detection to compare it against; registering without a baseline sets one after the first successful check.
-
-## Persistence and access
-
-Monitoring rows, leases, snapshots, and alerts are stored in the shared `FRESHGATE_FEATURE_DB` SQLite database. Back it up with the policy data. PostgreSQL support and multi-tenant access control are not included in this phase. Protect a deployed instance at its ingress boundary and apply provider usage limits.
+MongoDB scopes monitors to their owners. Local SQLite supports the single-account workflow. Check errors about missing credentials in the monitoring owner's Profile. [Scheduler](../core/watchtower.py) · [Watchtower routes](../server/routes/watchtower.py)

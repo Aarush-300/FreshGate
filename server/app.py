@@ -443,12 +443,11 @@ async def stream_from_upstream(
     path: str,
     headers: Dict[str, str],
     body: bytes,
-    timeout: float = 60.0,
+    client: httpx.AsyncClient,
 ):
     """Open streaming connection to upstream Bifrost gateway."""
     target_url = f"{BIFROST_UPSTREAM_URL}{path}"
     forward_headers = _filter_upstream_headers(headers)
-    client = httpx.AsyncClient(timeout=timeout)
     req = client.build_request(
         method=method,
         url=target_url,
@@ -939,9 +938,17 @@ def _consume_sse_line(line: str, state: dict) -> None:
     choices = parsed.get("choices") or []
     if choices and isinstance(choices, list):
         piece = (choices[0].get("delta") or {}).get("content")
-        if piece and state["chars"] < 50000:
+        if isinstance(piece, str) and state["chars"] < 50000:
+            piece = piece[:50000 - state["chars"]]
             state["chunks"].append(piece)
             state["chars"] += len(piece)
+
+
+def _verification_unavailable(upstream: dict, headers: dict) -> JSONResponse:
+    if FRESHGATE_FAIL_OPEN:
+        return JSONResponse(content=upstream, headers=headers)
+    headers["X-FreshGate-Status"] = "fail-closed"
+    return JSONResponse(status_code=503, content={"detail": "Verification unavailable"}, headers=headers)
 
 
 @app.post("/proxy/v1/chat/completions", dependencies=[Depends(require_api_key_strict)])
@@ -965,14 +972,19 @@ async def proxy_chat_completions(request: Request, background_tasks: BackgroundT
         req_json = {}
 
     if is_stream:
+        client = httpx.AsyncClient(timeout=cfg.upstream_timeout)
         try:
             stream_resp = await stream_from_upstream(
+                client=client,
                 method=request.method,
                 path="/v1/chat/completions",
                 headers=headers,
                 body=body_bytes,
             )
-        except Exception as e:
+        except BaseException as e:
+            await client.aclose()
+            if not isinstance(e, Exception):
+                raise
             safe_err = sanitize_error_detail(e)
             logger.error("Failed to connect streaming upstream: %s", safe_err)
             raise HTTPException(
@@ -987,6 +999,8 @@ async def proxy_chat_completions(request: Request, background_tasks: BackgroundT
             try:
                 async for chunk in stream_resp.aiter_bytes():
                     yield chunk
+                    if stream_resp.status_code != 200:
+                        continue
                     try:
                         text_chunk = decoder.decode(chunk)
                         buffer += text_chunk
@@ -1006,8 +1020,10 @@ async def proxy_chat_completions(request: Request, background_tasks: BackgroundT
                 except Exception:
                     pass
 
-                if hasattr(stream_resp, "aclose"):
+                try:
                     await stream_resp.aclose()
+                finally:
+                    await client.aclose()
 
                 full_content = "".join(state["chunks"]).strip()
                 if full_content and state["completion_id"]:
@@ -1015,13 +1031,15 @@ async def proxy_chat_completions(request: Request, background_tasks: BackgroundT
 
         return StreamingResponse(
             event_generator(),
-            media_type="text/event-stream",
+            status_code=stream_resp.status_code,
+            media_type=stream_resp.headers.get("content-type", "text/event-stream"),
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
 
     # 1. Forward request to Bifrost upstream
     try:
         status_code, upstream_data, upstream_headers = await forward_to_upstream(
+            timeout=cfg.upstream_timeout,
             method=request.method,
             path="/v1/chat/completions",
             headers=headers,
@@ -1065,7 +1083,7 @@ async def proxy_chat_completions(request: Request, background_tasks: BackgroundT
 
     # 3b. Circuit breaker check
     if not circuit_breaker.can_execute():
-        logger.warning("Circuit breaker is OPEN. Immediate fail-open pass-through.")
+        logger.warning("Verification circuit breaker is open.")
         background_tasks.add_task(
             write_audit_failure,
             assistant_content,
@@ -1079,7 +1097,7 @@ async def proxy_chat_completions(request: Request, background_tasks: BackgroundT
             "X-FreshGate-Circuit-Breaker": "open",
             "X-FreshGate-Reason": "circuit_breaker_tripped",
         }
-        return JSONResponse(status_code=200, content=upstream_data, headers=headers_to_add)
+        return _verification_unavailable(upstream_data, headers_to_add)
 
     # 4. Run FreshGate verification with fail-open timeout
     t0 = time.perf_counter()
@@ -1089,13 +1107,15 @@ async def proxy_chat_completions(request: Request, background_tasks: BackgroundT
             timeout=FRESHGATE_TIMEOUT,
         )
         if getattr(getattr(verification, "summary", None), "status", None) in ("verification_failed", "extraction_failed"):
+            if not FRESHGATE_FAIL_OPEN:
+                raise RuntimeError("Verification pipeline unavailable")
             circuit_breaker.record_failure()
         else:
             circuit_breaker.record_success()
-    except (asyncio.TimeoutError, Exception) as e:
+    except Exception as e:
         circuit_breaker.record_failure()
         safe_msg = sanitize_error_detail(e)
-        logger.warning("FreshGate verification failed/timed out, failing open: %s", safe_msg)
+        logger.warning("FreshGate verification failed: %s", safe_msg)
         duration_sec = time.perf_counter() - t0
         metrics.observe_latency(duration_sec)
         reason = "timeout" if isinstance(e, asyncio.TimeoutError) else "internal_error"
@@ -1113,7 +1133,7 @@ async def proxy_chat_completions(request: Request, background_tasks: BackgroundT
             "X-FreshGate-Status": "fail-open",
             "X-FreshGate-Reason": reason,
         }
-        return JSONResponse(status_code=200, content=upstream_data, headers=headers_to_add)
+        return _verification_unavailable(upstream_data, headers_to_add)
 
     latency_ms = int((time.perf_counter() - t0) * 1000)
 

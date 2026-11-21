@@ -158,13 +158,13 @@ def test_calculate_flip_probability_and_interval():
 
 # --- Phase 5: Export Functionality Tests ---
 
-def test_export_executive_summary_and_knowledge_base(workspace_tmp_path):
+def test_export_executive_summary_and_knowledge_base(workspace_tmp_path, auth_cookie):
     from core.persistence import SQLiteFeatureStore
     feature_store = SQLiteFeatureStore(str(workspace_tmp_path / "test_features.sqlite3"))
 
     claim = Claim(
         id="c-export",
-        text="Claude 3.5 Sonnet released by Anthropic",
+        text="Release A & B <preview>",
         type="version",
         verdict="confirmed",
         score=95,
@@ -194,6 +194,20 @@ def test_export_executive_summary_and_knowledge_base(workspace_tmp_path):
 
     kb_csv = export_knowledge_base(claim.claim_fingerprint, format="csv", store=feature_store)
     assert "field,value" in kb_csv["csv"]
+
+    from xml.etree import ElementTree
+    with patch("server.routes.export.get_feature_store", return_value=feature_store):
+        client = TestClient(app, cookies=auth_cookie)
+        url = f"/api/export/claim/{claim.claim_fingerprint}"
+        xml = client.get(f"{url}/knowledge-base?format=xml&download=true")
+        assert xml.headers["content-type"].startswith("application/xml")
+        assert ElementTree.fromstring(xml.content).findtext("claim_text") == claim.text
+        csv = client.get(f"{url}/knowledge-base?format=csv&download=true")
+        assert csv.content.decode() == kb_csv["csv"]
+        html = client.get(f"{url}/full-report?format=html&download=true")
+        assert html.headers["content-type"].startswith("text/html")
+        assert "Release A &amp; B &lt;preview&gt;" in html.text
+
 
 
 # --- Phase 6: Email Service Template Tests ---

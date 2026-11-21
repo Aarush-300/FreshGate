@@ -1,66 +1,17 @@
-# FreshGate: Cache Architecture and Strategy
+# Claim cache and reuse
 
-## 1. Structured Cache Key Design
+A paragraph is extracted again when submitted for verification. Once the volatile claims have been identified, a matching cached claim can satisfy a check without another search and judgment. This lets two different answers reuse a check for the same normalized statement.
 
-To prevent key collisions across distinct factual domains, jurisdictions, and entities, FreshGate formats all cache entries according to a versioned schema:
+## What determines a hit
 
-$$\texttt{key} = \texttt{v2:\{category\}:\{jurisdiction\}:\{entity\}:\{sha256(normalized\_text)[:16]\}}$$
+The versioned key includes normalized text, category, jurisdiction, entity and an optional policy scope. A saved policy contributes its identifier and update timestamp. Editing the policy therefore changes its cache scope. An enforce-mode hit is also checked for current evidence eligibility. A policy can bypass caching altogether.
 
-- `v2`: Explicit key schema version, allowing instant invalidation during protocol upgrades.
-- `{category}`: Volatile category (e.g. `pricing`, `law`, `version`).
-- `{jurisdiction}`: Geographical/regulatory jurisdiction (e.g. `us`, `eu`, `california`, `global`). Guarantees that regional legal rulings do not cross-pollinate.
-- `{entity}`: Normalized primary entity (e.g. `openai`, `postgresql`, `crowdstrike`).
-- `{hash}`: First 16 hexadecimal characters of SHA-256 over normalized, whitespace-collapsed claim text.
+Ordinary entries take their lifetime from the category registry. Unverifiable results have a shorter default lifetime so a temporary retrieval problem can be reconsidered. A configured per-category policy TTL can override the default. A hit carries `cached: true`. The newest snapshot may consequently reuse evidence from an earlier search.
 
----
+## Operating the cache
 
-## 2. Multi-Backend Architecture
+SQLite is the local backend. When Redis is configured and available at selection time, FreshGate can use it for shared caching. Cache startup selection and later connectivity failures are separate concerns. Inspect backend statistics when investigating unexpected misses. The default SQLite paths for cache, features and audit refer to distinct responsibilities.
 
-FreshGate abstracts storage behind the `ClaimCacheBase` interface (`core/cache.py`), supporting two deployment topologies:
+Use cache-hit and cache-miss counters over the same time window. A cold run is a useful baseline before comparing a repeated run with identical text, policy and entity. Clearing the cache is an administrative action affecting other requests. To investigate one claim, prefer a verification under a policy with caching disabled.
 
-```
-                  [ ClaimCacheBase ]
-                          │
-         ┌────────────────┴────────────────┐
-         ▼                                 ▼
-[ SQLiteClaimCache ]              [ RedisClaimCache ]
-  - Zero external dependency        - Distributed across instances
-  - WAL Journaling mode             - Cluster-native replication
-  - 5000ms busy timeout             - Native EXPIRE TTL management
-  - Local micro-benchmark           - High-concurrency production
-```
-
-### 2.1 SQLite Concurrency & Zero-Downtime Migration
-For containerized or single-node deployments, `SQLiteClaimCache` eliminates operational overhead while guaranteeing concurrency safety:
-- **Write-Ahead Logging (WAL):** Enabled via `PRAGMA journal_mode=WAL;`, permitting simultaneous readers without blocking writers.
-- **Busy Timeout:** Configured with `PRAGMA busy_timeout=5000;` to eliminate `sqlite3.OperationalError: database is locked` under multi-threaded loads.
-- **Automated Column Migrations:** Upon startup, `_init_db()` queries `PRAGMA table_info(claim_cache);` and automatically executes dynamic `ALTER TABLE` statements to add new metadata columns without corrupting existing cache records.
-
-### 2.2 Redis Distributed Cache
-When `REDIS_URL` is set, `RedisClaimCache` activates:
-- Serializes complete `Claim` models to JSON.
-- Leverages Redis `EX` TTL parameters to ensure automatic key expiration without garbage-collection overhead.
-
----
-
-## 3. Dynamic TTL Strategy & Unverifiable Expiration
-
-Static TTLs are fundamentally ill-suited for mixed factual categories. FreshGate enforces category-differentiated expiration:
-
-| Factual Category | Default TTL | Rationale |
-| :--- | :--- | :--- |
-| `cybersecurity` | **6 hours** | Vulnerability patches and zero-day advisories evolve continuously |
-| `pricing` | **12 hours** | Cloud token prices and SaaS tiers update frequently |
-| `financial` | **12 hours** | Interest rates and market metrics require intraday freshness |
-| `version` | **24 hours** | Software releases typically follow daily release cadences |
-| `leadership` | **48 hours** | Executive appointments remain stable for days to months |
-| `public_health` | **3 days** | Disease directives and isolation rules evolve over days |
-| `law` / `government_policy` | **7 days** | Statutory enforcement deadlines follow multi-week timelines |
-| **`unverifiable` (Any category)** | **300 seconds (5 min)** | **Fast TTL:** Prevents transient search outages from locking claims as unverifiable |
-
----
-
-## 4. Invalidation & Cache Performance Statistics
-
-- **Selective Invalidation:** `cache.invalidate(category="pricing", jurisdiction="us")` deletes entries targeting specific domains without purging the entire cache.
-- **Runtime Statistics:** `cache.get_stats()` exposes total hits, misses, hit rate percentage, total active keys, and backend status for Prometheus and dashboard consumption.
+The [cache implementation](../core/cache.py) defines key normalization, TTL handling and storage selection. The [category registry](../core/categories.py) supplies category defaults.

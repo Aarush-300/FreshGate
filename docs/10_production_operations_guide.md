@@ -1,84 +1,21 @@
-# FreshGate: Production Operations Guide
+# Operating FreshGate
 
-## 1. Quickstart & Service Launch
+Run the FastAPI process continuously if monitoring and email schedules are enabled. The dashboard can show an earlier successful observation after a provider failure. Check the time of the last successful verification alongside process health.
 
-### 1.1 Local / Development Mode
-```bash
-# Create virtual environment and install dependencies
-python -m venv .venv
-.\.venv\Scripts\activate   # On Windows (or source .venv/bin/activate on Linux)
-pip install -r requirements.txt
+| Startup check | What success establishes |
+| --- | --- |
+| `GET /health/live` | The HTTP process answers its liveness route. |
+| `GET /health/ready` | Storage readiness checks succeeded, including MongoDB when required and a cache statistics read. |
+| Load the page and sign in | The built assets, account store and session cookie work through the public origin. |
+| Verify a short volatile claim | The selected credential path can perform extraction and retrieval. Inspect status, method and sources. |
+| Send a non-streaming chat request | The configured Bifrost model and selected integration return the expected response. |
 
-# Start FreshGate Universal Proxy on port 8000
-uvicorn server.app:app --host 0.0.0.0 --port 8000 --workers 4
-```
+## Configuration and persistence
 
-### 1.2 Production Docker Deployment
-```bash
-# Launch with Docker Compose (includes Bifrost, Redis, and persistent volumes)
-docker-compose up -d --build
+Profile settings fund dashboard checks. Configure server provider and search credentials for the plugin and proxy. Set `FRESHGATE_MODE`, `FRESHGATE_BLOCK_STALE` and `FRESHGATE_MIN_SCORE` for the expected delivery behavior. Check deployment overrides. The application default is enforce with stale blocking off, while the supplied Render configuration selects warn.
 
-# Verify healthy startup
-docker-compose ps
-curl -s http://localhost:8000/health/ready
-```
+Inventory accounts, feature history, audits, the session secret and cache paths. Losing feature storage can erase policies, enrolled claims and Replay history. Restore a backup into a separate deployment with the corresponding session secret to check that saved Profiles still work.
 
----
+## Routine checks
 
-## 2. Configuration Reference
-
-All behavior is controlled via environment variables:
-
-| Variable | Default | Purpose |
-| :--- | :--- | :--- |
-| `BIFROST_UPSTREAM_URL` | `http://127.0.0.1:8080` | URL of upstream Bifrost or LLM gateway |
-| `TAVILY_API_KEY` | *(None)* | Optional server-side fallback. Otherwise supply `X-Tavily-API-Key` for each `/verify` request. |
-| `OPENAI_API_KEY` | *(None)* | Optional server-side fallback. Otherwise supply `X-OpenAI-API-Key` for each `/verify` request. |
-| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Custom endpoint for judge (Ollama, vLLM, etc.) |
-| `LLM_MODEL` | `gpt-4o-mini` | Default model for atomic extraction and verification judging |
-| `FRESHGATE_TIMEOUT` | `4.0` | Gateway verification fail-open timeout in seconds |
-| `FRESHGATE_FAIL_OPEN` | `true` | Guarantee that original LLM answers pass through on any error |
-| `FRESHGATE_MODE` | `enforce` | Gateway mode: `shadow`, `warn`, or `enforce` |
-| `FRESHGATE_BLOCK_STALE` | `false` | When true, returns HTTP 422 if outdated claims are detected |
-| `FRESHGATE_MIN_SCORE` | `0` | Minimum freshness score (0 - 100) before triggering policy action |
-| `FRESHGATE_MAX_BODY_SIZE_BYTES` | `1048576` | Maximum allowed request payload in bytes (1 MB) |
-| `FRESHGATE_RATE_LIMIT_PER_MINUTE` | `60` | IP-based request rate limit per minute |
-| `FRESHGATE_API_KEY` | *(None)* | Client API key for protected gateway proxy endpoints |
-| `FRESHGATE_ADMIN_KEY` | *(None)* | Administrative token for cache clearing and breaker resets |
-| `REDIS_URL` | *(None)* | Redis connection string (`redis://redis:6379/0`) for distributed cache |
-| `FRESHGATE_CACHE_DB` | `freshgate_cache.db` | File path for SQLite claim cache |
-| `FRESHGATE_AUDIT_DB` | `freshgate_audit.db` | File path for historical verification audit store; local SQLite needs persistent storage (e.g. `/data` disk or Docker volume). On the default Render free plan, it uses `/tmp` (ephemeral storage that resets on redeploy). |
-| `FRESHGATE_FEATURE_DB` | `freshgate_features.db` | Durable SQLite path for policies, Watchtower, immutable verification snapshots, and Replay. |
-| `FRESHGATE_WATCHTOWER_ENABLED` | `true` | Enable the lifecycle-managed due-job scheduler. Scheduled checks require server OpenAI-compatible and Tavily credentials. |
-| `FRESHGATE_WATCHTOWER_MAX_CONCURRENCY` | `2` | Maximum simultaneous scheduled checks. |
-| `FRESHGATE_WATCHTOWER_MAX_CLAIMS` | `1000` | Maximum registered monitored claims. |
-
-See [Watchtower](watchtower.md) and [Verification Replay](verification-replay.md) for retry, lease, API, and SQLite durability behavior.
-
----
-
-## 3. Operational Health Checks
-
-- **Liveness Probe:** `GET /health/live`
-  - Returns `{"status": "alive"}` immediately (HTTP 200).
-- **Readiness Probe:** `GET /health/ready`
-  - Queries database and cache status (`SELECT 1` / table read).
-  - Returns HTTP 200 `{"status": "ready", "database": "connected", "cache": "connected"}` or HTTP 503 if backend is unavailable.
-- **Prometheus Metrics:** `GET /metrics`
-  - Scraped at standard 15s intervals by Prometheus collectors.
-
----
-
-## 4. Maintenance Operations
-
-### Clearing Cache (Zero-Downtime)
-```bash
-curl -X POST http://localhost:8000/api/cache/clear \
-  -H "X-Admin-Key: <FRESHGATE_ADMIN_KEY>"
-```
-
-### Resetting Circuit Breaker
-```bash
-curl -X POST http://localhost:8000/api/circuit-breaker/reset \
-  -H "X-Admin-Key: <FRESHGATE_ADMIN_KEY>"
-```
+Review provider failures, cache activity and latency over a consistent time window. Inspect overdue monitors, last errors and digest delivery. Check available disk space and growth of snapshots and audits. Administrative cache clear and circuit reset change runtime state. Investigate the underlying problem before using either. [Incident runbook](12_monitoring_and_incident_response_runbook.md)

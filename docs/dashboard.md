@@ -1,25 +1,21 @@
-# Dashboard guide
+# Using the FreshGate page
 
-The operator dashboard is a React, TypeScript, Vite, and Tailwind CSS application. FastAPI serves the static production build from `dashboard/dist`; the Docker build compiles the UI before packaging it. For local frontend development, see `dashboard/README.md`.
+Open the address printed by the Windows launcher or the manual server address, normally port 8000. Register or sign in, then open **Profile**. Choose a provider, model and endpoint if required. Save the provider credentials and Tavily key. Model discovery runs from the server, so a local provider must be reachable from the machine running FastAPI.
 
-FreshGate serves one dashboard with these tabs:
+## Verify an answer or document
 
-- **Verify** checks pasted answers with live web evidence and can apply an enabled Policy Studio policy. Provider keys entered here apply only to that request.
-- **System**, **Benchmarks**, and **Audit log** show existing health, evaluation, and administrative information.
-- **Policy Studio** creates and manages source, freshness, verification-mode, and cache policies. Its sample policy preview does not make live provider calls.
-- **Watchtower** registers a successful claim for scheduled rechecks, displays status and alerts, and supports manual checks, pausing/resuming, and acknowledgement. Scheduled checks need server-configured provider credentials.
-- **Replay** opens from a Watchtower claim or alert and compares immutable snapshots. It can also load a claim by fingerprint.
+1. Open **Verify**. Paste the original answer or select **Try an example**. For a document, choose a TXT, Markdown, JSON, CSV, PDF or DOCX file. The default upload limit is 10 MiB.
+2. Select a saved policy if the review requires particular evidence. Run verification and inspect the checked count and status before reading the average score.
+3. Open a claim. Match its category, verdict and explanation to the source snippets. Follow the source URL, check the date and look for a correction when evidence contradicts the text.
+4. Choose **Monitor claim** to carry that claim and its available baseline into Watchtower. Use **Replay** to compare subsequent checks.
 
-The browser renders server-provided content with text nodes and safe HTTP(S) links. It does not store request-scoped provider credentials.
+| Page | What to use it for |
+| --- | --- |
+| Policy Studio | Create, validate, duplicate and preview a policy before selecting it for verification. |
+| Watchtower | Inspect enabled claims, last result, next check, retry errors and alerts. Configure email reports separately. |
+| Replay | Load a fingerprint, compare two evidence snapshots and download the resulting records. |
+| System | Inspect service readiness, provider status, cache and metrics. |
+| Benchmarks | Read packaged evaluation results and dataset counts. Live provider performance varies. |
+| Audit log | Supply the configured admin key to inspect recorded requests. A normal session alone cannot open recent audits. |
 
-## Direct verification provider
-
-Direct verification requires a provider, that provider's API key, a base URL, and a model. The provider selector supplies an editable default base URL and model; its model field offers provider-specific suggestions and accepts a model ID not in the suggestions. Supported OpenAI-compatible entries are OpenAI, Groq, Gemini, Ollama, OpenRouter, and a custom endpoint. The endpoint must implement chat completions.
-
-The LLM key is sent in the X-LLM-API-Key request header and cleared from the form when the request finishes. It is not written to local or session storage. The optional Tavily key is only needed when the server does not have TAVILY_API_KEY configured. Scheduled Watchtower checks use server-side provider credentials and do not reuse browser-submitted keys.
-
-The theme control switches the entire dashboard between light and dark palettes. The selection is stored in browser local storage; provider credentials are never stored there.
-
-Feature lists show explicit empty states when there are no saved policies, monitored claims, alerts, or snapshots. API failures are reported in the affected panel; use **Refresh** in Watchtower to retry. A fingerprint with no saved history is treated as an empty Replay state, and comparisons become available after two snapshots.
-
-The source integration checks are in `tests/test_dashboard_integration.py`; they cover API wiring, request-scoped keys, empty states, the static asset base, responsive breakpoints, and reduced-motion handling.
+If the page loads but Verify fails, check the signed-in Profile first. A functioning gateway may be using different credentials. If the browser cannot reach any API route during frontend development, check the Vite proxy origin against the port printed by the backend. [Local setup](../README.md#run-the-freshgate-page-locally)

@@ -1,283 +1,133 @@
-# FreshGate: Complete API Reference
+# HTTP API reference
 
-## 1. Chat Completion Gateway Endpoints
+Use the origin of your running FreshGate server. FastAPI serves interactive schemas at `/docs` and the machine-readable contract at `/openapi.json`. The tables below list each operation published in that contract. Query columns list declared query parameters. Some handlers also read headers, form fields or gateway options directly from the request.
 
-### `POST /v1/chat/completions` & `POST /proxy/v1/chat/completions`
-Drop-in replacement for OpenAI `/v1/chat/completions`. Intercepts responses, extracts facts, validates against Tavily web evidence, and decorates metadata.
+## Verify one answer
 
-#### Headers
-- `Content-Type`: `application/json` (Required)
-- `Authorization`: `Bearer <token>` (Optional upstream or gateway key)
-- `X-FreshGate-Mode`: `enforce` | `warn` | `shadow` (Optional override)
-- `X-FreshGate-Async`: `true` | `false` (Optional override)
+Send a JSON body with an `answer` of 1–50,000 characters. Include a saved `policy_id` to apply an evidence policy. This example uses process-supplied provider credentials. Use your own FreshGate origin when handling credentials.
 
-#### Request Body
-Standard OpenAI chat completion payload:
-```json
-{
-  "model": "gpt-4o-mini",
-  "messages": [
-    {"role": "user", "content": "What is the price of Netflix Standard with ads?"}
-  ],
-  "temperature": 0.2,
-  "stream": false
-}
+```bash
+curl -sS http://127.0.0.1:8000/verify \
+  -H 'Content-Type: application/json' \
+  -H "X-OpenAI-API-Key: ${OPENAI_API_KEY}" \
+  -H "X-Tavily-API-Key: ${TAVILY_API_KEY}" \
+  -d '{"answer":"The current stable release of Python is version 3.10."}'
 ```
 
-#### Response (Non-Streaming Enriched)
-```json
-{
-  "id": "chatcmpl-prod-999",
-  "object": "chat.completion",
-  "created": 1710000000,
-  "model": "gpt-4o-mini",
-  "choices": [
-    {
-      "index": 0,
-      "message": {
-        "role": "assistant",
-        "content": "Netflix Standard with ads costs $9.99 per month in the US."
-      },
-      "finish_reason": "stop"
-    }
-  ],
-  "usage": {
-    "prompt_tokens": 15,
-    "completion_tokens": 20,
-    "total_tokens": 35
-  },
-  "freshgate": {
-    "claims": [
-      {
-        "id": "c1",
-        "text": "Netflix Standard with ads costs $9.99 per month in the US",
-        "type": "pricing",
-        "verdict": "contradicted",
-        "score": 10,
-        "correction": "Netflix Standard with ads costs $6.99 per month in the US",
-        "cached": false,
-        "sources": [
-          {
-            "url": "https://help.netflix.com/en/node/24926",
-            "snippet": "Standard with ads is $6.99/month in the United States.",
-            "authority_score": 0.95,
-            "is_primary": true
-          }
-        ]
-      }
-    ],
-    "summary": {
-      "total": 1,
-      "checked": 1,
-      "stale": 1,
-      "avg_score": 10
-    }
-  }
-}
-```
+Read `status` and `summary.checked` before using the average. Each checked claim can carry its own `verdict`, `score`, `sources`, `correction` and `cached` indicator. `summary.stale` counts contradictions. `summary.avg_score` may be null. The upload route accepts multipart form data with a `file` and optional `answer` text. Profile verification, gateway integration and operator administration use different credentials. [Security architecture](03_security_architecture.md)
 
-#### Response Headers
-- `X-FreshGate-Status`: `verified` | `fail-open`
-- `X-FreshGate-Score`: `0` to `100`
-- `X-FreshGate-Stale-Count`: Count of contradicted claims
-- `X-FreshGate-Total-Claims`: Total claims extracted
-- `X-FreshGate-Checked-Claims`: Volatile claims verified
-- `X-FreshGate-Latency-Ms`: Middleware processing time in ms
-- `X-Correlation-ID`: Unique request tracking ID
+## Handle HTTP outcomes
 
----
+| Status | Typical interpretation |
+| --- | --- |
+| 401 / 403 | Missing authentication, invalid credentials or an operation requiring the admin key. |
+| 404 / 409 | A lookup missed, a selected policy is disabled, or a monitoring operation conflicts with current state. Stream lookup also returns 404 while the result is pending. |
+| 413 / 422 | Input exceeds a size limit, validation failed, or a blocking gateway rule rejected a completion. Inspect the response body. |
+| 429 | A rate or enrollment limit was reached. Check the route and error detail. |
+| 502 / 503 | Bifrost was unreachable, a required service was unavailable, or an integration is misconfigured. Check readiness and gateway configuration. |
 
-## 2. Direct Verification Endpoint
+For an OpenAI-compatible request, the proxy can take `X-FreshGate-Mode` or the `freshgate_mode` query option. Behavior also depends on streaming and the configured delivery settings. For native plugin calls, send the integration key via `X-API-Key` and point the plugin at the full verification endpoint. [Gateway guide](bifrost-notes.md)
 
-### `POST /verify`
-Verifies arbitrary assistant text directly without forwarding to an upstream LLM.
+## Verification and chat
 
-#### Headers
-- `X-OpenAI-API-Key`: OpenAI-compatible provider key for claim extraction and judging (optional if configured on the server).
-- `X-Tavily-API-Key`: Tavily key for live web search (optional if configured on the server).
+Direct verification accepts a session or request-specific provider credentials. Gateway routes use the integration key when configured and require it in production. Stream lookup requires a session or admin key.
 
-Keys are used for this request only. Send them over HTTPS when deployed; do not put keys in the JSON body, query string, or application logs.
+| Method | Path | Operation | Query |
+| --- | --- | --- | --- |
+| POST | `/verify` | Verify Answer | — |
+| POST | `/verify/upload` | Verify Upload | — |
+| POST | `/v1/chat/completions` | Proxy Chat Completions | — |
+| POST | `/proxy/v1/chat/completions` | Proxy Chat Completions | — |
+| GET | `/api/stream/verification/{completion_id}` | Get Stream Verification | — |
+| POST | `/api/plugin/verify` | Plugin Verify | — |
 
-#### Request Body
-```json
-{
-  "answer": "Python 2.7 is the current supported version of Python."
-}
-```
+## Accounts and providers
 
-#### Response Body
-Returns `VerificationResult` schema. Each checked volatile claim includes a `claim_fingerprint` and a `verification_id` that identify its history and immutable snapshot. Claims excluded from live verification may not have these fields.
+Registration and login accept email and password and issue a session cookie. The provider catalog is public. Profile settings and model discovery use the signed-in account. Saving a blank key can retain the current provider's stored key.
 
-#### Request Body
-```json
-{
-  "answer": "Python 2.7 has just been released.",
-  "policy_id": "optional-saved-policy-id"
-}
-```
+| Method | Path | Operation | Query |
+| --- | --- | --- | --- |
+| GET | `/api/providers` | List Providers | — |
+| POST | `/api/providers/{provider_id}/models` | Legacy List Provider Models | — |
+| GET | `/api/profile/settings` | Get Profile Settings | — |
+| PUT | `/api/profile/settings` | Update Profile Settings | — |
+| POST | `/api/profile/models` | List Models | — |
+| POST | `/api/auth/register` | Register | — |
+| POST | `/api/auth/login` | Login | — |
+| POST | `/api/auth/logout` | Logout | — |
+| GET | `/api/auth/me` | Me | — |
 
-When a policy is selected, the response includes a `policy_evaluation` object with the policy decision and per-claim results. Omit `policy_id` to preserve default behavior. See [Policy Studio](policy-studio.md) for the complete policy contract.
+## Policies
 
-### Policy Studio
+The category registry is public. The remaining routes use the session's feature store. Creation returns 201 and successful deletion returns 204. Preview accepts sample claims and sources.
 
-- `GET /api/policies/categories` — supported categories.
-- `GET /api/policies` and `GET /api/policies/{policy_id}` — list or retrieve policies.
-- `POST /api/policies` — create a policy; returns HTTP 201.
-- `PUT /api/policies/{policy_id}` — replace policy settings.
-- `DELETE /api/policies/{policy_id}` — delete a policy; returns HTTP 204.
-- `POST /api/policies/validate` — validate proposed settings before saving.
-- `POST /api/policies/{policy_id}/validate` — validate settings in the context of a saved policy.
-- `POST /api/policies/{policy_id}/preview` — simulate policy evaluation against supplied sample claims without live search or LLM calls.
-- `POST /api/policies/{policy_id}/duplicate` — create a copy; returns HTTP 201.
+| Method | Path | Operation | Query |
+| --- | --- | --- | --- |
+| GET | `/api/policies/categories` | Get Policy Categories | — |
+| GET | `/api/policies` | Get Policies | `limit`, `offset` |
+| POST | `/api/policies` | Post Policy | — |
+| POST | `/api/policies/validate` | Validate Candidate Policy | — |
+| GET | `/api/policies/{policy_id}` | Get Policy By Id | — |
+| PUT | `/api/policies/{policy_id}` | Put Policy | — |
+| DELETE | `/api/policies/{policy_id}` | Delete Policy | — |
+| POST | `/api/policies/{policy_id}/validate` | Validate Policy | — |
+| POST | `/api/policies/{policy_id}/preview` | Preview Policy | — |
+| POST | `/api/policies/{policy_id}/duplicate` | Duplicate Policy | — |
 
-Policy preview request example:
+## Monitoring and delivery
 
-```json
-{
-  "claims": [
-    {
-      "id": "claim-1",
-      "text": "The current release is 3.13",
-      "category": "version",
-      "freshness_score": 92,
-      "sources": [
-        {
-          "url": "https://docs.python.org/3/",
-          "snippet": "Current documentation",
-          "published": "2026-11-10",
-          "authority_score": 0.95
-        }
-      ]
-    }
-  ]
-}
-```
+These routes require a signed-in user. Use the enrollment ID for a recheck. A successful HTTP call to the check endpoint can still report a failed or retrying attempt in its body. Acknowledgment changes alert review state.
 
-### Watchtower
+| Method | Path | Operation | Query |
+| --- | --- | --- | --- |
+| POST | `/api/watchtower/monitor` | Monitor Claim | — |
+| GET | `/api/watchtower/claims` | List Claims | `limit`, `offset` |
+| GET | `/api/watchtower/claims/{claim_id}` | Get Claim | — |
+| PATCH | `/api/watchtower/claims/{claim_id}` | Patch Claim | — |
+| DELETE | `/api/watchtower/claims/{claim_id}` | Delete Claim | — |
+| POST | `/api/watchtower/claims/{claim_id}/check` | Check Claim | — |
+| GET | `/api/watchtower/alerts` | List Alerts | `limit`, `offset`, `unacknowledged_only` |
+| GET | `/api/watchtower/alerts/{alert_id}` | Get Alert | — |
+| POST | `/api/watchtower/alerts/{alert_id}/acknowledge` | Acknowledge Alert | — |
+| GET | `/api/watchtower/email/schedule` | Get Email Schedule | — |
+| POST | `/api/watchtower/email/schedule` | Set Email Schedule | — |
+| DELETE | `/api/watchtower/email/schedule` | Delete Email Schedule | — |
+| POST | `/api/watchtower/email/schedule/stop` | Stop Email Schedule | — |
+| POST | `/api/watchtower/email/test` | Send Test Email | — |
 
-- `POST /api/watchtower/monitor` — register a volatile claim, interval, optional policy, and optional verified baseline.
-- `GET /api/watchtower/claims` and `GET /api/watchtower/claims/{id}` — list monitored claims/overview or retrieve claim details/history.
-- `PATCH /api/watchtower/claims/{id}` and `DELETE /api/watchtower/claims/{id}` — update monitoring state/interval/policy or remove the claim.
-- `POST /api/watchtower/claims/{id}/check` — request a controlled immediate recheck; a current job lease returns HTTP 409.
-- `GET /api/watchtower/alerts` and `GET /api/watchtower/alerts/{id}` — list or retrieve alerts.
-- `POST /api/watchtower/alerts/{id}/acknowledge` — acknowledge an alert.
+## History, Replay and exports
 
-Monitoring intervals are specified in seconds and must be between one hour and 30 days. Scheduled checks use server-configured provider credentials and never reuse keys sent to `/verify`. `FRESHGATE_WATCHTOWER_*` settings bound claim count, concurrency, polling, lease duration, and retries. See [Watchtower operations](watchtower.md).
+Use a signed-in session. Replay takes a 64-character lowercase hexadecimal fingerprint. A comparison requires the from and to query parameters. Download options and available formats are described in the [Replay guide](verification-replay.md).
 
-### Verification History and Replay
+| Method | Path | Operation | Query |
+| --- | --- | --- | --- |
+| GET | `/api/history/claims/{fingerprint}` | History For Claim | `limit`, `offset` |
+| GET | `/api/history/verifications/{verification_id}` | History For Verification | — |
+| GET | `/api/replay/{fingerprint}/compare` | Compare Verifications | `from`, `to` |
+| GET | `/api/replay/{fingerprint}/timeline` | Replay Claim Timeline | `limit`, `offset` |
+| GET | `/api/replay/{fingerprint}` | Replay Claim History | `limit`, `offset` |
+| GET | `/api/export/claim/{fingerprint}/executive-summary` | Get Executive Summary | `limit` |
+| GET | `/api/export/claim/{fingerprint}/temporal-trends` | Get Temporal Trends | `limit` |
+| GET | `/api/export/claim/{fingerprint}/prediction-accuracy` | Get Prediction Accuracy | — |
+| GET | `/api/export/claim/{fingerprint}/knowledge-base` | Get Knowledge Base | `format`, `download` |
+| GET | `/api/export/claim/{fingerprint}/full-report` | Get Full Report | `format`, `download` |
 
-- `GET /api/history/claims/{fingerprint}?limit=100&offset=0` — paginated immutable snapshots for a SHA-256 claim fingerprint.
-- `GET /api/history/verifications/{verification_id}` — retrieve one immutable snapshot by the ID returned on a verified claim.
-- `GET /api/replay/{fingerprint}?limit=100&offset=0` — chronological snapshot page and the latest comparison.
-- `GET /api/replay/{fingerprint}/compare?from={verification_id}&to={verification_id}` — compare two snapshots of that claim.
-- `GET /api/replay/{fingerprint}/timeline?limit=100&offset=0` — paginated verification and Watchtower alert events.
+## Service and operator routes
 
-Replay endpoints are read-only. They compare verdict, score, authority/recency/agreement dimensions, sources and snippets, corrections, and applied policy. See [Verification Replay](verification-replay.md).
+Health probes and the dashboard are public. Metrics, provider and deployment status, benchmark results and stream lookup accept a user session or operator credential. Recent audits, cache clear and circuit reset require the admin key. The service-worker routes serve compatibility responses.
 
----
-
-## 3. Streaming Verification Retrieval
-
-### `GET /api/stream/verification/{completion_id}`
-Retrieves asynchronous verification results for a completed SSE stream.
-
-#### Response
-```json
-{
-  "status": "completed",
-  "result": {
-    "claims": [...],
-    "summary": { "total": 1, "checked": 1, "stale": 0, "avg_score": 95 }
-  },
-  "duration_ms": 18.2,
-  "timestamp": 1710000000.0
-}
-```
-
----
-
-## 4. Observability & System Probes
-
-### `GET /metrics`
-Returns Prometheus-formatted metrics (`text/plain; version=0.0.4`).
-
-### `GET /health/live`
-Returns `{"status": "alive"}` (HTTP 200).
-
-### `GET /health/ready`
-Returns `{"status": "ready", "database": "connected", "cache": "connected", "upstream": "..."}`. Returns HTTP 503 if backend is unavailable.
-
-### `GET /api/deployment/status`
-Returns active mode (`enforce`, `warn`, `shadow`), policy thresholds, and circuit breaker status.
-
----
-
-## 5. Administrative Endpoints
-
-Protected by `X-Admin-Key: <FRESHGATE_ADMIN_KEY>`.
-
-### `POST /api/cache/clear`
-Clears all cached claims. Returns `{"status": "cleared"}`.
-
-### `POST /api/circuit-breaker/reset`
-Resets circuit breaker from `OPEN` to `CLOSED`. Returns `{"status": "reset", "circuit_breaker": {...}}`.
-
-### `GET /api/audits/recent`
-Returns recent immutable verification audit records from the append-only audit store.
-
-**Headers:**
-- `X-Admin-Key`: Administrative token (required).
-
-**Query Parameters:**
-- `limit` (int, default: 50, min: 1, max: 500): Maximum records to retrieve.
-- `offset` (int, default: 0, min: 0): Number of records to skip for pagination.
-- `source` (string, optional, max 32 chars): Filter by record source (`verify`, `proxy`, `proxy_stream`, `proxy_async`, `watchtower`, `plugin`).
-
-**Response Schema:**
-```json
-{
-  "audits": [
-    {
-      "id": "audit-uuid",
-      "correlation_id": "req-uuid",
-      "created_at": 1731600000.0,
-      "input_text": "The verified text",
-      "claims": [],
-      "total_claims": 1,
-      "stale_claims": 0,
-      "avg_score": 95,
-      "latency_ms": 142,
-      "status": "verified",
-      "owner_id": "user-id-or-null",
-      "source": "verify",
-      "mode": "warn"
-    }
-  ],
-  "limit": 50,
-  "offset": 0,
-  "total": 125,
-  "persistent": true
-}
-```
-
-*Note: Audit records are append-only. Duplicate IDs are disambiguated with a unique suffix, preserving immutable history.*
-
-### `POST /api/plugin/verify`
-Dedicated verification endpoint for the native Bifrost Go plugin.
-
-**Headers:**
-- `X-API-Key`: Pre-shared API key matching `FRESHGATE_API_KEY`.
-
-**Request Body:**
-```json
-{
-  "answer": "Assistant answer text to verify"
-}
-```
-
-**Response:** `VerificationResult` model dump. Records an audit entry with `source: "plugin"`.
-
----
-
-## Caching Behavior
-Fact claim cache is global and shared across users for performance and efficiency on public factual claims. If custom entity or per-user policy isolation is required, policies may configure dedicated `jurisdiction` or `cache_scope`.
+| Method | Path | Operation | Query |
+| --- | --- | --- | --- |
+| GET | `/health` | Health Check | — |
+| GET | `/health/live` | Health Live | — |
+| GET | `/health/ready` | Health Ready | — |
+| GET | `/metrics` | Get Metrics | — |
+| GET | `/api/audits/recent` | Get Recent Audits | `limit`, `offset`, `source` |
+| GET | `/api/provider/status` | Get Provider Status | — |
+| GET | `/api/deployment/status` | Get Deployment Status | — |
+| POST | `/api/circuit-breaker/reset` | Reset Circuit Breaker | — |
+| GET | `/api/benchmark` | Get Benchmark Results | — |
+| POST | `/api/cache/clear` | Clear Cache | — |
+| GET | `/` | Get Dashboard | — |
+| GET | `/service-worker.js` | Service Worker Noop | — |
+| GET | `/sw.js` | Service Worker Noop | — |

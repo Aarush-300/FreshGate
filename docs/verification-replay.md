@@ -1,27 +1,23 @@
-# Verification Replay
+# Compare two checks with Replay
 
-Replay shows how FreshGate's evidence for a volatile claim changes over time. Every completed volatile claim check writes an append-only snapshot in the shared `FRESHGATE_FEATURE_DB` SQLite store. The result includes a per-claim `verification_id`; snapshots can also be retrieved by their stable SHA-256 claim fingerprint.
+A claim fingerprint identifies a normalized statement in context. A verification ID identifies one observation. The fingerprint includes normalized text, category, entities and jurisdiction. It preserves factual details such as numbers and currency, so changing a price can produce a different identity.
 
-## Snapshot contents
+## Investigate a change
 
-Each snapshot records the claim fingerprint/text/category, verdict, freshness score, score dimensions, source URLs and snippets with publication dates and authority, verification timestamp, applied policy ID/name/revision, cache status, correction/explanation, confidence, and end-to-end verification duration. Watchtower checks use the same history service and store.
+Open Replay from a monitored claim or paste its 64-character fingerprint. Choose two saved snapshots and compare their timestamps. Inspect the previous and current verdict, score delta, correction, policy, and added, removed or changed sources. A changed snippet at the same URL can matter even when the list of links looks identical.
 
-FreshGate captures the score dimensions it currently calculates: verdict quality, evidence recency, source authority, evidence agreement, verification confidence, and final score. This is a record of the current scorer's outputs, not a second scoring engine. Source-level differences are shown by URL, snippet, publication date, and authority score.
+Read cache status when interpreting history. Two snapshots may reuse the same evidence. A monitoring enrollment baseline can appear before the first stored verification snapshot. A comparison requires two observations of the same fingerprint under the accessible account scope.
 
-## Dashboard
+## Retrieve or export records
 
-Open Replay from a monitored claim or Watchtower alert, or paste a claim fingerprint in the Replay tab. The timeline includes verification snapshots and matching alert events. Select two snapshots to compare verdict, score delta, evidence URLs/snippets, source authority, recency and agreement dimensions, correction, and applied policy. New, removed, and changed evidence is called out separately.
+| Goal | Route |
+| --- | --- |
+| Paginate checks for a claim | `GET /api/history/claims/{fingerprint}` |
+| Retrieve one verification | `GET /api/history/verifications/{verification_id}` |
+| Load the Replay page data | `GET /api/replay/{fingerprint}` |
+| Compare specific observations | `GET /api/replay/{fingerprint}/compare?from={earlier_id}&to={later_id}` |
+| Read verification and alert events | `GET /api/replay/{fingerprint}/timeline` |
 
-## API
+Use the signed-in account that owns the history. For downloads the page targets `/api/export/claim/{fingerprint}`. The knowledge-base record is available in JSON, XML and CSV. The full report is available as JSON or HTML. Use `download=true` with XML, CSV or HTML for file content. Without that flag those formats are returned inside JSON envelopes.
 
-- `GET /api/history/claims/{fingerprint}` returns paginated snapshots, newest first.
-- `GET /api/history/verifications/{verification_id}` returns a snapshot.
-- `GET /api/replay/{fingerprint}` returns a chronological snapshot page and latest comparison.
-- `GET /api/replay/{fingerprint}/compare?from={id}&to={id}` compares two snapshots of that claim. Either snapshot IDs or `verification_id` values are accepted.
-- `GET /api/replay/{fingerprint}/timeline` returns paginated verification and alert events.
-
-Replay APIs are read-only. They never edit or delete history. The shared SQLite store uses triggers to reject snapshot updates and deletions.
-
-## Storage durability
-
-Use a persistent volume and back up the file configured by `FRESHGATE_FEATURE_DB`. Render's free filesystem is ephemeral, so snapshots and Replay history can be lost on restart or redeploy. SQLite is the included single-host implementation; use managed durable storage and validate a database-backed multi-instance design before production scale. No snapshot-retention job currently deletes old records.
+Preserve feature storage to retain comparisons after a restart. Snapshots, audit entries and cache entries follow different storage paths. [Claim identity](../core/claim_identity.py) · [Comparison implementation](../core/replay.py) · [Export endpoints](../server/routes/export.py)
